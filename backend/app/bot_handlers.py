@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 
 from sqlalchemy import desc, func
 from telegram import (
-    BotCommand,
     BotCommandScopeChat,
     BotCommandScopeDefault,
     InlineKeyboardButton,
@@ -25,7 +24,7 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import get_settings
 from .db import Admin, SignalRecord, Submission, User, get_session_factory, mask_uid
@@ -118,26 +117,18 @@ def _help_text(admin: bool = False):
         ("\nVerified users unlock the Prediction tab (WinGo 30s + 1 min) — a signal, never a guarantee.", None),
         ("\n\nNo passwords, OTPs or recovery phrases are ever asked for.", None),
         ("\n\n", None),
-        ("Commands", "bold"),
-        ("\n/start — open the panel", None),
-        ("\n/status — check your latest submission", None),
-        ("\n/predict — open predictions (verified users)", None),
-        ("\n/stats — live platform stats + your badges", None),
-        ("\n/help — this guide", None),
-        ("\n/cancel — cancel any pending operation", None),
+        ("Buttons", "bold"),
+        ("\nOpen Verification Panel — send your UID", None),
+        ("\nCheck My Status — your latest submission + badges", None),
+        ("\nOpen Predictions — WinGo signals (verified users)", None),
+        ("\nLive Stats — platform numbers, below", None),
+        ("\n\nEverything here works with buttons — no commands to type.", None),
     ]
     if admin:
         segments += [
             ("\n\n", None),
             ("Admin", "bold"),
-            ("\n/admin — open the admin panel", None),
-            ("\n/pending — submissions waiting for review", None),
-            ("\n/approve <id> [message] — mark verified", None),
-            ("\n/reject <id> <message> — mark rejected", None),
-            ("\n/needinfo <id> <message> — ask for more information", None),
-            ("\n/addadmin <telegram id> — add an admin", None),
-            ("\n/removeadmin <telegram id> — remove a bot-added admin", None),
-            ("\n/admins — list all admins", None),
+            ("\nAdmin Panel — pending queue, one-tap decisions, and Manage Admins.", None),
         ]
     return _render(segments)
 
@@ -195,20 +186,21 @@ def _badges_for(telegram_id: int) -> list[str]:
 
 
 def _keyboard(admin: bool = False) -> InlineKeyboardMarkup:
-    """Main menu: stacked full-width buttons, coloured via Bot API 9.4 `style`.
+    """Main menu, organised 1-2-1: one wide button, two side by side, one wide.
 
-    Only three styles exist (primary=blue, success=green, danger=red) and
+    Button styles are Bot API 9.4 `style` (primary=blue, success=green);
     older Telegram clients ignore them, so the labels carry the meaning too
     (emoji + words) and at most two buttons per keyboard are styled.
-    Admins get an extra Admin Panel button at the bottom.
+    Admins get an extra Admin Panel button on its own row at the bottom.
     """
     rows = []
     if settings.mini_app_url:
         rows.append([InlineKeyboardButton("Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url), style="primary", icon_custom_emoji_id=EMOJI_CROWN)])
-    rows.append([InlineKeyboardButton("Check My Status", callback_data="__status__", style="success", icon_custom_emoji_id=EMOJI_CHART)])
+    middle = [InlineKeyboardButton("Check My Status", callback_data="__status__", style="success", icon_custom_emoji_id=EMOJI_CHART)]
     predict_url = _predict_url()
     if predict_url:
-        rows.append([InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=predict_url), icon_custom_emoji_id=EMOJI_DIAMOND)])
+        middle.append(InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=predict_url), icon_custom_emoji_id=EMOJI_DIAMOND))
+    rows.append(middle)
     rows.append([InlineKeyboardButton("Help", callback_data="__help__", icon_custom_emoji_id=EMOJI_THINKING)])
     if admin:
         rows.append([InlineKeyboardButton("🛡 Admin Panel", callback_data="__admin__", icon_custom_emoji_id=EMOJI_CROWN)])
@@ -329,11 +321,35 @@ def _admin_dashboard() -> tuple[str, list, InlineKeyboardMarkup]:
     else:
         segments.append(("\n\nNo submissions yet.", None))
     text, entities = _render(segments)
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📋 Pending queue", callback_data="admin:pending"),
-        InlineKeyboardButton("🔄 Refresh", callback_data="admin:refresh:d"),
-    ]])
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📋 Pending queue", callback_data="admin:pending"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="admin:refresh:d"),
+        ],
+        [InlineKeyboardButton("👥 Manage Admins", callback_data="admin:admins")],
+    ])
     return text, entities, keyboard
+
+
+def _admins_view() -> tuple[str, InlineKeyboardMarkup]:
+    """Every admin (server config first, then bot-added) with remove buttons."""
+    db = get_session_factory(settings.database_url)()
+    try:
+        rows = list_db_admins(db)
+    finally:
+        db.close()
+    lines = ["Admins:"]
+    keyboard_rows = []
+    for tid in settings.admin_telegram_ids:
+        lines.append(f"• {tid} (server config)")
+    for r in rows:
+        lines.append(f"• {r.telegram_id} (added by {r.added_by_telegram_id})")
+        keyboard_rows.append([
+            InlineKeyboardButton(f"❌ Remove {r.telegram_id}", callback_data=f"admin:remove:{r.telegram_id}")
+        ])
+    keyboard_rows.append([InlineKeyboardButton("➕ Add Admin", callback_data="admin:add")])
+    keyboard_rows.append([InlineKeyboardButton("⬅️ Back to Panel", callback_data="admin:dashboard")])
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
 
 def _pending_view() -> tuple[str, InlineKeyboardMarkup]:
@@ -390,35 +406,95 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(dtext, entities=dentities, reply_markup=dkeyboard)
 
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin = _is_admin(update.effective_user.id)
-    text, entities = _help_text(admin=admin)
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+def _stats_text(telegram_id: int) -> tuple[str, list]:
+    """Public live stats: real platform numbers + the caller's badges."""
+    db = get_session_factory(settings.database_url)()
+    try:
+        total_users = db.query(User).count()
+        total_subs = db.query(Submission).count()
+        verified = db.query(Submission).filter(Submission.status == "verified").count()
+        pending = db.query(Submission).filter(Submission.status.in_(ACTIVE_STATUSES)).count()
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        verified_today = db.query(Submission).filter(
+            Submission.status == "verified", Submission.updated_at >= today_start
+        ).count()
+        acc_rows = db.query(SignalRecord).filter(SignalRecord.timer == "1m").all()
+        settled = [r for r in acc_rows if r.correct is not None]
+        correct = sum(1 for r in settled if r.correct)
+    finally:
+        db.close()
+    badges = _badges_for(telegram_id)
+    segments = [
+        ("📊", ("custom", EMOJI_CHART)),
+        (" ", None),
+        ("VerifyHub — live stats", "bold"),
+        ("\n\n", None),
+        (f"Users: {total_users}  ·  Submissions: {total_subs}", None),
+        ("\n", None),
+        (f"Verified: {verified}  ·  Verified today: {verified_today}  ·  Waiting: {pending}", None),
+    ]
+    if settled:
+        acc = round(correct / len(settled) * 100, 1)
+        segments.append((f"\nSignals (1m): {len(settled)} settled, {correct} right — {acc}%", None))
+    else:
+        segments.append(("\nSignals (1m): no settled signals yet.", None))
+    try:
+        live = get_live()
+        segments.append((f"\n\nLive WinGo 1m: period …{live['period'][-4:]} ends in {live['ends_in_seconds']}s", None))
+    except Exception:
+        logger.debug("Live period unavailable for stats.")
+    if badges:
+        segments.append(("\n\nYour badges: ", "bold"))
+        segments.append((" · ".join(badges), None))
+    else:
+        segments.append(("\n\nNo badges yet — get verified to earn your first one.", None))
+    return _render(segments)
 
 
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin = _is_admin(update.effective_user.id)
-    status, row, _ = _latest_status(update.effective_user.id)
-    text, entities = _status_card(status, row, badges=_badges_for(update.effective_user.id))
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Plain-text replies: today only the add-admin ID prompt.
 
-
-async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin only: the full panel — stats, recent rows, queue + refresh."""
-    if not _is_admin(update.effective_user.id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
+    When an admin taps ➕ Add Admin, the bot asks for a Telegram ID and
+    waits for the reply here (a context.user_data flag). Anything else is
+    ignored — the bot is button-driven, so stray text gets a gentle nudge.
+    """
+    user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+    if context.user_data.get("awaiting") == "add_admin" and _is_admin(user_id):
+        # The prompt stays open until the admin succeeds or taps Cancel,
+        # so a wrong number is just a retry, not a dead end.
+        if not text.isdigit():
+            await update.message.reply_text(
+                "That doesn't look like a Telegram ID — send just the number.",
+                reply_markup=_keyboard(admin=True),
+            )
+            return
+        new_id = int(text)
+        if settings.is_admin(new_id):
+            await update.message.reply_text(
+                "That user is already an admin (set in the server config).",
+                reply_markup=_keyboard(admin=True),
+            )
+            return
+        db = get_session_factory(settings.database_url)()
+        try:
+            ok, error = add_admin(db, telegram_id=new_id, added_by=user_id)
+        finally:
+            db.close()
+        if not ok:
+            await update.message.reply_text(error, reply_markup=_keyboard(admin=True))
+            return
+        context.user_data.pop("awaiting", None)
+        reply_text, entities = _render([
+            ("✅", ("custom", EMOJI_CHECK)),
+            (f" {new_id} is now an admin. They get the Admin Panel button and full admin access.", None),
+        ])
+        await update.message.reply_text(reply_text, entities=entities, reply_markup=_keyboard(admin=True))
         return
-    text, entities, keyboard = _admin_dashboard()
-    await update.message.reply_text(text, entities=entities, reply_markup=keyboard)
-
-
-async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin only: the review queue, newest first, with one-tap actions."""
-    if not _is_admin(update.effective_user.id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
-        return
-    text, keyboard = _pending_view()
-    await update.message.reply_text(text, reply_markup=keyboard)
+    await update.message.reply_text(
+        "Use the buttons below — tap /start if they are not showing.",
+        reply_markup=_keyboard(admin=_is_admin(user_id)),
+    )
 
 
 async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, message: str | None):
@@ -468,219 +544,12 @@ async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, me
     return text, entities, None
 
 
-async def _admin_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to_status: str, command: str) -> None:
-    """Shared /approve /reject /needinfo: ``<id> [review message]``.
-
-    Uses the same transition as the Mini App admin (services), so the
-    history, audit trail and user notification are identical either way.
-    """
-    admin_id = update.effective_user.id
-    if not _is_admin(admin_id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
-        return
-    args = list(context.args or [])
-    if not args:
-        await update.message.reply_text(
-            f"Usage: /{command} <submission id> [review message]", reply_markup=_keyboard(admin=True)
-        )
-        return
-    try:
-        submission_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text(
-            f"'{args[0]}' is not a submission id. Usage: /{command} <submission id> [review message]",
-            reply_markup=_keyboard(admin=True),
-        )
-        return
-    message = " ".join(args[1:]).strip() or None
-    text, entities, error = await _do_admin_action(admin_id, submission_id, to_status, message)
-    if error is not None:
-        await update.message.reply_text(error, reply_markup=_keyboard(admin=True))
-        return
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=True))
-
-
-async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _admin_change(update, context, to_status="verified", command="approve")
-
-
-async def reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _admin_change(update, context, to_status="rejected", command="reject")
-
-
-async def needinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _admin_change(update, context, to_status="info_required", command="needinfo")
-
-
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Public live stats: real platform numbers + the caller's badges."""
-    db = get_session_factory(settings.database_url)()
-    try:
-        total_users = db.query(User).count()
-        total_subs = db.query(Submission).count()
-        verified = db.query(Submission).filter(Submission.status == "verified").count()
-        pending = db.query(Submission).filter(Submission.status.in_(ACTIVE_STATUSES)).count()
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        verified_today = db.query(Submission).filter(
-            Submission.status == "verified", Submission.updated_at >= today_start
-        ).count()
-        acc_rows = db.query(SignalRecord).filter(SignalRecord.timer == "1m").all()
-        settled = [r for r in acc_rows if r.correct is not None]
-        correct = sum(1 for r in settled if r.correct)
-    finally:
-        db.close()
-    badges = _badges_for(update.effective_user.id)
-    segments = [
-        ("📊", ("custom", EMOJI_CHART)),
-        (" ", None),
-        ("VerifyHub — live stats", "bold"),
-        ("\n\n", None),
-        (f"Users: {total_users}  ·  Submissions: {total_subs}", None),
-        ("\n", None),
-        (f"Verified: {verified}  ·  Verified today: {verified_today}  ·  Waiting: {pending}", None),
-    ]
-    if settled:
-        acc = round(correct / len(settled) * 100, 1)
-        segments.append((f"\nSignals (1m): {len(settled)} settled, {correct} right — {acc}%", None))
-    else:
-        segments.append(("\nSignals (1m): no settled signals yet.", None))
-    try:
-        live = get_live()
-        segments.append((f"\n\nLive WinGo 1m: period …{live['period'][-4:]} ends in {live['ends_in_seconds']}s", None))
-    except Exception:
-        logger.debug("Live period unavailable for /stats.")
-    if badges:
-        segments.append(("\n\nYour badges: ", "bold"))
-        segments.append((" · ".join(badges), None))
-    else:
-        segments.append(("\n\nNo badges yet — get verified to earn your first one.", None))
-    text, entities = _render(segments)
-    await update.message.reply_text(
-        text, entities=entities, reply_markup=_keyboard(admin=_is_admin(update.effective_user.id))
-    )
-
-
-async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin only: add another admin by Telegram id (stored in the DB)."""
-    admin_id = update.effective_user.id
-    if not _is_admin(admin_id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
-        return
-    args = list(context.args or [])
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /addadmin <telegram id>", reply_markup=_keyboard(admin=True))
-        return
-    new_id = int(args[0])
-    if settings.is_admin(new_id):
-        await update.message.reply_text(
-            "That user is already an admin (set in the server config).", reply_markup=_keyboard(admin=True)
-        )
-        return
-    db = get_session_factory(settings.database_url)()
-    try:
-        ok, error = add_admin(db, telegram_id=new_id, added_by=admin_id)
-    finally:
-        db.close()
-    if not ok:
-        await update.message.reply_text(error, reply_markup=_keyboard(admin=True))
-        return
-    text, entities = _render([
-        ("✅", ("custom", EMOJI_CHECK)),
-        (f" {new_id} is now an admin. They can use /admin, /pending, /approve and the Admin Panel.", None),
-    ])
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=True))
-
-
-async def removeadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin only: remove a bot-added admin (server-config admins stay)."""
-    admin_id = update.effective_user.id
-    if not _is_admin(admin_id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
-        return
-    args = list(context.args or [])
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /removeadmin <telegram id>", reply_markup=_keyboard(admin=True))
-        return
-    target = int(args[0])
-    if target == admin_id:
-        await update.message.reply_text("You cannot remove yourself.", reply_markup=_keyboard(admin=True))
-        return
-    if settings.is_admin(target):
-        await update.message.reply_text(
-            "That admin is set in the server config — remove them from ADMIN_TELEGRAM_IDS on Render.",
-            reply_markup=_keyboard(admin=True),
-        )
-        return
-    db = get_session_factory(settings.database_url)()
-    try:
-        ok, error = remove_admin(db, telegram_id=target)
-    finally:
-        db.close()
-    if not ok:
-        await update.message.reply_text(error, reply_markup=_keyboard(admin=True))
-        return
-    text, entities = _render([
-        ("✅", ("custom", EMOJI_CHECK)),
-        (f" {target} is no longer an admin.", None),
-    ])
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=True))
-
-
-async def admins_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin only: every admin — server config first, then bot-added."""
-    if not _is_admin(update.effective_user.id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
-        return
-    db = get_session_factory(settings.database_url)()
-    try:
-        rows = list_db_admins(db)
-    finally:
-        db.close()
-    lines = ["Admins:"]
-    for tid in settings.admin_telegram_ids:
-        lines.append(f"• {tid} (server config)")
-    for r in rows:
-        lines.append(f"• {r.telegram_id} (added by {r.added_by_telegram_id})")
-    await update.message.reply_text("\n".join(lines), reply_markup=_keyboard(admin=True))
-
-
 def _predict_url() -> str | None:
     """Mini App URL that opens straight on the Prediction tab."""
     if not settings.mini_app_url:
         return None
     sep = "&" if "?" in settings.mini_app_url else "?"
     return settings.mini_app_url + sep + "startapp=prediction"
-
-
-async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    url = _predict_url()
-    if url is None:
-        await update.message.reply_text(
-            "The verification panel is not configured yet — ask the administrator to set MINI_APP_URL."
-        )
-        return
-    text, entities = _render([
-        ("💎", ("custom", EMOJI_DIAMOND)),
-        (" ", None),
-        ("WinGo predictions", "bold"),
-        ("\n\n", None),
-        ("📈", ("custom", EMOJI_CHART_UP)),
-        (" Live results, history and the next-period signal — for verified users only.", None),
-        ("\n\nTap below to open the predictions.", None),
-    ])
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=url), style="success", icon_custom_emoji_id=EMOJI_DIAMOND)]]
-    )
-    await update.message.reply_text(text, entities=entities, reply_markup=keyboard)
-
-
-async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # There is no multi-step conversation in this bot, so cancel is a safe
-    # no-op acknowledgement — it never deletes data.
-    await update.message.reply_text(
-        "Nothing pending to cancel. You can continue with /start or check /status.",
-        reply_markup=_keyboard(admin=_is_admin(update.effective_user.id)),
-    )
 
 
 async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -691,7 +560,12 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
     if data == "__help__":
         text, entities = _help_text(admin=admin)
-        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+        help_rows = [[InlineKeyboardButton("📊 Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)]]
+        help_rows += _keyboard(admin=admin).inline_keyboard
+        await query.message.reply_text(text, entities=entities, reply_markup=InlineKeyboardMarkup(help_rows))
+    elif data == "__stats__":
+        text, entities = _stats_text(admin_id)
+        await query.edit_message_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
     elif data == "__status__":
         status, row, _ = _latest_status(admin_id)
         text, entities = _status_card(status, row, badges=_badges_for(admin_id))
@@ -719,15 +593,64 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 text, keyboard = _pending_view()
                 await query.edit_message_text(text, reply_markup=keyboard)
             return
+        if data == "admin:admins":
+            text, keyboard = _admins_view()
+            await query.edit_message_text(text, reply_markup=keyboard)
+            return
+        if data == "admin:add":
+            context.user_data["awaiting"] = "add_admin"
+            await query.edit_message_text(
+                "Send the Telegram ID of the new admin (just the number).",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-add"),
+                ]]),
+            )
+            return
+        if data == "admin:cancel-add":
+            context.user_data.pop("awaiting", None)
+            text, keyboard = _admins_view()
+            await query.edit_message_text(text, reply_markup=keyboard)
+            return
         parts = data.split(":")
+        if len(parts) == 3 and parts[1] == "remove":
+            try:
+                target = int(parts[2])
+            except ValueError:
+                return
+            if target == admin_id:
+                await query.message.reply_text("You cannot remove yourself.", reply_markup=_keyboard(admin=True))
+                return
+            if settings.is_admin(target):
+                await query.message.reply_text(
+                    "That admin is set in the server config — remove them from ADMIN_TELEGRAM_IDS on Render.",
+                    reply_markup=_keyboard(admin=True),
+                )
+                return
+            db = get_session_factory(settings.database_url)()
+            try:
+                ok, error = remove_admin(db, telegram_id=target)
+            finally:
+                db.close()
+            if not ok:
+                await query.message.reply_text(error, reply_markup=_keyboard(admin=True))
+                return
+            text, entities = _render([
+                ("✅", ("custom", EMOJI_CHECK)),
+                (f" {target} is no longer an admin.", None),
+            ])
+            atext, akeyboard = _admins_view()
+            await query.edit_message_text(
+                text + "\n\n" + atext, entities=entities, reply_markup=akeyboard
+            )
+            return
         if len(parts) == 4 and parts[1] in ("approve", "reject", "info"):
             try:
                 sid = int(parts[2])
             except ValueError:
                 return
             to_status = {"approve": "verified", "reject": "rejected", "info": "info_required"}[parts[1]]
-            # One-tap decisions carry a default review message; the admin
-            # can still use /reject <id> <message> for a custom one first.
+            # One-tap decisions carry a default review message; a custom
+            # message can be set from the Mini App admin tab instead.
             message = {
                 "verified": None,
                 "rejected": "Your submission was not approved by the administrator.",
@@ -749,41 +672,16 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
 
-def _user_commands() -> list[BotCommand]:
-    """The command menu every user sees when they type '/'."""
-    return [
-        BotCommand("start", "Open the verification panel"),
-        BotCommand("status", "Check your submission status"),
-        BotCommand("predict", "Open WinGo predictions (verified users)"),
-        BotCommand("stats", "Live platform stats + your badges"),
-        BotCommand("help", "How VerifyHub works"),
-        BotCommand("cancel", "Cancel any pending operation"),
-    ]
+async def clear_bot_commands(bot) -> None:
+    """Remove the Telegram command menu (default + per-admin scopes).
 
-
-def _admin_commands() -> list[BotCommand]:
-    """The full menu admins see: everything above plus admin tools."""
-    return _user_commands() + [
-        BotCommand("admin", "Open the admin panel"),
-        BotCommand("pending", "Submissions waiting for review"),
-        BotCommand("approve", "Mark a submission verified"),
-        BotCommand("reject", "Mark a submission rejected"),
-        BotCommand("needinfo", "Ask for more information"),
-        BotCommand("addadmin", "Add an admin"),
-        BotCommand("removeadmin", "Remove a bot-added admin"),
-        BotCommand("admins", "List all admins"),
-    ]
-
-
-async def sync_bot_commands(bot) -> None:
-    """Set the Telegram command menu: users see the basics, admins see all.
-
-    Runs at startup (post_init) so the menu always matches the code.
-    Never raises — a failed sync only means the menu is stale, and the
-    bot must keep working.
+    The bot is button-only now: /start is the only entry point and every
+    action lives on an inline keyboard. Runs at startup (post_init) so a
+    stale menu left by an older deploy is cleared too. Never raises — a
+    failed clear only means the menu is stale, and the bot keeps working.
     """
     try:
-        await bot.set_my_commands(_user_commands(), scope=BotCommandScopeDefault())
+        await bot.delete_my_commands(scope=BotCommandScopeDefault())
         admin_ids = list(settings.admin_telegram_ids)
         db = get_session_factory(settings.database_url)()
         try:
@@ -791,32 +689,26 @@ async def sync_bot_commands(bot) -> None:
         finally:
             db.close()
         for admin_id in dict.fromkeys(admin_ids):
-            await bot.set_my_commands(_admin_commands(), scope=BotCommandScopeChat(chat_id=admin_id))
+            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
     except Exception:
-        logger.exception("Failed to sync bot command menu.")
+        logger.exception("Failed to clear bot command menu.")
 
 
 async def _post_init(application: Application) -> None:
-    await sync_bot_commands(application.bot)
+    await clear_bot_commands(application.bot)
 
 
 def register_handlers(app: Application) -> None:
-    """Register every VerifyHub handler on the given Application."""
+    """Register every VerifyHub handler on the given Application.
+
+    Button-only by design: /start is the sole command (the entry point
+    that shows the inline keyboard); every other action is a button tap
+    (CallbackQueryHandler) or a plain-text reply to a bot prompt
+    (MessageHandler, e.g. the add-admin ID).
+    """
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("predict", predict_cmd))
-    app.add_handler(CommandHandler("cancel", cancel_cmd))
-    app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CommandHandler("pending", pending_cmd))
-    app.add_handler(CommandHandler("approve", approve_cmd))
-    app.add_handler(CommandHandler("reject", reject_cmd))
-    app.add_handler(CommandHandler("needinfo", needinfo_cmd))
-    app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(CommandHandler("addadmin", addadmin_cmd))
-    app.add_handler(CommandHandler("removeadmin", removeadmin_cmd))
-    app.add_handler(CommandHandler("admins", admins_cmd))
     app.add_handler(CallbackQueryHandler(_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
 
 
 def build_telegram_application(bot_token: str, *, with_updater: bool) -> Application:

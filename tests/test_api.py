@@ -234,17 +234,18 @@ def test_webhook_without_bot_token_is_ignored(monkeypatch):
 
 
 def test_telegram_application_builds_with_all_handlers():
-    from telegram.ext import CallbackQueryHandler, CommandHandler
+    from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 
     from app.bot_handlers import build_telegram_application
 
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
     handlers = [h for group in app.handlers.values() for h in group]
-    assert len(handlers) == 15
+    assert len(handlers) == 3
     commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
-    assert commands == ["addadmin", "admin", "admins", "approve", "cancel", "help", "needinfo", "pending", "predict", "reject", "removeadmin", "start", "stats", "status"]
+    assert commands == ["start"]  # /start is the only command: the entry point
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
+    assert sum(isinstance(h, MessageHandler) for h in handlers) == 1
 
 
 def test_main_keyboard_is_colourful_and_complete():
@@ -262,6 +263,14 @@ def test_main_keyboard_is_colourful_and_complete():
     )
 
     buttons = [b for row in _keyboard().inline_keyboard for b in row]
+    rows = _keyboard().inline_keyboard
+    assert [len(r) for r in rows] == [1, 2, 1]  # organised 1-2-1
+    assert rows[0][0].text == "Open Verification Panel"
+    assert [b.text for b in rows[1]] == ["Check My Status", "Open Predictions"]
+    assert rows[2][0].text == "Help"
+    admin_rows = _keyboard(admin=True).inline_keyboard
+    assert [len(r) for r in admin_rows] == [1, 2, 1, 1]
+    assert admin_rows[3][0].text == "🛡 Admin Panel"
     by_text = {b.text: b for b in buttons}
     assert by_text["Open Verification Panel"].style == "primary"
     assert by_text["Open Verification Panel"].icon_custom_emoji_id == EMOJI_CROWN
@@ -313,7 +322,8 @@ def test_welcome_and_help_texts_use_premium_emojis():
 
     text, entities = _help_text()
     assert "VerifyHub — how it works" in text
-    assert "/start — open the panel" in text
+    assert "Open Verification Panel" in text
+    assert "/start" not in text and "/status" not in text  # button-only: no commands
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert EMOJI_CROWN in customs
 
@@ -359,7 +369,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
         )
 
     assert _sig(polling) == _sig(webhook)
-    assert len([h for group in polling.handlers.values() for h in group]) == 15
+    assert len([h for group in polling.handlers.values() for h in group]) == 3
 
 
 # ---------------- Production hardening (DB failures, webhook secret, health) ----------------
@@ -506,7 +516,7 @@ def _fake_update(user_id, args=None):
 
     message = SimpleNamespace(reply_text=AsyncMock())
     update = SimpleNamespace(effective_user=SimpleNamespace(id=user_id), message=message)
-    context = SimpleNamespace(args=list(args or []))
+    context = SimpleNamespace(args=list(args or []), user_data={})
     return update, context, message
 
 
@@ -539,18 +549,18 @@ def _submission_status(sid):
         db.close()
 
 
-def test_admin_commands_refuse_non_admin():
+def test_admin_buttons_refuse_non_admin():
     import asyncio
 
-    from app.bot_handlers import approve_cmd, pending_cmd
+    from app.bot_handlers import _button
 
     sid = _make_submission(555, "ADMINCMD1")
-    update, context, message = _fake_update(USER_ID)
-    asyncio.run(pending_cmd(update, context))
+    update, query, message = _fake_query(USER_ID, "admin:pending")
+    asyncio.run(_button(update, None))
     assert "for admins only" in message.reply_text.await_args.args[0]
 
-    update, context, message = _fake_update(USER_ID, [str(sid)])
-    asyncio.run(approve_cmd(update, context))
+    update, query, message = _fake_query(USER_ID, f"admin:approve:{sid}:p")
+    asyncio.run(_button(update, None))
     assert "for admins only" in message.reply_text.await_args.args[0]
     assert _submission_status(sid)[0] == "pending_review"
 
@@ -558,13 +568,13 @@ def test_admin_commands_refuse_non_admin():
 def test_admin_pending_lists_waiting_submissions():
     import asyncio
 
-    from app.bot_handlers import pending_cmd
+    from app.bot_handlers import _button
 
     sid1 = _make_submission(556, "ADMINCMD2")
     sid2 = _make_submission(557, "ADMINCMD3")
-    update, context, message = _fake_update(ADMIN_ID)
-    asyncio.run(pending_cmd(update, context))
-    text = message.reply_text.await_args.args[0]
+    update, query, message = _fake_query(ADMIN_ID, "admin:pending")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
     assert f"#{sid1}" in text and "ADMINCMD2" in text
     assert f"#{sid2}" in text and "ADMINCMD3" in text
 
@@ -573,19 +583,19 @@ def test_admin_approve_marks_verified_and_notifies(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock
 
-    from app.bot_handlers import approve_cmd
+    from app.bot_handlers import _button
     from app.db import AuditEvent, ReviewHistory, get_session_factory
 
     notified = AsyncMock(return_value=True)
     monkeypatch.setattr("app.bot_handlers.notify_user", notified)
     sid = _make_submission(558, "ADMINCMD4")
-    update, context, message = _fake_update(ADMIN_ID, [str(sid), "Welcome!"])
-    asyncio.run(approve_cmd(update, context))
-    text = message.reply_text.await_args.args[0]
+    update, query, message = _fake_query(ADMIN_ID, f"admin:approve:{sid}:p")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
     assert f"Submission #{sid} verified." in text
     assert "The user has been notified." in text
     status, review = _submission_status(sid)
-    assert status == "verified" and review == "Welcome!"
+    assert status == "verified" and review is None  # one-tap approve carries no custom message
     db = get_session_factory(os.environ["DATABASE_URL"])()
     try:
         assert db.query(ReviewHistory).filter(ReviewHistory.submission_id == sid).count() == 1
@@ -596,68 +606,57 @@ def test_admin_approve_marks_verified_and_notifies(monkeypatch):
         db.close()
     notified.assert_awaited_once()
     call = notified.await_args.args
-    assert call[1] == 558 and call[2] == "verified" and call[3] == "Welcome!"
+    assert call[1] == 558 and call[2] == "verified" and call[3] is None
 
 
 def test_admin_approve_rejects_bad_id_and_terminal():
     import asyncio
 
-    from app.bot_handlers import approve_cmd
+    from app.bot_handlers import _button
 
-    update, context, message = _fake_update(ADMIN_ID, ["999999"])
-    asyncio.run(approve_cmd(update, context))
+    update, query, message = _fake_query(ADMIN_ID, "admin:approve:999999:p")
+    asyncio.run(_button(update, None))
     assert "Submission not found." in message.reply_text.await_args.args[0]
 
-    update, context, message = _fake_update(ADMIN_ID, ["abc"])
-    asyncio.run(approve_cmd(update, context))
-    assert "not a submission id" in message.reply_text.await_args.args[0]
-
-    update, context, message = _fake_update(ADMIN_ID, [])
-    asyncio.run(approve_cmd(update, context))
-    assert "Usage: /approve" in message.reply_text.await_args.args[0]
-
     sid = _make_submission(559, "ADMINCMD5", status="verified")
-    update, context, message = _fake_update(ADMIN_ID, [str(sid)])
-    asyncio.run(approve_cmd(update, context))
+    update, query, message = _fake_query(ADMIN_ID, f"admin:approve:{sid}:p")
+    asyncio.run(_button(update, None))
     assert "Cannot move a submission from verified to verified." in message.reply_text.await_args.args[0]
 
 
-def test_admin_reject_requires_message_and_needinfo(monkeypatch):
+def test_admin_queue_buttons_apply_default_messages(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock
 
-    from app.bot_handlers import needinfo_cmd, reject_cmd
+    from app.bot_handlers import _button
 
     monkeypatch.setattr("app.bot_handlers.notify_user", AsyncMock(return_value=True))
     sid = _make_submission(560, "ADMINCMD6")
-    update, context, message = _fake_update(ADMIN_ID, [str(sid)])
-    asyncio.run(reject_cmd(update, context))
-    assert "review message is required" in message.reply_text.await_args.args[0]
-    assert _submission_status(sid)[0] == "pending_review"
-
-    update, context, message = _fake_update(ADMIN_ID, [str(sid), "Not eligible"])
-    asyncio.run(reject_cmd(update, context))
-    assert f"Submission #{sid} rejected." in message.reply_text.await_args.args[0]
-    assert _submission_status(sid)[0] == "rejected"
+    update, query, message = _fake_query(ADMIN_ID, f"admin:reject:{sid}:p")
+    asyncio.run(_button(update, None))
+    assert f"Submission #{sid} rejected." in query.edit_message_text.await_args.args[0]
+    assert _submission_status(sid) == ("rejected", "Your submission was not approved by the administrator.")
 
     sid2 = _make_submission(561, "ADMINCMD7")
-    update, context, message = _fake_update(ADMIN_ID, [str(sid2), "Please send a clearer screenshot"])
-    asyncio.run(needinfo_cmd(update, context))
-    assert "needing more information" in message.reply_text.await_args.args[0]
-    assert _submission_status(sid2) == ("info_required", "Please send a clearer screenshot")
+    update, query, message = _fake_query(ADMIN_ID, f"admin:info:{sid2}:p")
+    asyncio.run(_button(update, None))
+    assert "needing more information" in query.edit_message_text.await_args.args[0]
+    assert _submission_status(sid2) == (
+        "info_required",
+        "Additional information is required. Please check the verification panel.",
+    )
 
 
-def test_help_lists_admin_commands_only_for_admin():
+def test_help_has_no_commands_and_mentions_admin_panel_only_for_admin():
     from app.bot_handlers import _help_text
 
     text, _ = _help_text(admin=True)
-    assert "/approve <id>" in text and "/pending" in text
-    assert "/addadmin" in text and "/admins" in text
-    assert "/stats" in text
+    assert "Admin Panel" in text
+    assert "/approve" not in text and "/addadmin" not in text
     text, _ = _help_text()
-    assert "/approve" not in text and "/pending" not in text
-    assert "/addadmin" not in text
-    assert "/stats" in text
+    assert "Admin Panel" not in text
+    assert "/start" not in text and "/status" not in text
+    assert "Buttons" in text
 
 
 # ---------------- Admin panel + instant admin alerts ----------------
@@ -739,19 +738,20 @@ def test_submission_notifies_admins(monkeypatch):
 def test_admin_dashboard_shows_stats():
     import asyncio
 
-    from app.bot_handlers import admin_cmd
+    from app.bot_handlers import _button
 
     _make_submission(570, "DASH1")
     _make_submission(571, "DASH2")
     _make_submission(572, "DASH3", status="verified")
-    update, context, message = _fake_update(ADMIN_ID)
-    asyncio.run(admin_cmd(update, context))
+    update, query, message = _fake_query(ADMIN_ID, "__admin__")
+    asyncio.run(_button(update, None))
     text = message.reply_text.await_args.args[0]
     assert "Admin Panel" in text
     assert "Pending:" in text and "Verified:" in text
     assert "DASH1" in text and "DASH2" in text and "DASH3" in text
     keyboard = message.reply_text.await_args.kwargs["reply_markup"]
     assert keyboard.inline_keyboard[0][0].callback_data == "admin:pending"
+    assert keyboard.inline_keyboard[1][0].callback_data == "admin:admins"
 
 
 def test_admin_approve_button_edits_notification(monkeypatch):
@@ -800,18 +800,18 @@ def test_start_shows_dashboard_to_admin():
 def test_admin_keyboard_has_panel_button_only_for_admin():
     from app.bot_handlers import _keyboard
 
-    admin_buttons = [b for row in _keyboard(admin=True).inline_keyboard for b in row]
-    assert any(b.text == "🛡 Admin Panel" and b.callback_data == "__admin__" for b in admin_buttons)
-    user_buttons = [b for row in _keyboard().inline_keyboard for b in row]
-    assert all(b.text != "🛡 Admin Panel" for b in user_buttons)
+    admin_rows = _keyboard(admin=True).inline_keyboard
+    assert admin_rows[3][0].text == "🛡 Admin Panel" and admin_rows[3][0].callback_data == "__admin__"
+    user_rows = _keyboard().inline_keyboard
+    assert all(b.text != "🛡 Admin Panel" for row in user_rows for b in row)
 
 
 # ---------------- Live stats, badges, admin management ----------------
 
-def test_stats_command_shows_live_numbers(monkeypatch):
+def test_stats_button_shows_live_numbers(monkeypatch):
     import asyncio
 
-    from app.bot_handlers import stats_cmd
+    from app.bot_handlers import _button
     from app.db import SignalRecord, get_session_factory
 
     # Seed honest accuracy data: 3 settled 1m signals, 2 right.
@@ -826,28 +826,28 @@ def test_stats_command_shows_live_numbers(monkeypatch):
         "app.bot_handlers.get_live",
         lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
     )
-    update, context, message = _fake_update(USER_ID)
-    asyncio.run(stats_cmd(update, context))
-    text = message.reply_text.await_args.args[0]
+    update, query, message = _fake_query(USER_ID, "__stats__")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
     assert "VerifyHub — live stats" in text
     assert "Users:" in text and "Verified:" in text
     assert "Signals (1m): 3 settled, 2 right — 66.7%" in text
     assert "Live WinGo 1m: period …0952 ends in 42s" in text
 
 
-def test_stats_command_without_live_period(monkeypatch):
+def test_stats_button_without_live_period(monkeypatch):
     import asyncio
 
-    from app.bot_handlers import stats_cmd
+    from app.bot_handlers import _button
     from app.prediction import ProviderError
 
     def _boom():
         raise ProviderError("down")
 
     monkeypatch.setattr("app.bot_handlers.get_live", _boom)
-    update, context, message = _fake_update(USER_ID)
-    asyncio.run(stats_cmd(update, context))
-    text = message.reply_text.await_args.args[0]
+    update, query, message = _fake_query(USER_ID, "__stats__")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
     assert "VerifyHub — live stats" in text
     assert "Live WinGo" not in text
 
@@ -888,120 +888,122 @@ def test_badges_come_from_real_data():
     assert _badges_for(999999) == []
 
 
-def test_status_card_shows_badges():
+def test_status_button_shows_badges():
     import asyncio
 
-    from app.bot_handlers import status_cmd
+    from app.bot_handlers import _button
 
     _make_submission(581, "BADGE3", status="verified")
-    update, context, message = _fake_update(581)
-    asyncio.run(status_cmd(update, context))
+    update, query, message = _fake_query(581, "__status__")
+    asyncio.run(_button(update, None))
     text = message.reply_text.await_args.args[0]
     assert "Badges:" in text and "✅ Verified" in text
 
 
 def test_admin_add_remove_admins():
     import asyncio
+    from types import SimpleNamespace
 
-    from app.bot_handlers import addadmin_cmd, admins_cmd, pending_cmd, removeadmin_cmd
+    from app.bot_handlers import _button, _handle_text
 
-    # Non-admin cannot add.
-    update, context, message = _fake_update(USER_ID, ["777"])
-    asyncio.run(addadmin_cmd(update, context))
+    # Non-admin cannot open the admins view.
+    update, query, message = _fake_query(USER_ID, "admin:admins")
+    asyncio.run(_button(update, None))
     assert "for admins only" in message.reply_text.await_args.args[0]
 
-    # Bad id + env admin.
-    update, context, message = _fake_update(ADMIN_ID, ["abc"])
-    asyncio.run(addadmin_cmd(update, context))
-    assert "Usage: /addadmin" in message.reply_text.await_args.args[0]
-    update, context, message = _fake_update(ADMIN_ID, [str(ADMIN_ID)])
-    asyncio.run(addadmin_cmd(update, context))
+    # Admins view lists the server admin; Add asks for an ID.
+    ctx = SimpleNamespace(user_data={})
+    update, query, message = _fake_query(ADMIN_ID, "admin:admins")
+    asyncio.run(_button(update, ctx))
+    text = query.edit_message_text.await_args.args[0]
+    assert str(ADMIN_ID) in text and "(server config)" in text
+    keyboard = query.edit_message_text.await_args.kwargs["reply_markup"]
+    assert keyboard.inline_keyboard[-2][0].callback_data == "admin:add"
+
+    update, query, message = _fake_query(ADMIN_ID, "admin:add")
+    asyncio.run(_button(update, ctx))
+    assert ctx.user_data.get("awaiting") == "add_admin"
+    assert "Telegram ID" in query.edit_message_text.await_args.args[0]
+
+    # A non-number is rejected and the prompt stays open.
+    update, context, message = _fake_update(ADMIN_ID)
+    context.user_data["awaiting"] = "add_admin"
+    message.text = "abc"
+    asyncio.run(_handle_text(update, context))
+    assert "doesn't look like a Telegram ID" in message.reply_text.await_args.args[0]
+    assert context.user_data.get("awaiting") == "add_admin"
+
+    # Adding the server admin is refused.
+    message.text = str(ADMIN_ID)
+    asyncio.run(_handle_text(update, context))
     assert "already an admin" in message.reply_text.await_args.args[0]
 
-    # Add 777, then 777 can run /pending.
-    update, context, message = _fake_update(ADMIN_ID, ["777"])
-    asyncio.run(addadmin_cmd(update, context))
+    # Add 777, then 777 can open the admins view.
+    message.text = "777"
+    asyncio.run(_handle_text(update, context))
     assert "777 is now an admin" in message.reply_text.await_args.args[0]
-    update, context, message = _fake_update(ADMIN_ID, ["777"])
-    asyncio.run(addadmin_cmd(update, context))
+    update, query, message = _fake_query(777, "admin:admins")
+    asyncio.run(_button(update, None))
+    assert "777" in query.edit_message_text.await_args.args[0]
+
+    # Duplicate add is refused.
+    update, context, message = _fake_update(ADMIN_ID)
+    context.user_data["awaiting"] = "add_admin"
+    message.text = "777"
+    asyncio.run(_handle_text(update, context))
     assert "already an admin" in message.reply_text.await_args.args[0]
-    update, context, message = _fake_update(777)
-    asyncio.run(pending_cmd(update, context))
-    assert "for admins only" not in message.reply_text.await_args.args[0]
 
     # A bot-added admin cannot remove the server-config admin.
-    update, context, message = _fake_update(777, [str(ADMIN_ID)])
-    asyncio.run(removeadmin_cmd(update, context))
+    update, query, message = _fake_query(777, f"admin:remove:{ADMIN_ID}")
+    asyncio.run(_button(update, None))
     assert "server config" in message.reply_text.await_args.args[0]
 
-    # /admins lists both.
-    update, context, message = _fake_update(ADMIN_ID)
-    asyncio.run(admins_cmd(update, context))
-    text = message.reply_text.await_args.args[0]
-    assert str(ADMIN_ID) in text and "(server config)" in text
-    assert "777" in text and "added by 111" in text
-
     # Cannot remove yourself; can remove 777.
-    update, context, message = _fake_update(ADMIN_ID, [str(ADMIN_ID)])
-    asyncio.run(removeadmin_cmd(update, context))
+    update, query, message = _fake_query(ADMIN_ID, f"admin:remove:{ADMIN_ID}")
+    asyncio.run(_button(update, None))
     assert "cannot remove yourself" in message.reply_text.await_args.args[0].lower()
-    update, context, message = _fake_update(ADMIN_ID, ["777"])
-    asyncio.run(removeadmin_cmd(update, context))
-    assert "777 is no longer an admin" in message.reply_text.await_args.args[0]
-    update, context, message = _fake_update(777)
-    asyncio.run(pending_cmd(update, context))
+    update, query, message = _fake_query(ADMIN_ID, "admin:remove:777")
+    asyncio.run(_button(update, None))
+    assert "777 is no longer an admin" in query.edit_message_text.await_args.args[0]
+    update, query, message = _fake_query(777, "admin:admins")
+    asyncio.run(_button(update, None))
     assert "for admins only" in message.reply_text.await_args.args[0]
-    update, context, message = _fake_update(ADMIN_ID, ["777"])
-    asyncio.run(removeadmin_cmd(update, context))
+    update, query, message = _fake_query(ADMIN_ID, "admin:remove:777")
+    asyncio.run(_button(update, None))
     assert "not an admin" in message.reply_text.await_args.args[0]
 
 
 def test_db_admin_can_use_api_admin_routes():
-    import asyncio
+    from app.db import get_session_factory
+    from app.services import add_admin
 
-    from app.bot_handlers import addadmin_cmd
-
-    # Add 778 through the bot command, then the API must accept them.
-    update, context, message = _fake_update(ADMIN_ID, ["778"])
-    asyncio.run(addadmin_cmd(update, context))
-    assert "778 is now an admin" in message.reply_text.await_args.args[0]
+    # Add 778 straight through the service, then the API must accept them.
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        ok, error = add_admin(db, telegram_id=778, added_by=ADMIN_ID)
+    finally:
+        db.close()
+    assert ok, error
     assert client.get("/api/admin/stats", headers=H(778)).status_code == 200
     assert client.get("/api/me", headers=H(778)).json()["is_admin"] is True
     assert client.get("/api/me", headers=H(666)).json()["is_admin"] is False
     assert client.get("/api/admin/stats", headers=H(666)).status_code == 403
 
 
-# ---------------- Organised command menu ----------------
+# ---------------- No command menu: button-only bot ----------------
 
-def test_command_menu_is_organised():
-    from app.bot_handlers import _admin_commands, _user_commands
-
-    user = [(c.command, c.description) for c in _user_commands()]
-    assert [c for c, _ in user] == ["start", "status", "predict", "stats", "help", "cancel"]
-    assert all(d for _, d in user)
-    admin = [(c.command, c.description) for c in _admin_commands()]
-    assert [c for c, _ in admin][:6] == [c for c, _ in user]
-    assert len(admin) == 14
-    assert "addadmin" in [c for c, _ in admin] and "admin" in [c for c, _ in admin]
-
-
-def test_sync_bot_commands_sets_user_and_admin_menus():
+def test_command_menu_is_cleared_at_startup():
     import asyncio
     from unittest.mock import AsyncMock
 
     import app.bot_handlers as handlers
 
     bot = AsyncMock()
-    asyncio.run(handlers.sync_bot_commands(bot))
-    calls = bot.set_my_commands.await_args_list
+    asyncio.run(handlers.clear_bot_commands(bot))
+    calls = bot.delete_my_commands.await_args_list
     default_calls = [c for c in calls if c.kwargs["scope"].type == "default"]
     assert len(default_calls) == 1
-    assert [cmd.command for cmd in default_calls[0].args[0]] == [
-        "start", "status", "predict", "stats", "help", "cancel",
-    ]
     chat_calls = [c for c in calls if c.kwargs["scope"].type == "chat"]
-    admin_menu = next(c for c in chat_calls if c.kwargs["scope"].chat_id == ADMIN_ID)
-    assert len(admin_menu.args[0]) == 14
-    assert [cmd.command for cmd in admin_menu.args[0]][:6] == [
-        "start", "status", "predict", "stats", "help", "cancel",
-    ]
+    assert any(c.kwargs["scope"].chat_id == ADMIN_ID for c in chat_calls)
+    # No command is ever set anymore: the bot is button-only.
+    assert bot.set_my_commands.await_count == 0
