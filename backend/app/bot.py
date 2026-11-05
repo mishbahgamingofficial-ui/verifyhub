@@ -16,7 +16,10 @@ Polling is the mode the paid Render Background Worker uses. On the free
 tier the bot instead runs via webhook inside the API service — same
 handlers, no worker needed.
 
-Commands: /start /help /status /predict /cancel
+Commands: /start /help /status /predict /stats /cancel — plus, for admins,
+/admin /pending /approve /reject /needinfo /addadmin /removeadmin /admins.
+The Telegram command menu is organised the same way (see
+bot_handlers.sync_bot_commands): users see the basics, admins see all.
 """
 from __future__ import annotations
 

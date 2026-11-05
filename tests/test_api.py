@@ -969,3 +969,39 @@ def test_db_admin_can_use_api_admin_routes():
     assert client.get("/api/me", headers=H(778)).json()["is_admin"] is True
     assert client.get("/api/me", headers=H(666)).json()["is_admin"] is False
     assert client.get("/api/admin/stats", headers=H(666)).status_code == 403
+
+
+# ---------------- Organised command menu ----------------
+
+def test_command_menu_is_organised():
+    from app.bot_handlers import _admin_commands, _user_commands
+
+    user = [(c.command, c.description) for c in _user_commands()]
+    assert [c for c, _ in user] == ["start", "status", "predict", "stats", "help", "cancel"]
+    assert all(d for _, d in user)
+    admin = [(c.command, c.description) for c in _admin_commands()]
+    assert [c for c, _ in admin][:6] == [c for c, _ in user]
+    assert len(admin) == 14
+    assert "addadmin" in [c for c, _ in admin] and "admin" in [c for c, _ in admin]
+
+
+def test_sync_bot_commands_sets_user_and_admin_menus():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import app.bot_handlers as handlers
+
+    bot = AsyncMock()
+    asyncio.run(handlers.sync_bot_commands(bot))
+    calls = bot.set_my_commands.await_args_list
+    default_calls = [c for c in calls if c.kwargs["scope"].type == "default"]
+    assert len(default_calls) == 1
+    assert [cmd.command for cmd in default_calls[0].args[0]] == [
+        "start", "status", "predict", "stats", "help", "cancel",
+    ]
+    chat_calls = [c for c in calls if c.kwargs["scope"].type == "chat"]
+    admin_menu = next(c for c in chat_calls if c.kwargs["scope"].chat_id == ADMIN_ID)
+    assert len(admin_menu.args[0]) == 14
+    assert [cmd.command for cmd in admin_menu.args[0]][:6] == [
+        "start", "status", "predict", "stats", "help", "cancel",
+    ]

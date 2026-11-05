@@ -15,7 +15,16 @@ import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import desc, func
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, Update, WebAppInfo
+from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageEntity,
+    Update,
+    WebAppInfo,
+)
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .config import get_settings
@@ -740,6 +749,57 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
 
+def _user_commands() -> list[BotCommand]:
+    """The command menu every user sees when they type '/'."""
+    return [
+        BotCommand("start", "Open the verification panel"),
+        BotCommand("status", "Check your submission status"),
+        BotCommand("predict", "Open WinGo predictions (verified users)"),
+        BotCommand("stats", "Live platform stats + your badges"),
+        BotCommand("help", "How VerifyHub works"),
+        BotCommand("cancel", "Cancel any pending operation"),
+    ]
+
+
+def _admin_commands() -> list[BotCommand]:
+    """The full menu admins see: everything above plus admin tools."""
+    return _user_commands() + [
+        BotCommand("admin", "Open the admin panel"),
+        BotCommand("pending", "Submissions waiting for review"),
+        BotCommand("approve", "Mark a submission verified"),
+        BotCommand("reject", "Mark a submission rejected"),
+        BotCommand("needinfo", "Ask for more information"),
+        BotCommand("addadmin", "Add an admin"),
+        BotCommand("removeadmin", "Remove a bot-added admin"),
+        BotCommand("admins", "List all admins"),
+    ]
+
+
+async def sync_bot_commands(bot) -> None:
+    """Set the Telegram command menu: users see the basics, admins see all.
+
+    Runs at startup (post_init) so the menu always matches the code.
+    Never raises — a failed sync only means the menu is stale, and the
+    bot must keep working.
+    """
+    try:
+        await bot.set_my_commands(_user_commands(), scope=BotCommandScopeDefault())
+        admin_ids = list(settings.admin_telegram_ids)
+        db = get_session_factory(settings.database_url)()
+        try:
+            admin_ids += [r.telegram_id for r in list_db_admins(db)]
+        finally:
+            db.close()
+        for admin_id in dict.fromkeys(admin_ids):
+            await bot.set_my_commands(_admin_commands(), scope=BotCommandScopeChat(chat_id=admin_id))
+    except Exception:
+        logger.exception("Failed to sync bot command menu.")
+
+
+async def _post_init(application: Application) -> None:
+    await sync_bot_commands(application.bot)
+
+
 def register_handlers(app: Application) -> None:
     """Register every VerifyHub handler on the given Application."""
     app.add_handler(CommandHandler("start", start))
@@ -767,6 +827,7 @@ def build_telegram_application(bot_token: str, *, with_updater: bool) -> Applica
     to the application directly and must not start a poller.
     """
     builder = Application.builder().token(bot_token)
+    builder = builder.post_init(_post_init)
     if not with_updater:
         builder = builder.updater(None)
     app = builder.build()
