@@ -31,6 +31,7 @@ WinGo rules (confirmed against the live API):
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -403,6 +404,25 @@ def get_provider() -> DmFirstProvider:
     return _provider
 
 
+# One atomic snapshot per (provider, timer): the current period, the
+# recent results and the signal derived from them are fetched once and
+# then served identically to every user for a few seconds. Without
+# this, the current-period read and the results read have independent
+# 5s caches, so two users opening the page a second apart at a period
+# boundary could see different histories/signals for the same timer.
+# The snapshot stays live (it expires in seconds), it is never served
+# on a provider failure, and it is keyed by provider identity so tests
+# with fresh providers never share a snapshot. Callers always get a
+# copy, so nobody can mutate the cached payload.
+_PREDICTION_SNAPSHOT_TTL_SECONDS = 5.0
+_prediction_snapshots: dict[tuple[int, str], tuple[float, dict]] = {}
+
+
+def clear_prediction_cache() -> None:
+    """Drop the prediction snapshot cache (tests use this between cases)."""
+    _prediction_snapshots.clear()
+
+
 def get_prediction(timer: str, provider=None) -> dict:
     """Full prediction payload for one timer.
 
@@ -414,6 +434,10 @@ def get_prediction(timer: str, provider=None) -> dict:
     if timer not in TIMER_TYPE_IDS:
         raise ValueError(f"Unknown timer: {timer!r}")
     p = provider or get_provider()
+    key = (id(p), timer)
+    entry = _prediction_snapshots.get(key)
+    if entry and entry[0] > time.monotonic():
+        return copy.deepcopy(entry[1])
     current = p.fetch_current(timer)
     history = p.fetch_results(timer, limit=20)
     if not history:
@@ -423,7 +447,7 @@ def get_prediction(timer: str, provider=None) -> dict:
         next_period = str(int(current["period"]) + 1)
     except (ValueError, TypeError):
         next_period = current["period"]
-    return {
+    out = {
         "timer": timer,
         "period": next_period,
         "current_period": current["period"],
@@ -433,6 +457,8 @@ def get_prediction(timer: str, provider=None) -> dict:
         "signal": signal,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    _prediction_snapshots[key] = (time.monotonic() + _PREDICTION_SNAPSHOT_TTL_SECONDS, out)
+    return copy.deepcopy(out)
 
 
 # ---------------- live ticker (public, real data only) ----------------

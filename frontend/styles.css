@@ -535,13 +535,13 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .pred-ball{animation:ballIn .7s cubic-bezier(.2,.9,.3,1.2) both}
 @keyframes ballIn{0%{transform:rotate(-360deg) scale(.3); opacity:0}60%{transform:rotate(12deg) scale(1.15); opacity:1}100%{transform:rotate(0deg) scale(1); opacity:1}}
 .pred-reason{font-size:12px; color:var(--muted); margin-top:10px; text-align:center}
-.pred-history{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; margin-top:14px; width:100%}
-.pred-history-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700}
+.pred-history{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:4px; margin-top:14px; width:100%}
+.pred-history-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700; flex:0 0 100%; text-align:center; margin-bottom:4px}
 .mini-ball{
-  width:30px; height:30px; border-radius:50%; position:relative; flex-shrink:0;
+  width:24px; height:24px; border-radius:50%; position:relative; flex-shrink:0;
   display:inline-flex; align-items:center; justify-content:center;
 }
-.mini-ball span{position:relative; z-index:2; font-weight:900; font-size:14px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.35)}
+.mini-ball span{position:relative; z-index:2; font-weight:900; font-size:12px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.35)}
 .mini-ball::before{content:""; position:absolute; inset:2px; border-radius:50%; background:radial-gradient(circle at 35% 28%, rgba(255,255,255,.9), transparent 55%); z-index:1}
 .mini-ball.red{background:radial-gradient(circle at 32% 28%, #ffc9c9, #ff5a4d 45%, #b30000 92%)}
 .mini-ball.green{background:radial-gradient(circle at 32% 28%, #c8ffd9, #37d67a 45%, #0a7a33 92%)}

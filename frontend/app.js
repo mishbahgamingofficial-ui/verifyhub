@@ -305,9 +305,24 @@
   // confidence is never "high".
   let predTimer = '1m', predRefreshId = null, predCountdownId = null;
   let predRemainingMs = 0, predFetchedAt = 0, predLoading = false, lastPredPeriod = null;
+  // predHasData: good data is currently on screen. Background refreshes
+  // must never blank it (that was the flicker: every 10s the open
+  // prediction flashed to a loading spinner, and any transient failure
+  // flipped it to the error screen).
+  let predHasData = false;
   function stopPredTimers() {
     if (predRefreshId) { clearInterval(predRefreshId); predRefreshId = null; }
     if (predCountdownId) { clearInterval(predCountdownId); predCountdownId = null; }
+  }
+  // Re-arm the 10s background refresh (clears the old one first, so
+  // intervals can never stack). It keeps running after a failure too,
+  // so the page heals itself instead of dying on the error screen.
+  function armPredRefresh() {
+    // Never poll while the prediction view is closed: returning to the
+    // tab reloads it fresh (showTab calls loadPrediction).
+    if (!$('#view-prediction').classList.contains('active')) return;
+    if (predRefreshId) clearInterval(predRefreshId);
+    predRefreshId = setInterval(() => loadPrediction({ background: true }), 10000);
   }
   function showPredState(name) {
     ['pred-locked', 'pred-open', 'pred-error', 'pred-loading'].forEach((id) => {
@@ -324,7 +339,20 @@
     const left = Math.max(0, predRemainingMs - (Date.now() - predFetchedAt));
     const s = Math.ceil(left / 1000);
     setCountdownText($('#pred-countdown'), String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'));
-    if (left <= 0) { clearInterval(predCountdownId); predCountdownId = null; loadPrediction(); }
+    if (left <= 0) {
+      // Period rolled over: fetch the new signal in the background.
+      // Never blank the view for this — the last signal stays on screen
+      // until the new one arrives.
+      clearInterval(predCountdownId); predCountdownId = null;
+      loadPrediction({ background: true }).then((started) => {
+        // A fetch was already running: retry the rollover shortly, but
+        // only while the prediction view is still open.
+        if (!started && !predCountdownId && $('#view-prediction').classList.contains('active')) {
+          predRemainingMs = 5000; predFetchedAt = Date.now();
+          predCountdownId = setInterval(tickPredCountdown, 1000);
+        }
+      });
+    }
   }
   function renderPrediction(d) {
     $('#pred-period').textContent = d.period;
@@ -337,7 +365,9 @@
     $('#pred-reason').textContent = d.signal.reason + ' · Confidence: ' + d.signal.confidence;
     $('#pred-history').innerHTML = '<span class="pred-history-label">LAST 10</span>' + (d.results || []).map((r) =>
       '<span class="mini-ball ' + ballClass(r.number) + '" title="' + esc(r.period) + '"><span>' + esc(r.number) + '</span></span>').join('');
-    $('#pred-err').textContent = '';
+    const predErr = $('#pred-err');
+    predErr.textContent = '';
+    predErr.className = 'err';
     // Countdown from the SERVER clock (endTime - serviceTime), not the
     // client clock, so a wrong phone time cannot skew it.
     predRemainingMs = new Date(d.next_period_at).getTime() - new Date(d.server_time).getTime();
@@ -389,23 +419,46 @@
       if (accLastGood) $('#pred-accuracy').hidden = false;
     }
   }
-  async function loadPrediction() {
-    if (predLoading) return;
-    stopPredTimers();
+  // Foreground = first load / manual refresh / timer switch: may show
+  // the loading state, but ONLY when nothing good is on screen yet.
+  // Background = 10s interval + countdown rollover: never blank the
+  // view and never show the error screen — a failed background refresh
+  // keeps the last good signal, history and countdown exactly as they
+  // are, notes it in place, and keeps retrying. Returns true when a
+  // fetch was started, false when one was already running.
+  async function loadPrediction(opts = {}) {
+    const background = !!opts.background;
+    if (predLoading) return false;
     if (isPreview) {
       $('#pred-locked-status').textContent = 'Open this panel from Telegram — the prediction page unlocks after verification.';
       showPredState('pred-locked');
-      return;
+      return false;
+    }
+    const timerAtLoad = predTimer;
+    const errEl = $('#pred-err');
+    if (!predHasData) {
+      // Nothing to show yet: a foreground load may show the spinner.
+      // A background load with no data (e.g. auto-retry from the error
+      // screen) keeps the current state and just fetches.
+      if (!background) showPredState('pred-loading');
+    } else if (!$('#pred-open').hidden) {
+      // Good data on screen: keep it, note the refresh in place.
+      errEl.textContent = 'Updating…';
+      errEl.className = 'hint';
     }
     predLoading = true;
-    const timerAtLoad = predTimer;
-    showPredState('pred-loading');
     try {
       const d = await api('/api/prediction?timer=' + encodeURIComponent(predTimer));
+      // The timer was switched while this fetch was in flight: don't
+      // flash the old timer's data — the finally block reloads for the
+      // new timer, and the old data stays on screen until it arrives.
+      if (predTimer !== timerAtLoad) return true;
       renderPrediction(d);
       showPredState('pred-open');
+      predHasData = true;
       loadAccuracy(timerAtLoad);
-      predRefreshId = setInterval(loadPrediction, 10000);
+      armPredRefresh();
+      return true;
     } catch (e) {
       if (e.status === 403) {
         // Locked: show the user's real status, fetched live.
@@ -413,12 +466,24 @@
         try { const latest = await api('/api/me/latest'); statusText = LABELS[latest.status] || latest.status; } catch (e2) { /* keep default */ }
         $('#pred-locked-status').textContent = 'Your status: ' + statusText + ' — the prediction page unlocks when an administrator marks you Verified.';
         showPredState('pred-locked');
+        predHasData = false;
+        stopPredTimers();
+        return true;
+      }
+      if (predHasData) {
+        // Transient failure on a background refresh: keep the last good
+        // signal, history and countdown exactly as they are.
+        errEl.textContent = 'Update failed — showing the last signal. Retrying…';
+        errEl.className = 'err';
+        armPredRefresh();
       } else {
         $('#pred-error-text').textContent = e.status === 503
           ? 'Results temporarily unavailable. Please try again in a moment.'
           : (e.message || 'Could not load the prediction.');
         showPredState('pred-error');
+        armPredRefresh(); // heal itself: the next tick recovers the page
       }
+      return true;
     } finally {
       predLoading = false;
       // The timer was switched while a load was in flight: reload with the new timer.

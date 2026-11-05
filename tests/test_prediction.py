@@ -24,6 +24,7 @@ from app.prediction import (  # noqa: E402
     ProviderError,
     build_signed_body,
     classify,
+    clear_prediction_cache,
     get_prediction,
     predict,
 )
@@ -231,6 +232,81 @@ def test_get_prediction_with_fixture():
     assert len(d["results"]) == 10
     assert d["signal"]["confidence"] in ("low", "medium")
     assert d["next_period_at"] and d["server_time"] and d["generated_at"]
+
+
+def test_prediction_returns_ten_results_both_timers():
+    """The history strip shows exactly the last 10 results, 30s and 1m."""
+    for timer in ("30s", "1m"):
+        d = get_prediction(timer, provider=FixtureProvider())
+        assert len(d["results"]) == 10, timer
+        periods = [r["period"] for r in d["results"]]
+        assert len(set(periods)) == 10  # all distinct, newest first
+        assert periods == sorted(periods, reverse=True)
+
+
+def test_prediction_snapshot_identical_for_all_users():
+    """Two calls in the cache window return the identical payload —
+    same period, history and signal — so every user sees the same
+    thing at the same moment. Mutating a returned payload must not
+    poison the cached snapshot."""
+    provider = FixtureProvider()
+    a = get_prediction("1m", provider=provider)
+    b = get_prediction("1m", provider=provider)
+    assert a == b
+    b["results"].append({"period": "x", "number": 1, "colour": "red", "size": "small"})
+    c = get_prediction("1m", provider=provider)
+    assert c == a
+    assert len(c["results"]) == 10
+
+
+def test_prediction_snapshot_refreshes_after_clear(monkeypatch):
+    """Clearing the snapshot cache re-fetches: same history/signal
+    (fixture data is deterministic), from a fresh snapshot. The clock
+    is frozen so a period boundary cannot fall between the two calls."""
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    class _Frozen(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt(2026, 11, 5, 12, 0, 30, tzinfo=_tz.utc)
+
+    monkeypatch.setattr(pred, "datetime", _Frozen)
+    provider = FixtureProvider()
+    a = get_prediction("1m", provider=provider)
+    clear_prediction_cache()
+    b = get_prediction("1m", provider=provider)
+    assert b["period"] == a["period"]
+    assert b["results"] == a["results"]
+    assert b["signal"] == a["signal"]
+
+
+def test_prediction_identical_consecutive_calls_endpoint(monkeypatch):
+    """Two consecutive endpoint calls (shared provider, as in prod)
+    return identical history + signal for both timers."""
+    fx = FixtureProvider()
+    monkeypatch.setattr(pred, "get_provider", lambda: fx)
+    clear_prediction_cache()
+    uid = 9104
+    _user_with_status(uid, "verified")
+    for timer in ("1m", "30s"):
+        first = client.get(f"/api/prediction?timer={timer}", headers=H(uid)).json()
+        second = client.get(f"/api/prediction?timer={timer}", headers=H(uid)).json()
+        assert first == second, timer
+
+
+def test_prediction_failure_after_success_is_503(monkeypatch):
+    """A provider failure after a successful call still surfaces as
+    503 — the snapshot cache never masks a failure for a fresh
+    provider (the no-blanking on failure is a frontend behaviour)."""
+    monkeypatch.setattr(pred, "get_provider", lambda: FixtureProvider())
+    uid = 9105
+    _user_with_status(uid, "verified")
+    assert client.get("/api/prediction", headers=H(uid)).status_code == 200
+    monkeypatch.setattr(pred, "get_provider", lambda: _FailingProvider())
+    r = client.get("/api/prediction", headers=H(uid))
+    assert r.status_code == 503
+    assert "temporarily unavailable" in r.json()["detail"]
 
 
 # ---------------- endpoint: verified-only gating ----------------
