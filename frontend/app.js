@@ -127,9 +127,12 @@
       return '<div class="window ' + state + '"><div class="window-bar"><span>Window ' + n + ' — ' + title + '</span><span class="dot ' + dot + '"></span></div>'
         + '<div class="window-body"><b>' + esc(title === 'Decision' ? (LABELS[st] || st) : title) + '</b><span>' + note + '</span></div></div>';
     }
-    return win('01', 'Received', w1, w1Note)
+    // The three windows ride a vertical timeline rail (see .timeline in
+    // styles.css): numbered nodes on a gold-to-red line, so the status
+    // reads as a journey instead of three stacked boxes.
+    return '<div class="timeline">' + win('01', 'Received', w1, w1Note)
       + win('02', 'Under review', w2State, w2Note)
-      + win('03', 'Decision', w3State, w3Note)
+      + win('03', 'Decision', w3State, w3Note) + '</div>'
       + '<div style="margin-top:14px">' + badge(st) + '</div>'
       + '<dl class="meta"><div><dt>UID</dt><dd class="mono">' + esc(s.uid_masked) + '</dd></div>'
       + '<div><dt>Submitted</dt><dd>' + esc(fmt(s.submitted_at)) + '</dd></div>'
@@ -138,9 +141,20 @@
       + (s.review_message ? '<p class="review-message"><strong>Review message:</strong><br>' + esc(s.review_message) + '</p>' : '');
   }
   // Step switch inside Phase 1: register -> deposit -> uid.
+  // The panel slides in — from the right going forward, from the left
+  // going back (direction from the step order vs the previous step).
   function showStep(name) {
+    const order = { register: 0, deposit: 1, uid: 2 };
+    const back = order[name] < order[flowStep];
     flowStep = name;
     ['register', 'deposit', 'uid'].forEach((s) => { const el = $('#step-' + s); if (el) el.hidden = s !== name; });
+    const shown = $('#step-' + name);
+    const panel = shown && shown.querySelector('.panel');
+    if (panel) {
+      panel.classList.remove('step-enter', 'step-enter-back');
+      void panel.offsetWidth; // restart the animation
+      panel.classList.add(back ? 'step-enter-back' : 'step-enter');
+    }
     const labels = { register: 'Step 1 of 3 — Register', deposit: 'Step 2 of 3 — Deposit proof', uid: 'Step 3 of 3 — Send UID' };
     const counts = { register: '01 / 03', deposit: '02 / 03', uid: '03 / 03' };
     const fills = { register: '33%', deposit: '66%', uid: '100%' };
@@ -148,6 +162,15 @@
     if (label) label.textContent = labels[name];
     if (count) count.textContent = counts[name];
     if (fill) fill.style.width = fills[name];
+    // Step rail: gold track fills to the current node; earlier nodes
+    // go gold (done), the current node pulses. Same step order as above.
+    const railFill = $('#rail-fill');
+    if (railFill) railFill.style.width = { register: '0%', deposit: '50%', uid: '100%' }[name];
+    document.querySelectorAll('.rail-nodes li').forEach((li) => {
+      const i = order[li.dataset.step];
+      li.classList.toggle('done', i < order[name]);
+      li.classList.toggle('current', li.dataset.step === name);
+    });
     syncMainButton();
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
@@ -305,6 +328,9 @@
   // confidence is never "high".
   let predTimer = '1m', predRefreshId = null, predCountdownId = null;
   let predRemainingMs = 0, predFetchedAt = 0, predLoading = false, lastPredPeriod = null;
+  // Last newest history period / last ticker result period: the newest
+  // ball only pops when the result actually changed, never on refresh.
+  let lastHistPeriod = null, lastTickerPeriod = null;
   // predHasData: good data is currently on screen. Background refreshes
   // must never blank it (that was the flicker: every 10s the open
   // prediction flashed to a loading spinner, and any transient failure
@@ -339,6 +365,9 @@
     const left = Math.max(0, predRemainingMs - (Date.now() - predFetchedAt));
     const s = Math.ceil(left / 1000);
     setCountdownText($('#pred-countdown'), String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'));
+    // Final 10 seconds: the countdown turns gold and throbs.
+    const cd = $('#pred-countdown');
+    if (cd) cd.classList.toggle('urgent', s <= 10 && s > 0);
     if (left <= 0) {
       // Period rolled over: fetch the new signal in the background.
       // Never blank the view for this — the last signal stays on screen
@@ -361,10 +390,24 @@
     ball.className = 'pred-ball ball ' + ballClass(d.signal.number);
     ball.innerHTML = '<span>' + esc(d.signal.number) + '</span>';
     // One-shot burst behind the ball when a NEW signal period arrives.
-    if (d.period !== lastPredPeriod) { lastPredPeriod = d.period; burst(document.querySelector('.pred-signal'), 10); }
+    if (d.period !== lastPredPeriod) {
+      lastPredPeriod = d.period;
+      burst(document.querySelector('.pred-signal'), 10);
+      // The signal ball lands as an event + the slab pops.
+      ball.classList.remove('land'); void ball.offsetWidth; ball.classList.add('land');
+      const sig = document.querySelector('.pred-signal');
+      if (sig) { sig.classList.remove('signal-pop'); void sig.offsetWidth; sig.classList.add('signal-pop'); }
+    }
     $('#pred-reason').textContent = d.signal.reason + ' · Confidence: ' + d.signal.confidence;
     $('#pred-history').innerHTML = '<span class="pred-history-label">LAST 10</span>' + (d.results || []).map((r) =>
       '<span class="mini-ball ' + ballClass(r.number) + '" title="' + esc(r.period) + '"><span>' + esc(r.number) + '</span></span>').join('');
+    // The newest history ball pops in — only when a new result arrived.
+    const newest = (d.results || [])[0];
+    if (newest && newest.period !== lastHistPeriod) {
+      lastHistPeriod = newest.period;
+      const first = document.querySelector('#pred-history .mini-ball');
+      if (first) first.classList.add('new');
+    }
     const predErr = $('#pred-err');
     predErr.textContent = '';
     predErr.className = 'err';
@@ -388,9 +431,18 @@
       '<span class="acc-dot ' + (r.correct === true ? 'right' : r.correct === false ? 'wrong' : 'pending') + '" title="#' + esc(String(r.period).slice(-5)) + '"></span>').join('');
     if (s.settled === 0) {
       $('#acc-summary').textContent = '';
+      $('#acc-conf').textContent = '';
       $('#acc-rows').innerHTML = '<p class="hint" style="margin:0">No settled signals yet — the record builds as periods finish.</p>';
     } else {
       $('#acc-summary').textContent = s.correct + ' RIGHT · ' + s.wrong + ' WRONG · ' + s.accuracy_pct + '%';
+      // Accuracy split by confidence tier, exactly as the server counts
+      // it (rows recorded before confidence tracking count as "low").
+      // Only tiers with settled signals are shown.
+      const bc = s.by_confidence || {};
+      const parts = [];
+      if (bc.medium && bc.medium.settled) parts.push('Medium: ' + bc.medium.correct + '/' + bc.medium.settled);
+      if (bc.low && bc.low.settled) parts.push('Low: ' + bc.low.correct + '/' + bc.low.settled);
+      $('#acc-conf').textContent = parts.join(' · ');
       // Last 5, newest first: #0814 · BIG → 7 BIG ✓ (✗ when wrong, … while pending).
       $('#acc-rows').innerHTML = (d.records || []).slice(0, 5).map((r) => {
         const short = '#' + String(r.period).slice(-5);
@@ -594,6 +646,8 @@
   function tickTicker() {
     const left = tickerRemaining - (Date.now() - tickerFetchedAt) / 1000;
     setCountdownText($('#ticker-countdown'), fmtCountdown(left));
+    const tc = $('#ticker-countdown');
+    if (tc) tc.classList.toggle('urgent', left <= 10 && left > 0);
     if (left <= 0) fetchLive();
   }
   async function fetchLive() {
@@ -620,7 +674,14 @@
     const last = (d.last && d.last[0]) || null;
     if (last) {
       const ball = $('#ticker-ball');
-      if (ball) { ball.className = 'mini-ball ' + ballClass(last.number); ball.innerHTML = '<span>' + esc(last.number) + '</span>'; }
+      if (ball) {
+        ball.className = 'mini-ball ' + ballClass(last.number); ball.innerHTML = '<span>' + esc(last.number) + '</span>';
+        // The ticker ball lands with a pop when a new result arrives.
+        if (last.period !== lastTickerPeriod) {
+          lastTickerPeriod = last.period;
+          ball.classList.remove('land'); void ball.offsetWidth; ball.classList.add('land');
+        }
+      }
       const lastEl = $('#ticker-last');
       if (lastEl) lastEl.textContent = last.number + ' ' + String(last.colour).replace(',', '+').toUpperCase();
     }

@@ -13,6 +13,20 @@
      Inter stays for UI, JetBrains Mono for data.
    - Motion is sparse and purposeful: wordmark shimmer, pill sweep,
      primary-button breathing glow, live-dot pulse, ping jitter.
+   - ui/fun-upgrade (branch): same anchor, more delight — skeuomorphic
+     press physics, step/tab/view transitions, 3D window flip-in,
+     dramatic last-10s countdown, ball landing pops, aurora glow.
+     Every new animation is transform/opacity (or color/text-shadow)
+     only, and covered by the prefers-reduced-motion rule below.
+   - Verification-page rework (same branch): the page stopped reading
+     like a designed product because every block was the same card
+     (three identical panels, three thin-bordered window boxes, a
+     generic footer bar). The rework gives each part its own structure
+     inside the same identity: a step rail + ghost numerals + a distinct
+     screen per step (drop-zone deposit, perforated UID ticket), the
+     windows as a numbered journey timeline, the UID stub as a lattice
+     console header, the history as a ledger (not a card), and the dock
+     as a glossy system bar with the honest line engraved inside it. */
    Behaviour: every class/id used by app.js is preserved. No logic
    changes in this file — look only. */
 
@@ -40,10 +54,18 @@ body::before{
   content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
   background:radial-gradient(120% 70% at 50% 0%, #2b0606 0%, #150303 55%, #0d0101 100%);
 }
+/* ---- Aurora glow: two slow-drifting red/gold orbs behind the page ----
+   (aurora-ui technique, product palette only — no cyan/magenta, no
+   glass. Radial gradients only, no blur filter, so it stays cheap.) */
+.aurora{position:fixed; inset:0; z-index:-1; pointer-events:none; overflow:hidden}
+.aurora i{position:absolute; width:320px; height:320px; border-radius:50%; background:radial-gradient(circle, rgba(255,60,60,.5) 0%, transparent 68%)}
+.aurora i:nth-child(1){top:-90px; left:-70px; animation:auroraDrift 24s ease-in-out infinite alternate}
+.aurora i:nth-child(2){bottom:-110px; right:-80px; width:300px; height:300px; background:radial-gradient(circle, rgba(255,179,0,.42) 0%, transparent 68%); animation:auroraDrift 28s ease-in-out infinite alternate-reverse}
+@keyframes auroraDrift{from{transform:translate(0,0) scale(1)}to{transform:translate(46px,60px) scale(1.15)}}
 a{color:var(--gold-light); text-underline-offset:3px}
 a:hover{color:var(--gold)}
 button,input,select,textarea{font:inherit}
-button{cursor:pointer; -webkit-tap-highlight-color:transparent}
+button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:manipulation}
 :focus-visible{outline:2px solid var(--gold); outline-offset:2px}
 ::selection{background:#7d0000; color:#fff}
 
@@ -96,7 +118,8 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 
 /* Progress: a glowing red track. */
 .progress{height:4px; background:#3a0a0a; margin-top:14px; border-radius:4px; overflow:hidden}
-.progress-fill{height:100%; width:33%; background:linear-gradient(90deg,#ff8a7a,#ff1e1e); box-shadow:0 0 10px rgba(255,40,40,.8); transition:width var(--dur)}
+.progress-fill{height:100%; width:33%; background:linear-gradient(90deg,#ff8a7a,#ff1e1e,#ff8a7a); background-size:200% 100%; box-shadow:0 0 10px rgba(255,40,40,.8); transition:width var(--dur); animation:fillFlow 1.8s linear infinite}
+@keyframes fillFlow{to{background-position:-200% 0}}
 .phase-line{
   display:flex; justify-content:space-between; gap:12px; margin-top:8px;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px;
@@ -112,19 +135,24 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
   flex:none; min-height:48px; border:0; border-bottom:2px solid transparent; background:transparent;
   color:var(--muted); padding:12px 2px; border-radius:0; font-weight:700; font-size:15px;
   display:inline-flex; align-items:center; gap:7px; white-space:nowrap;
-  transition:color var(--dur), border-color var(--dur);
+  transition:color var(--dur), border-color var(--dur), transform var(--dur);
 }
 .tabs button:hover{color:var(--text)}
-.tabs button[aria-selected="true"]{color:var(--text); border-bottom-color:var(--red-bright); box-shadow:0 2px 12px rgba(255,45,45,.45); background:transparent}
+.tabs button:active{transform:scale(.97)}
+.tabs button[aria-selected="true"]{color:#ffe9c9; border-bottom-color:var(--red-bright); box-shadow:0 2px 12px rgba(255,45,45,.45); background:transparent}
+.tabs button[aria-selected="true"]::before{content:""; width:6px; height:6px; flex:none; border-radius:50%; background:var(--gold); box-shadow:0 0 8px rgba(255,179,0,.8)}
 .view{display:none}
-.view.active{display:block}
+.view.active{display:block; animation:viewIn .28s ease both}
+@keyframes viewIn{from{opacity:0; transform:translateY(8px)}to{opacity:1; transform:translateY(0)}}
 
 /* ---------- Intro ---------- */
 .intro{padding:26px 0 18px; border-bottom:1px solid var(--hairline); margin-bottom:18px}
+.intro .eyebrow{display:inline-flex; align-items:center; gap:8px}
+.intro .eyebrow::before{content:""; width:18px; height:2px; flex:none; background:linear-gradient(90deg,var(--gold),var(--gold-deep)); border-radius:2px}
 .intro h1{
   margin:0 0 10px; font-size:32px; line-height:1.05;
   letter-spacing:-.01em; font-weight:900; font-style:italic;
-  text-shadow:0 0 18px rgba(255,80,80,.45);
+  text-shadow:0 0 18px rgba(255,80,80,.45); text-wrap:balance;
 }
 .intro h1 em{
   font-style:italic; font-weight:900;
@@ -151,6 +179,41 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
     repeating-linear-gradient(-45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px);
 }
 .panel-inner{position:relative; z-index:2; padding:16px 16px 15px; display:flex; flex-direction:column; gap:12px}
+/* Step transitions: the panel slides in from the right going forward,
+   from the left going back. JS (showStep) adds the class after unhiding. */
+.panel.step-enter{animation:stepIn .3s cubic-bezier(.2,.9,.3,1) both}
+.panel.step-enter-back{animation:stepInBack .3s cubic-bezier(.2,.9,.3,1) both}
+@keyframes stepIn{from{opacity:0; transform:translateX(18px)}to{opacity:1; transform:translateX(0)}}
+@keyframes stepInBack{from{opacity:0; transform:translateX(-18px)}to{opacity:1; transform:translateX(0)}}
+/* ---- Step rail: the three steps as a journey, not three copies of a
+   card. Gold track fills to the current node (JS sets #rail-fill width);
+   done nodes go gold, the current node pulses. ---- */
+.step-rail{position:relative; margin:0 0 16px}
+.rail-track{position:absolute; left:16.67%; right:16.67%; top:15px; height:2px; background:rgba(255,110,110,.25); border-radius:2px}
+.rail-fill{height:100%; width:0; background:linear-gradient(90deg,#ffb300,#ff5e00); box-shadow:0 0 8px rgba(255,179,0,.6); border-radius:2px; transition:width .35s ease}
+.rail-nodes{display:flex; justify-content:space-between; list-style:none; margin:0; padding:0; position:relative}
+.rail-nodes li{flex:1; display:flex; flex-direction:column; align-items:center; gap:6px}
+.rail-dot{
+  width:30px; height:30px; border-radius:50%; display:grid; place-items:center;
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700;
+  background:#220606; border:1.5px solid var(--hairline-strong); color:var(--muted);
+}
+.rail-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+.rail-nodes li.done .rail-dot{background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); border-color:rgba(255,255,255,.7); color:#4a0000}
+.rail-nodes li.done .rail-label{color:var(--gold-light)}
+.rail-nodes li.current .rail-dot{border-color:var(--gold); color:var(--gold-light); animation:railPulse 1.6s ease-in-out infinite}
+.rail-nodes li.current .rail-label{color:var(--text)}
+@keyframes railPulse{0%,100%{box-shadow:0 0 0 3px rgba(255,179,0,.22), 0 0 10px rgba(255,60,60,.45)}50%{box-shadow:0 0 0 5px rgba(255,179,0,.12), 0 0 18px rgba(255,60,60,.7)}}
+/* Ghost step numeral in the panel's top corner — an outlined italic
+   number, so each step carries its own mark without new copy. */
+.step-ghost{
+  position:absolute; top:4px; right:12px; z-index:3; pointer-events:none;
+  font-weight:900; font-style:italic; font-size:42px; line-height:1; letter-spacing:-2px;
+  color:transparent; -webkit-text-stroke:1.5px rgba(255,255,255,.16);
+}
+/* Phase 2 entrance: the verification windows slide up when they appear. */
+#phase-verify:not([hidden]){animation:phaseIn .35s ease both}
+@keyframes phaseIn{from{opacity:0; transform:translateY(10px)}to{opacity:1; transform:translateY(0)}}
 .panel-head{text-align:center}
 .wordmark{
   font-weight:900; font-style:italic; font-size:33px; letter-spacing:-.5px; line-height:1;
@@ -190,7 +253,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 @keyframes pulseDot{50%{opacity:.3}}
 
 /* ---- Live ticker: real WinGo 1-min data from /api/live, never invented ---- */
-.ticker{display:flex; align-items:center; gap:7px; margin-top:12px; padding:8px 12px; background:rgba(25,0,0,.55); border:1px solid var(--hairline); border-radius:20px; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--text); overflow:hidden}
+.ticker{display:flex; align-items:center; gap:7px; margin-top:12px; padding:8px 12px; background:linear-gradient(180deg, rgba(43,5,5,.7), rgba(25,0,0,.55)); border:1px solid var(--hairline); border-left:2px solid rgba(255,179,0,.7); border-radius:20px; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--text); overflow:hidden}
 .ticker-dot{flex:none; width:8px; height:8px; border-radius:50%; background:#22ff88; box-shadow:0 0 8px #22ff88; animation:livePulse 1.6s ease-in-out infinite}
 .ticker-live{color:#ff4040}
 .ticker-live.reconnecting{color:#ffb300}
@@ -227,8 +290,8 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .burst i{position:absolute; left:0; top:0; width:var(--s,4px); height:var(--s,4px); margin:calc(var(--s,4px) / -2) 0 0 calc(var(--s,4px) / -2); border-radius:50%; background:radial-gradient(circle,#fff3b0,#ffb300 55%,#ff5e00); box-shadow:0 0 8px rgba(255,179,0,.8); animation:burstFly .9s cubic-bezier(.1,.7,.3,1) forwards}
 .burst i:nth-child(even){background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000); box-shadow:0 0 8px rgba(255,45,45,.8)}
 @keyframes burstFly{0%{transform:translate(0,0) scale(1); opacity:1}100%{transform:translate(var(--tx,0px),var(--ty,0px)) scale(.3); opacity:0}}
-.stamp.pop{animation:stampPop .45s cubic-bezier(.2,.9,.3,1.2) both}
-@keyframes stampPop{0%{transform:rotate(-4deg) scale(.6); opacity:0}100%{transform:rotate(-4deg) scale(1); opacity:1}}
+.stamp.pop{animation:stampPop .5s cubic-bezier(.2,.9,.3,1.2) both}
+@keyframes stampPop{0%{transform:rotate(-4deg) scale(.5); opacity:0}60%{transform:rotate(-4deg) scale(1.12); opacity:1}100%{transform:rotate(-4deg) scale(1); opacity:1}}
 
 /* Dark screen inside the panel: headline + content. */
 .screen{
@@ -271,26 +334,47 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .card h4{margin:18px 0 8px; font-size:14px}
 .card p{margin:0; color:var(--muted)}
 .card p strong{color:var(--text)}
-.help-card{margin-top:20px}
+/* Help & support is a margin note, not another card: dashed gold frame,
+   no shadow, no filled background. The honest line inside it drops its
+   filled box and reads as a plain note. */
+.help-card{margin-top:20px; background:transparent; border:1.5px dashed rgba(255,179,0,.45); box-shadow:none; padding:16px}
+.help-card .review-message{background:transparent; border-left:0; border-radius:0; padding:0; margin-top:10px; color:var(--muted)}
 
-/* Register strip: plain block inside the panel screen. */
+/* Deposit drop-zone: gold dashed frame with corner ticks, so step 2
+   reads as a place to put proof — not another copy of the step-1 screen. */
 .deposit-box{
-  border:1px dashed var(--hairline-strong); border-radius:var(--r);
-  background:rgba(0,0,0,.35); padding:18px; margin-top:14px; width:100%;
+  border:1.5px dashed rgba(255,179,0,.5); border-radius:var(--r);
+  background-color:rgba(0,0,0,.35);
+  background-image:
+    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold)),
+    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold)),
+    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold)),
+    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold));
+  background-size:16px 2px, 2px 16px, 16px 2px, 2px 16px, 16px 2px, 2px 16px, 16px 2px, 2px 16px;
+  background-position:0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+  background-repeat:no-repeat;
+  padding:18px; margin-top:14px; width:100%;
 }
-.deposit-box img{display:block; max-width:100%; max-height:260px; margin:14px auto 0; border:1px solid var(--hairline); border-radius:8px}
+.deposit-box img{display:block; max-width:100%; max-height:260px; margin:14px auto 0; border:1px solid rgba(255,179,0,.55); border-radius:8px; box-shadow:0 0 16px rgba(255,179,0,.18)}
 .deposit-ok{color:var(--green); font-weight:800; margin-top:12px; text-shadow:0 0 12px rgba(34,255,136,.5); animation:popIn .35s cubic-bezier(.2,.9,.3,1.2) both}
+.deposit-ok::before{content:"✓ "}
 @keyframes popIn{0%{transform:scale(.85); opacity:0}100%{transform:scale(1); opacity:1}}
 
-/* ---------- The ticket: UID form inside the dark screen ---------- */
-.ticket{display:block; background:transparent; border:0; margin-bottom:0; width:100%; text-align:left}
-.ticket-stub{
-  display:flex; align-items:center; justify-content:center;
-  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
-  letter-spacing:.2em; text-transform:uppercase; color:var(--gold); text-align:center; line-height:1.7;
-  border:1px solid rgba(255,200,60,.5); border-radius:20px; padding:6px 12px; margin-bottom:14px;
-  background:rgba(0,0,0,.4);
+/* ---------- The ticket: UID form as a perforated ticket, not a plain
+   form in a box. Gold stub row, dashed perforation, dark ticket body. ---------- */
+.ticket{
+  display:block; width:100%; text-align:left;
+  background:rgba(0,0,0,.42); border:1.5px solid rgba(255,200,60,.45); border-radius:16px;
+  padding:14px 14px 16px; margin-bottom:0; position:relative;
 }
+.ticket-stub{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
+  letter-spacing:.2em; text-transform:uppercase; color:var(--gold); line-height:1.7;
+  border:0; border-radius:0; background:transparent; text-align:left;
+  padding:0 0 10px; margin-bottom:14px; border-bottom:1.5px dashed rgba(255,200,60,.55);
+}
+.ticket-stub::after{content:"◆ ◆ ◆"; letter-spacing:.35em; color:rgba(255,179,0,.55)}
 .ticket-body{padding:0}
 .ticket-body .eyebrow{color:var(--gold)}
 
@@ -302,7 +386,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
   border:1.5px solid rgba(255,255,255,.7); color:#fff; text-decoration:none;
   background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000);
   box-shadow:0 6px 16px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5);
-  transition:transform .12s ease, filter .12s ease;
+  transition:transform .12s ease, filter .12s ease, box-shadow .12s ease;
   animation:breathe 2.2s ease-in-out infinite;
 }
 @keyframes breathe{
@@ -314,8 +398,14 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
   background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);
   transform:skewX(-20deg); transition:left .5s ease; pointer-events:none;
 }
-.btn:active{transform:scale(.97)}
+/* Physical press (skeuomorphism): the button sinks in — shadow collapses,
+   inset shading deepens, scale drops — instead of just shrinking. */
+.btn:active{
+  transform:translateY(2px) scale(.97);
+  box-shadow:0 2px 6px rgba(0,0,0,.4), inset 0 3px 8px rgba(0,0,0,.35), inset 0 -1px 0 rgba(255,255,255,.25);
+}
 .btn:active::after{left:135%}
+@media (hover:hover){.btn:hover{filter:brightness(1.08)}}
 .btn.secondary{
   background:linear-gradient(180deg,#3a0a0a,#1c0505);
   border:1.5px solid var(--hairline-strong); color:#ffe9e9;
@@ -356,15 +446,44 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .check{display:flex; gap:10px; align-items:flex-start; margin-top:16px; color:var(--muted); font-size:13.5px; line-height:1.55; cursor:pointer; text-align:left}
 .check input{accent-color:var(--red-bright); margin-top:3px; width:17px; height:17px; flex:none}
 
-/* ---------- Verification windows ---------- */
+/* ---------- Verification timeline: the three windows as a journey ----------
+   A gold-to-red rail runs down the left; each window hangs off it on a
+   numbered node (01 done = gold, 02 current = pulsing red, 03 next =
+   hollow). The windows themselves are dark console rows with a coloured
+   left edge — not three copies of the same thin-bordered card. */
 .sample-label{
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; letter-spacing:.1em;
   text-transform:uppercase; color:var(--muted); margin:4px 0 10px;
 }
-.window{
-  background:var(--surface); border:1px solid var(--hairline-strong); border-radius:var(--r);
-  margin-bottom:12px;
+.timeline{position:relative; padding-left:36px; margin-bottom:6px}
+.timeline::before{
+  content:""; position:absolute; left:16px; top:26px; bottom:26px; width:2px; border-radius:2px;
+  background:linear-gradient(180deg, var(--gold), var(--red-bright) 60%, rgba(255,110,110,.25));
 }
+.timeline .window{position:relative}
+.timeline .window::before{
+  content:""; position:absolute; left:-30px; top:16px; z-index:2;
+  width:22px; height:22px; border-radius:50%; display:grid; place-items:center;
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
+  background:#220606; border:1.5px solid var(--hairline-strong); color:var(--muted);
+}
+.timeline .window:nth-of-type(1)::before{content:"01"}
+.timeline .window:nth-of-type(2)::before{content:"02"}
+.timeline .window:nth-of-type(3)::before{content:"03"}
+.timeline .window.done::before{background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); border-color:rgba(255,255,255,.7); color:#4a0000}
+.timeline .window.active::before{background:var(--red-bright); border-color:#fff; color:#fff; animation:railPulse 1.6s ease-in-out infinite}
+.window{
+  position:relative;
+  background:#1c0404; border:1px solid var(--hairline); border-left:3px solid var(--hairline-strong); border-radius:12px;
+  margin-bottom:12px;
+  animation:winIn .45s cubic-bezier(.2,.9,.3,1) both;
+}
+/* Windows flip in with a touch of 3D (3d-ui: perspective rotateX), staggered. */
+@keyframes winIn{from{opacity:0; transform:perspective(700px) rotateX(-12deg) translateY(6px)}to{opacity:1; transform:perspective(700px) rotateX(0) translateY(0)}}
+.window:nth-of-type(2){animation-delay:.07s}
+.window:nth-of-type(3){animation-delay:.14s}
+.window.done .dot.filled{animation:dotPop .45s cubic-bezier(.2,.9,.3,1.4) both}
+@keyframes dotPop{0%{transform:scale(.4)}60%{transform:scale(1.5)}100%{transform:scale(1)}}
 .window-bar{
   display:flex; justify-content:space-between; align-items:center; gap:12px;
   padding:11px 14px; border-bottom:1px solid var(--hairline);
@@ -378,18 +497,37 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .dot.filled{background:var(--green); border-color:var(--green); box-shadow:0 0 8px rgba(34,255,136,.7)}
 .dot.hollow{background:transparent}
 .window.done{border-left:3px solid var(--green)}
-.window.active{border:2px solid var(--red-bright); box-shadow:0 0 18px rgba(255,45,45,.35)}
+.window.active{border:2px solid var(--red-bright); box-shadow:0 0 18px rgba(255,45,45,.35); animation:winIn .45s cubic-bezier(.2,.9,.3,1) both, winBreathe 2.2s ease-in-out .5s infinite}
+/* The current window breathes — its glow swells so the eye lands on it. */
+@keyframes winBreathe{0%,100%{box-shadow:0 0 18px rgba(255,45,45,.35)}50%{box-shadow:0 0 30px rgba(255,45,45,.6)}}
 .window.active .dot.filled{background:var(--red-bright); border-color:var(--red-bright); box-shadow:0 0 8px rgba(255,45,45,.9); animation:pulseDot 1.2s ease-in-out infinite}
 .window.next{opacity:.72; border-style:dashed}
 .window.next .window-body b{color:var(--muted)}
 
-/* Locked UID stub, with a gold stamp. */
+/* Locked UID stub — the console header of phase 2: deep-red gradient
+   with a faint lattice, a gold rule across the top, and the stamp. */
 .uid-stub{
   display:flex; justify-content:space-between; align-items:flex-start; gap:14px;
-  background:var(--surface); border:1.5px solid var(--hairline-strong); border-radius:var(--r);
+  background:linear-gradient(180deg,#2b0505,#1a0303);
+  border:1.5px solid rgba(255,140,140,.6); border-radius:var(--r);
   padding:18px; margin-bottom:16px; box-shadow:0 10px 30px rgba(0,0,0,.35);
+  position:relative; overflow:hidden;
 }
+.uid-stub::before{
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:.07;
+  background:
+    repeating-linear-gradient(45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px),
+    repeating-linear-gradient(-45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px);
+}
+.uid-stub::after{
+  content:""; position:absolute; left:0; right:0; top:0; height:2px;
+  background:linear-gradient(90deg,transparent,rgba(255,179,0,.9),rgba(255,60,60,.9),transparent);
+}
+.uid-stub>*{position:relative; z-index:2}
 .uid-stub .eyebrow{color:var(--gold)}
+/* Previous submissions is a ledger, not another card: no fill, no
+   shadow — a ruled section under a hairline. */
+#phase-verify .card{background:transparent; border:0; border-top:1px solid var(--hairline); border-radius:0; box-shadow:none; padding:18px 2px 0; margin-bottom:0}
 .stamp{
   flex:none; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
   letter-spacing:.12em; text-transform:uppercase; text-align:center; line-height:1.6;
@@ -446,7 +584,8 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .stat .dot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px}
 .controls{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px}
 .controls input,.controls select{flex:1; min-width:140px}
-.admin-item{cursor:pointer; border-radius:12px; padding:14px 10px; margin:0 -10px; transition:background var(--dur)}
+.admin-item{cursor:pointer; border-radius:12px; padding:14px 10px; margin:0 -10px; transition:background var(--dur), transform var(--dur)}
+.admin-item:active{transform:scale(.99)}
 .admin-item:hover{background:var(--surface-2)}
 .admin-item:focus-visible{background:var(--surface-2)}
 
@@ -463,32 +602,70 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   border:1.5px solid var(--hairline-strong); box-shadow:0 0 24px rgba(255,40,40,.35);
   padding:12px 18px; border-radius:14px;
   max-width:calc(100% - 32px); text-align:center; font-size:14px; font-weight:700;
+  animation:toastIn .3s cubic-bezier(.2,.9,.3,1.2) both;
 }
+@keyframes toastIn{from{opacity:0; transform:translate(-50%,14px) scale(.96)}to{opacity:1; transform:translate(-50%,0) scale(1)}}
 .toast.success{border-color:var(--green); box-shadow:0 0 24px rgba(34,255,136,.3)}
 .toast.error{border-color:var(--red-bright)}
 .modal-backdrop{
   position:fixed; inset:0; background:rgba(10,0,0,.72); display:none;
   align-items:flex-end; justify-content:center; z-index:40; padding:16px;
 }
-.modal-backdrop.show{display:flex}
+.modal-backdrop.show{display:flex; animation:fadeIn .18s ease both}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal-backdrop.show .modal{animation:modalIn .32s cubic-bezier(.2,.9,.3,1.15) both}
+@keyframes modalIn{from{opacity:0; transform:translateY(16px) scale(.98)}to{opacity:1; transform:translateY(0) scale(1)}}
 .modal{
   background:var(--surface); border:1px solid var(--hairline-strong); border-top:3px solid var(--red-bright); border-radius:var(--r);
   padding:22px; width:100%; max-width:520px; max-height:85vh; overflow:auto;
   box-shadow:0 0 40px rgba(255,30,30,.35);
 }
 .modal h3{margin-top:0; font-size:18px}
-/* ---- Bottom dock (static, at the end of the home view — never fixed) ---- */
-.dock{margin-top:24px; padding:16px 14px 14px; background:var(--surface); border:1px solid var(--hairline); border-radius:var(--r); box-shadow:0 10px 30px rgba(0,0,0,.35)}
-.dock-row{display:flex; align-items:center; justify-content:space-between; gap:10px}
+/* ---- Bottom dock: a system bar, not a templated footer ----
+   Deep-red gradient slab with a faint lattice, a gold-to-red rule across
+   the top, a glossy red lozenge around the gold V, a live dot with a
+   ring, and the status badge as a gold-edged chip. The honest line is
+   engraved inside the dock (gold-tinted mono under a hairline) instead
+   of grey small print floating below it. Static, at the end of the home
+   view — never fixed. */
+.dock{
+  margin-top:24px; padding:0; overflow:hidden; position:relative;
+  background:linear-gradient(180deg,#2b0505 0%,#1c0303 55%,#150202 100%);
+  border:1.5px solid rgba(255,140,140,.55); border-radius:18px;
+  box-shadow:0 10px 30px rgba(0,0,0,.45), 0 0 22px rgba(255,30,30,.22);
+}
+.dock::before{
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:.07;
+  background:
+    repeating-linear-gradient(45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px),
+    repeating-linear-gradient(-45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px);
+}
+.dock::after{
+  content:""; position:absolute; left:0; right:0; top:0; height:2px;
+  background:linear-gradient(90deg,transparent,rgba(255,179,0,.9),rgba(255,60,60,.9),transparent);
+}
+.dock-row{position:relative; z-index:2; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:13px 14px 12px}
 .dock-cell{display:flex; align-items:center; gap:7px; min-width:0}
 .dock-left{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.06em; color:var(--text); white-space:nowrap; overflow:hidden}
+.dock-left .live-dot{width:9px; height:9px}
 .dock-live{color:#ff4040}
 .dock-period{color:var(--muted); overflow:hidden; text-overflow:ellipsis}
 .dock-centre{flex:none}
-.dock-v{font-size:19px}
+.dock-mark{
+  width:30px; height:30px; flex:none; display:grid; place-items:center;
+  background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000);
+  border:1.5px solid rgba(255,255,255,.7); border-radius:9px;
+  box-shadow:0 3px 10px rgba(0,0,0,.45), inset 0 2px 0 rgba(255,255,255,.5), 0 0 12px rgba(255,40,40,.5);
+}
+.dock-v{font-size:17px}
 .dock-name{font-weight:900; font-style:italic; font-size:14px; letter-spacing:1.5px; background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
 .dock-right{flex:none}
-.dock-honest{margin:12px 0 0; padding-top:12px; border-top:1px solid var(--hairline); color:var(--muted-2); font-size:12px; text-align:center; line-height:1.6}
+.dock-right .badge{background:rgba(0,0,0,.55); border-color:rgba(255,179,0,.55)}
+.dock-honest{
+  position:relative; z-index:2; margin:0; padding:11px 14px 12px; border-top:1px solid var(--hairline);
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10.5px; letter-spacing:.06em;
+  color:#e8c98a; text-align:center; line-height:1.6;
+}
 
 /* ---------- Prediction (verified users only) ---------- */
 .pred-timers{display:flex; gap:8px; margin:0 0 14px}
@@ -496,19 +673,27 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   flex:1; min-height:44px; border-radius:12px; border:1.5px solid var(--hairline-strong);
   background:rgba(0,0,0,.4); color:var(--muted); font-weight:800; font-size:14px; letter-spacing:1px;
   font-family:"JetBrains Mono",ui-monospace,monospace;
+  transition:transform .12s ease, background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
 }
+.pred-timer:active{transform:scale(.95)}
 .pred-timer.active{
   background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000); color:#fff; border-color:rgba(255,255,255,.7);
   box-shadow:0 4px 14px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5), 0 0 16px rgba(255,60,60,.5);
 }
 .pred-period{
   font-size:22px; font-weight:700; letter-spacing:1px;
-  color:var(--gold-light); margin-top:6px;
+  color:var(--gold-light); margin-top:6px; font-variant-numeric:tabular-nums;
 }
 .pred-countdown{
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:15px; font-weight:700; letter-spacing:2px;
-  color:#fff; margin-top:4px;
+  color:#fff; margin-top:4px; font-variant-numeric:tabular-nums;
 }
+/* Final 10 seconds: the countdown turns gold and throbs — color, glow
+   AND a scale pulse (so it composes with, and replaces, the digit pop
+   while urgent is on). */
+.pred-countdown.urgent{animation:countUrgent .5s ease-in-out infinite}
+.ticker-count.urgent{animation:countUrgent .5s ease-in-out infinite}
+@keyframes countUrgent{0%,100%{color:#fff; text-shadow:0 0 0 rgba(255,179,0,0); transform:scale(1)}50%{color:#ffb300; text-shadow:0 0 12px rgba(255,179,0,.9); transform:scale(1.07)}}
 .pred-signal{display:flex; align-items:center; justify-content:center; gap:16px; width:100%; margin-top:14px}
 .pred-size{
   min-width:118px; height:66px; border-radius:14px; padding:0 14px;
@@ -517,7 +702,18 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   box-shadow:0 6px 18px rgba(0,0,0,.4), inset 0 2px 0 rgba(255,255,255,.55);
   color:#fff; font-weight:900; font-style:italic; font-size:25px; letter-spacing:1px;
   display:flex; align-items:center; justify-content:center;
+  position:relative; overflow:hidden;
 }
+/* Slow sheen sweep across the signal slab (mirrors the VIP pill). */
+.pred-size::after{
+  content:""; position:absolute; top:0; left:-70%; width:45%; height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.5),transparent);
+  transform:skewX(-20deg); animation:sizeSheen 3.2s ease-in-out infinite; pointer-events:none;
+}
+@keyframes sizeSheen{0%,60%{left:-70%}100%{left:135%}}
+/* The signal lands as an event: a small pop when a new period arrives. */
+.pred-signal.signal-pop{animation:signalPop .4s ease both}
+@keyframes signalPop{0%{transform:scale(1)}40%{transform:scale(1.045)}100%{transform:scale(1)}}
 /* WinGo balls: red / green / violet, plus the mixed violet balls (0 = red+violet, 5 = green+violet). */
 .ball{
   width:68px; height:68px; border-radius:50%; position:relative; flex-shrink:0;
@@ -532,8 +728,12 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .ball.violet{background:radial-gradient(circle at 32% 28%, #e9c8ff, #a55eea 45%, #5b1a9e 92%)}
 .ball.vr{background:linear-gradient(135deg, #ff5a4d 0 50%, #a55eea 50% 100%)}
 .ball.vg{background:linear-gradient(135deg, #37d67a 0 50%, #a55eea 50% 100%)}
-.pred-ball{animation:ballIn .7s cubic-bezier(.2,.9,.3,1.2) both}
+.pred-ball.land{animation:ballIn .7s cubic-bezier(.2,.9,.3,1.2) both}
 @keyframes ballIn{0%{transform:rotate(-360deg) scale(.3); opacity:0}60%{transform:rotate(12deg) scale(1.15); opacity:1}100%{transform:rotate(0deg) scale(1); opacity:1}}
+/* Newest history ball + ticker ball land with a pop (JS adds .new/.land
+   only when the newest result actually changed — not on every refresh). */
+.mini-ball.new,.mini-ball.land{animation:miniPop .45s cubic-bezier(.2,.9,.3,1.4) both}
+@keyframes miniPop{0%{transform:scale(.3); opacity:0}60%{transform:scale(1.25); opacity:1}100%{transform:scale(1); opacity:1}}
 .pred-reason{font-size:12px; color:var(--muted); margin-top:10px; text-align:center}
 .pred-history{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:4px; margin-top:14px; width:100%}
 .pred-history-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700; flex:0 0 100%; text-align:center; margin-bottom:4px}
@@ -554,6 +754,7 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .acc-head{display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap}
 .acc-title{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700}
 .acc-summary{font-size:12px; font-weight:700; letter-spacing:1px; color:var(--gold-light)}
+.acc-conf{font-size:11px; letter-spacing:1px; color:var(--muted); text-align:right; margin-top:4px}
 .acc-dots{display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-top:12px}
 .acc-dot{width:10px; height:10px; border-radius:50%; background:rgba(255,255,255,.25)}
 .acc-dot.right{background:#22ff88; box-shadow:0 0 6px rgba(34,255,136,.7)}
@@ -584,6 +785,16 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   .window-bar{flex-wrap:wrap}
   .dock-name{display:none}
   .dock-period{max-width:110px}
+}
+@media (max-width:400px){
+  /* The dock's three cells are tight at 360px: shrink the period and
+     the badge so LIVE + V + status still fit on one row. */
+  .dock-row{padding:12px 10px; gap:8px}
+  .dock-period{max-width:84px}
+  .dock-right .badge{font-size:10.5px; padding:5px 8px}
+  .dock-honest{font-size:10px; padding-left:10px; padding-right:10px}
+  .timeline{padding-left:32px}
+  .timeline .window::before{left:-26px}
 }
 @media (min-width:900px){
   .modal-backdrop{align-items:center}
