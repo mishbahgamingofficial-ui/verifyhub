@@ -241,9 +241,9 @@ def test_telegram_application_builds_with_all_handlers():
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
     handlers = [h for group in app.handlers.values() for h in group]
-    assert len(handlers) == 6
+    assert len(handlers) == 10
     commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
-    assert commands == ["cancel", "help", "predict", "start", "status"]
+    assert commands == ["approve", "cancel", "help", "needinfo", "pending", "predict", "reject", "start", "status"]
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
 
 
@@ -359,7 +359,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
         )
 
     assert _sig(polling) == _sig(webhook)
-    assert len([h for group in polling.handlers.values() for h in group]) == 6
+    assert len([h for group in polling.handlers.values() for h in group]) == 10
 
 
 # ---------------- Production hardening (DB failures, webhook secret, health) ----------------
@@ -495,3 +495,162 @@ def test_resubmit_carries_deposit_screenshot():
                     json={"registration_uid": "DEPO12349", "confirm_correct": True})
     assert r.status_code == 201
     assert r.json()["has_deposit_screenshot"] is True
+
+
+# ---------------- Admin bot commands ----------------
+
+def _fake_update(user_id, args=None):
+    """Minimal PTB update/context pair for calling command handlers directly."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    message = SimpleNamespace(reply_text=AsyncMock())
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=user_id), message=message)
+    context = SimpleNamespace(args=list(args or []))
+    return update, context, message
+
+
+def _make_submission(telegram_id, uid, status="pending_review"):
+    from app.db import Submission, User, get_session_factory
+
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
+        if user is None:
+            user = User(telegram_id=telegram_id, username="t", first_name="T")
+            db.add(user)
+            db.flush()
+        row = Submission(user_id=user.id, registration_uid=uid, status=status)
+        db.add(row)
+        db.commit()
+        return row.id
+    finally:
+        db.close()
+
+
+def _submission_status(sid):
+    from app.db import Submission, get_session_factory
+
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        row = db.query(Submission).filter(Submission.id == sid).first()
+        return (row.status, row.review_message) if row else (None, None)
+    finally:
+        db.close()
+
+
+def test_admin_commands_refuse_non_admin():
+    import asyncio
+
+    from app.bot_handlers import approve_cmd, pending_cmd
+
+    sid = _make_submission(555, "ADMINCMD1")
+    update, context, message = _fake_update(USER_ID)
+    asyncio.run(pending_cmd(update, context))
+    assert "for admins only" in message.reply_text.await_args.args[0]
+
+    update, context, message = _fake_update(USER_ID, [str(sid)])
+    asyncio.run(approve_cmd(update, context))
+    assert "for admins only" in message.reply_text.await_args.args[0]
+    assert _submission_status(sid)[0] == "pending_review"
+
+
+def test_admin_pending_lists_waiting_submissions():
+    import asyncio
+
+    from app.bot_handlers import pending_cmd
+
+    sid1 = _make_submission(556, "ADMINCMD2")
+    sid2 = _make_submission(557, "ADMINCMD3")
+    update, context, message = _fake_update(ADMIN_ID)
+    asyncio.run(pending_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert f"#{sid1}" in text and "ADMINCMD2" in text
+    assert f"#{sid2}" in text and "ADMINCMD3" in text
+
+
+def test_admin_approve_marks_verified_and_notifies(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot_handlers import approve_cmd
+    from app.db import AuditEvent, ReviewHistory, get_session_factory
+
+    notified = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.bot_handlers.notify_user", notified)
+    sid = _make_submission(558, "ADMINCMD4")
+    update, context, message = _fake_update(ADMIN_ID, [str(sid), "Welcome!"])
+    asyncio.run(approve_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert f"Submission #{sid} verified." in text
+    assert "The user has been notified." in text
+    status, review = _submission_status(sid)
+    assert status == "verified" and review == "Welcome!"
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        assert db.query(ReviewHistory).filter(ReviewHistory.submission_id == sid).count() == 1
+        assert db.query(AuditEvent).filter(
+            AuditEvent.record_id == sid, AuditEvent.action == "status_changed"
+        ).count() == 1
+    finally:
+        db.close()
+    notified.assert_awaited_once()
+    call = notified.await_args.args
+    assert call[1] == 558 and call[2] == "verified" and call[3] == "Welcome!"
+
+
+def test_admin_approve_rejects_bad_id_and_terminal():
+    import asyncio
+
+    from app.bot_handlers import approve_cmd
+
+    update, context, message = _fake_update(ADMIN_ID, ["999999"])
+    asyncio.run(approve_cmd(update, context))
+    assert "Submission not found." in message.reply_text.await_args.args[0]
+
+    update, context, message = _fake_update(ADMIN_ID, ["abc"])
+    asyncio.run(approve_cmd(update, context))
+    assert "not a submission id" in message.reply_text.await_args.args[0]
+
+    update, context, message = _fake_update(ADMIN_ID, [])
+    asyncio.run(approve_cmd(update, context))
+    assert "Usage: /approve" in message.reply_text.await_args.args[0]
+
+    sid = _make_submission(559, "ADMINCMD5", status="verified")
+    update, context, message = _fake_update(ADMIN_ID, [str(sid)])
+    asyncio.run(approve_cmd(update, context))
+    assert "Cannot move a submission from verified to verified." in message.reply_text.await_args.args[0]
+
+
+def test_admin_reject_requires_message_and_needinfo(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot_handlers import needinfo_cmd, reject_cmd
+
+    monkeypatch.setattr("app.bot_handlers.notify_user", AsyncMock(return_value=True))
+    sid = _make_submission(560, "ADMINCMD6")
+    update, context, message = _fake_update(ADMIN_ID, [str(sid)])
+    asyncio.run(reject_cmd(update, context))
+    assert "review message is required" in message.reply_text.await_args.args[0]
+    assert _submission_status(sid)[0] == "pending_review"
+
+    update, context, message = _fake_update(ADMIN_ID, [str(sid), "Not eligible"])
+    asyncio.run(reject_cmd(update, context))
+    assert f"Submission #{sid} rejected." in message.reply_text.await_args.args[0]
+    assert _submission_status(sid)[0] == "rejected"
+
+    sid2 = _make_submission(561, "ADMINCMD7")
+    update, context, message = _fake_update(ADMIN_ID, [str(sid2), "Please send a clearer screenshot"])
+    asyncio.run(needinfo_cmd(update, context))
+    assert "needing more information" in message.reply_text.await_args.args[0]
+    assert _submission_status(sid2) == ("info_required", "Please send a clearer screenshot")
+
+
+def test_help_lists_admin_commands_only_for_admin():
+    from app.bot_handlers import _help_text
+
+    text, _ = _help_text(admin=True)
+    assert "/approve <id>" in text and "/pending" in text
+    text, _ = _help_text()
+    assert "/approve" not in text and "/pending" not in text

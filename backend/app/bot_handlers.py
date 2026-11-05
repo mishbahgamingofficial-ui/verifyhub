@@ -19,6 +19,8 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from .config import get_settings
 from .db import Submission, User, get_session_factory, mask_uid
+from .notifications import notify_user
+from .services import ACTIVE_STATUSES, change_submission_status
 
 logger = logging.getLogger("verifyhub.bot")
 settings = get_settings()
@@ -68,8 +70,8 @@ def _welcome_text():
     ])
 
 
-def _help_text():
-    return _render([
+def _help_text(admin: bool = False):
+    segments = [
         ("👑", ("custom", EMOJI_CROWN)),
         (" ", None),
         ("VerifyHub — how it works", "bold"),
@@ -94,7 +96,17 @@ def _help_text():
         ("\n/predict — open predictions (verified users)", None),
         ("\n/help — this guide", None),
         ("\n/cancel — cancel any pending operation", None),
-    ])
+    ]
+    if admin:
+        segments += [
+            ("\n\n", None),
+            ("Admin", "bold"),
+            ("\n/pending — submissions waiting for review", None),
+            ("\n/approve <id> [message] — mark verified", None),
+            ("\n/reject <id> <message> — mark rejected", None),
+            ("\n/needinfo <id> <message> — ask for more information", None),
+        ]
+    return _render(segments)
 
 STATUS_LABELS = {
     "not_submitted": "Not submitted",
@@ -210,7 +222,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, entities = _help_text()
+    text, entities = _help_text(admin=_is_admin(update.effective_user.id))
     await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
 
 
@@ -218,6 +230,126 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     status, row, _ = _latest_status(update.effective_user.id)
     text, entities = _status_card(status, row)
     await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
+
+
+def _is_admin(telegram_id: int) -> bool:
+    """Server-side admin check: the bot allowlist, the same IDs as the API."""
+    return settings.is_admin(telegram_id)
+
+
+async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: the review queue, newest first, with full UIDs."""
+    if not _is_admin(update.effective_user.id):
+        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
+        return
+    db = get_session_factory(settings.database_url)()
+    try:
+        rows = (
+            db.query(Submission)
+            .filter(Submission.status.in_(ACTIVE_STATUSES))
+            .order_by(desc(Submission.submitted_at))
+            .limit(10)
+            .all()
+        )
+        owners = {}
+        if rows:
+            owners = {
+                u.id: u.telegram_id
+                for u in db.query(User).filter(User.id.in_([r.user_id for r in rows])).all()
+            }
+    finally:
+        db.close()
+    if not rows:
+        await update.message.reply_text("No submissions are waiting for review.", reply_markup=_keyboard())
+        return
+    lines = ["Pending submissions (newest first):"]
+    for r in rows:
+        when = r.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if r.submitted_at else "—"
+        lines.append(
+            f"#{r.id} · {r.registration_uid} · {STATUS_LABELS.get(r.status, r.status)}"
+            f" · user {owners.get(r.user_id, '?')} · {when}"
+        )
+    lines.append("\n/approve <id> [message] · /reject <id> <message> · /needinfo <id> <message>")
+    await update.message.reply_text("\n".join(lines), reply_markup=_keyboard())
+
+
+async def _admin_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to_status: str, command: str) -> None:
+    """Shared /approve /reject /needinfo: ``<id> [review message]``.
+
+    Uses the same transition as the Mini App admin (services), so the
+    history, audit trail and user notification are identical either way.
+    """
+    admin_id = update.effective_user.id
+    if not _is_admin(admin_id):
+        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
+        return
+    args = list(context.args or [])
+    if not args:
+        await update.message.reply_text(
+            f"Usage: /{command} <submission id> [review message]", reply_markup=_keyboard()
+        )
+        return
+    try:
+        submission_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text(
+            f"'{args[0]}' is not a submission id. Usage: /{command} <submission id> [review message]",
+            reply_markup=_keyboard(),
+        )
+        return
+    message = " ".join(args[1:]).strip() or None
+    db = get_session_factory(settings.database_url)()
+    try:
+        row, error, _not_found = change_submission_status(
+            db,
+            submission_id=submission_id,
+            to_status=to_status,
+            message=message,
+            admin_telegram_id=admin_id,
+        )
+        owner_telegram_id = None
+        if row is not None:
+            owner = db.query(User).filter(User.id == row.user_id).first()
+            owner_telegram_id = owner.telegram_id if owner else None
+    finally:
+        db.close()
+    if error is not None:
+        await update.message.reply_text(error, reply_markup=_keyboard())
+        return
+    notified = False
+    if owner_telegram_id is not None:
+        notified = await notify_user(
+            settings.bot_token, owner_telegram_id, to_status, row.review_message, settings.mini_app_url
+        )
+    verb = {
+        "verified": "verified",
+        "rejected": "rejected",
+        "info_required": "marked as needing more information",
+    }[to_status]
+    text, entities = _render([
+        ("✅", ("custom", EMOJI_CHECK)),
+        (f" Submission #{row.id} {verb}.", None),
+    ])
+    if row.review_message:
+        text += f"\nReview message: {row.review_message}"
+    text += (
+        "\nThe user has been notified."
+        if notified
+        else "\nThe user could not be notified (they may have blocked the bot)."
+    )
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
+
+
+async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _admin_change(update, context, to_status="verified", command="approve")
+
+
+async def reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _admin_change(update, context, to_status="rejected", command="reject")
+
+
+async def needinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _admin_change(update, context, to_status="info_required", command="needinfo")
 
 
 def _predict_url() -> str | None:
@@ -263,7 +395,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     if query.data == "__help__":
-        text, entities = _help_text()
+        text, entities = _help_text(admin=_is_admin(query.from_user.id))
         await query.message.reply_text(text, entities=entities, reply_markup=_keyboard())
     elif query.data == "__status__":
         status, row, _ = _latest_status(query.from_user.id)
@@ -278,6 +410,10 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("predict", predict_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("pending", pending_cmd))
+    app.add_handler(CommandHandler("approve", approve_cmd))
+    app.add_handler(CommandHandler("reject", reject_cmd))
+    app.add_handler(CommandHandler("needinfo", needinfo_cmd))
     app.add_handler(CallbackQueryHandler(_button))
 
 

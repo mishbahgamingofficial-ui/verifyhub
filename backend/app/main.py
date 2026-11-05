@@ -52,7 +52,7 @@ from .notifications import notify_user
 from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
-from .services import ACTIVE_STATUSES, STATUSES, can_transition
+from .services import ACTIVE_STATUSES, STATUSES, change_submission_status
 
 logger = logging.getLogger("verifyhub.api")
 
@@ -579,42 +579,16 @@ async def admin_change_status(
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ):
-    if payload.to_status not in STATUSES:
-        raise HTTPException(status_code=422, detail="Unknown status.")
-    if payload.to_status in ("rejected", "info_required") and not (payload.message or "").strip():
-        raise HTTPException(status_code=422, detail="A review message is required when rejecting or requesting more information.")
-    row = db.query(Submission).filter(Submission.id == submission_id).first()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Submission not found.")
-    if not can_transition(row.status, payload.to_status):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Cannot move a submission from {row.status} to {payload.to_status}.",
-        )
-    previous = row.status
-    row.status = payload.to_status
-    if payload.message is not None:
-        row.review_message = payload.message.strip() or None
-    row.updated_at = datetime.now(timezone.utc)
-    db.add(
-        ReviewHistory(
-            submission_id=row.id,
-            admin_telegram_id=admin.telegram_id,
-            previous_status=previous,
-            new_status=payload.to_status,
-            reason=(payload.message.strip() if payload.message else None),
-            internal_note=(payload.internal_note.strip() if payload.internal_note else None),
-        )
-    )
-    _audit(
+    row, error, not_found = change_submission_status(
         db,
-        admin.telegram_id,
-        "status_changed",
-        "submission",
-        row.id,
-        {"previous_status": previous, "new_status": payload.to_status},
+        submission_id=submission_id,
+        to_status=payload.to_status,
+        message=payload.message,
+        admin_telegram_id=admin.telegram_id,
+        internal_note=payload.internal_note,
     )
-    db.commit()
+    if error is not None:
+        raise HTTPException(status_code=404 if not_found else 422, detail=error)
     try:
         db.refresh(row)
     except Exception:
