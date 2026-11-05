@@ -48,7 +48,7 @@ from telegram.ext import Application as TelegramApplication
 from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
-from .notifications import notify_user
+from .notifications import notify_admins, notify_user
 from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
@@ -430,6 +430,7 @@ class SubmissionIn(BaseModel):
 @app.post("/api/submissions", status_code=201)
 def create_submission(
     payload: SubmissionIn,
+    background: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
@@ -489,6 +490,21 @@ def create_submission(
         # The row is already committed; with expire_on_commit=False the
         # in-memory values stay usable, so a failed refresh must not 500.
         logger.exception("Failed to refresh submission after create (id=%s).", row.id)
+    # Alert every admin right away (after commit): the submission is stored,
+    # so a missed alert only costs a notification, never the submission.
+    if settings.admin_telegram_ids:
+        background.add_task(
+            notify_admins,
+            settings.bot_token,
+            list(settings.admin_telegram_ids),
+            submission_id=row.id,
+            registration_uid=row.registration_uid,
+            user_telegram_id=user.telegram_id,
+            username=user.username,
+            first_name=user.first_name,
+            submitted_at=row.submitted_at,
+            mini_app_url=settings.mini_app_url,
+        )
     return _public_submission(row)
 
 

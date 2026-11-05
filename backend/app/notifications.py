@@ -49,3 +49,65 @@ async def notify_user(bot_token: str, telegram_id: int, status: str, message: st
     except Exception:
         logger.exception("Telegram notify error (telegram_id redacted from payload)")
         return False
+
+
+async def notify_admins(
+    bot_token: str,
+    admin_ids: list[int],
+    *,
+    submission_id: int,
+    registration_uid: str,
+    user_telegram_id: int,
+    username: str | None,
+    first_name: str | None,
+    submitted_at,
+    mini_app_url: str | None,
+) -> int:
+    """Alert every admin the moment a user submits a UID, with one-tap actions.
+
+    Returns how many admins were reached. Failures are logged, never raised:
+    the submission is already stored; a missed alert must not break it.
+    The buttons carry callback_data the bot's admin handler understands
+    (``admin:approve:<id>:n`` etc.), so the admin decides without opening
+    the Mini App.
+    """
+    if not bot_token or not admin_ids:
+        return 0
+    who = f"@{username}" if username else (first_name or str(user_telegram_id))
+    when = submitted_at.strftime("%Y-%m-%d %H:%M UTC") if submitted_at else "—"
+    text = (
+        f"🆕 New submission #{submission_id}\n\n"
+        f"UID: {registration_uid}\n"
+        f"User: {who} ({user_telegram_id})\n"
+        f"Sent: {when}\n\n"
+        "Tap to decide, or use /pending for the full queue."
+    )
+    keyboard = {
+        "inline_keyboard": [[
+            {"text": "✅ Approve", "callback_data": f"admin:approve:{submission_id}:n"},
+            {"text": "❌ Reject", "callback_data": f"admin:reject:{submission_id}:n"},
+            {"text": "ℹ️ Need info", "callback_data": f"admin:info:{submission_id}:n"},
+        ]]
+    }
+    if mini_app_url:
+        keyboard["inline_keyboard"].append(
+            [{"text": "Open Verification Panel", "web_app": {"url": mini_app_url}}]
+        )
+    sent = 0
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            for admin_id in admin_ids:
+                payload: dict = {"chat_id": admin_id, "text": text, "reply_markup": keyboard}
+                try:
+                    resp = await client.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload
+                    )
+                    if resp.status_code == 200:
+                        sent += 1
+                    else:
+                        logger.warning("Telegram admin notify failed: status=%s", resp.status_code)
+                except Exception:
+                    logger.exception("Telegram admin notify error (admin id redacted)")
+    except Exception:
+        logger.exception("Telegram admin notify client error")
+    return sent

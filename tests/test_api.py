@@ -241,9 +241,9 @@ def test_telegram_application_builds_with_all_handlers():
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
     handlers = [h for group in app.handlers.values() for h in group]
-    assert len(handlers) == 10
+    assert len(handlers) == 11
     commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
-    assert commands == ["approve", "cancel", "help", "needinfo", "pending", "predict", "reject", "start", "status"]
+    assert commands == ["admin", "approve", "cancel", "help", "needinfo", "pending", "predict", "reject", "start", "status"]
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
 
 
@@ -359,7 +359,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
         )
 
     assert _sig(polling) == _sig(webhook)
-    assert len([h for group in polling.handlers.values() for h in group]) == 10
+    assert len([h for group in polling.handlers.values() for h in group]) == 11
 
 
 # ---------------- Production hardening (DB failures, webhook secret, health) ----------------
@@ -654,3 +654,149 @@ def test_help_lists_admin_commands_only_for_admin():
     assert "/approve <id>" in text and "/pending" in text
     text, _ = _help_text()
     assert "/approve" not in text and "/pending" not in text
+
+
+# ---------------- Admin panel + instant admin alerts ----------------
+
+def _fake_query(user_id, data):
+    """Minimal PTB callback-query pair for calling _button directly."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    message = SimpleNamespace(reply_text=AsyncMock())
+    query = SimpleNamespace(
+        data=data, from_user=SimpleNamespace(id=user_id), message=message,
+        answer=AsyncMock(), edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(callback_query=query)
+    return update, query, message
+
+
+def test_notify_admins_posts_alert_with_action_buttons(monkeypatch):
+    import asyncio
+    from datetime import datetime, timezone
+
+    import app.notifications as notif_module
+
+    posts = []
+
+    class _Resp:
+        status_code = 200
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            posts.append((url, json))
+            return _Resp()
+
+    monkeypatch.setattr(notif_module.httpx, "AsyncClient", _Client)
+    sent = asyncio.run(notif_module.notify_admins(
+        "tok", [111, 222],
+        submission_id=7, registration_uid="UID123456", user_telegram_id=999,
+        username="someone", first_name="Some",
+        submitted_at=datetime(2026, 11, 5, 23, 0, tzinfo=timezone.utc),
+        mini_app_url="https://example.test/",
+    ))
+    assert sent == 2 and len(posts) == 2
+    assert posts[0][1]["chat_id"] == 111 and posts[1][1]["chat_id"] == 222
+    assert "UID123456" in posts[0][1]["text"] and "#7" in posts[0][1]["text"]
+    buttons = posts[0][1]["reply_markup"]["inline_keyboard"][0]
+    assert [b["callback_data"] for b in buttons] == [
+        "admin:approve:7:n", "admin:reject:7:n", "admin:info:7:n",
+    ]
+
+
+def test_submission_notifies_admins(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import app.main as main_module
+
+    notified = AsyncMock()
+    monkeypatch.setattr(main_module, "notify_admins", notified)
+    r = client.post("/api/submissions", headers=H(666),
+                    json={"registration_uid": "ADMINNOTIFY1", "confirm_correct": True})
+    assert r.status_code == 201
+    notified.assert_awaited_once()
+    assert notified.await_args.args[1] == [ADMIN_ID]
+    kwargs = notified.await_args.kwargs
+    assert kwargs["registration_uid"] == "ADMINNOTIFY1"
+    assert kwargs["user_telegram_id"] == 666
+    assert kwargs["submission_id"] == r.json()["id"]
+
+
+def test_admin_dashboard_shows_stats():
+    import asyncio
+
+    from app.bot_handlers import admin_cmd
+
+    _make_submission(570, "DASH1")
+    _make_submission(571, "DASH2")
+    _make_submission(572, "DASH3", status="verified")
+    update, context, message = _fake_update(ADMIN_ID)
+    asyncio.run(admin_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert "Admin Panel" in text
+    assert "Pending:" in text and "Verified:" in text
+    assert "DASH1" in text and "DASH2" in text and "DASH3" in text
+    keyboard = message.reply_text.await_args.kwargs["reply_markup"]
+    assert keyboard.inline_keyboard[0][0].callback_data == "admin:pending"
+
+
+def test_admin_approve_button_edits_notification(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot_handlers import _button
+
+    monkeypatch.setattr("app.bot_handlers.notify_user", AsyncMock(return_value=True))
+    sid = _make_submission(573, "BTN1")
+    update, query, message = _fake_query(ADMIN_ID, f"admin:approve:{sid}:n")
+    asyncio.run(_button(update, None))
+    assert _submission_status(sid)[0] == "verified"
+    text = query.edit_message_text.await_args.args[0]
+    assert f"Submission #{sid} verified." in text
+    assert "reply_markup" not in query.edit_message_text.await_args.kwargs
+
+
+def test_admin_button_refuses_non_admin():
+    import asyncio
+
+    from app.bot_handlers import _button
+
+    sid = _make_submission(574, "BTN2")
+    update, query, message = _fake_query(USER_ID, f"admin:approve:{sid}:n")
+    asyncio.run(_button(update, None))
+    assert _submission_status(sid)[0] == "pending_review"
+    assert "for admins only" in message.reply_text.await_args.args[0]
+
+
+def test_start_shows_dashboard_to_admin():
+    import asyncio
+
+    from app.bot_handlers import start
+
+    update, context, message = _fake_update(ADMIN_ID)
+    asyncio.run(start(update, context))
+    assert message.reply_text.await_count == 2
+    assert "Admin Panel" in message.reply_text.await_args_list[1].args[0]
+
+    update, context, message = _fake_update(USER_ID)
+    asyncio.run(start(update, context))
+    assert message.reply_text.await_count == 1
+
+
+def test_admin_keyboard_has_panel_button_only_for_admin():
+    from app.bot_handlers import _keyboard
+
+    admin_buttons = [b for row in _keyboard(admin=True).inline_keyboard for b in row]
+    assert any(b.text == "🛡 Admin Panel" and b.callback_data == "__admin__" for b in admin_buttons)
+    user_buttons = [b for row in _keyboard().inline_keyboard for b in row]
+    assert all(b.text != "🛡 Admin Panel" for b in user_buttons)

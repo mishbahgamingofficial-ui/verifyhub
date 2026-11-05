@@ -12,15 +12,25 @@ mode (``with_updater=True`` for polling, ``False`` for webhook).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, Update, WebAppInfo
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .config import get_settings
 from .db import Submission, User, get_session_factory, mask_uid
+from .emoji import (
+    EMOJI_CHART,
+    EMOJI_CHART_UP,
+    EMOJI_CHECK,
+    EMOJI_CROWN,
+    EMOJI_DIAMOND,
+    EMOJI_TARGET,
+    EMOJI_THINKING,
+)
 from .notifications import notify_user
-from .services import ACTIVE_STATUSES, change_submission_status
+from .services import ACTIVE_STATUSES, STATUSES, change_submission_status
 
 logger = logging.getLogger("verifyhub.bot")
 settings = get_settings()
@@ -101,6 +111,7 @@ def _help_text(admin: bool = False):
         segments += [
             ("\n\n", None),
             ("Admin", "bold"),
+            ("\n/admin — open the admin panel", None),
             ("\n/pending — submissions waiting for review", None),
             ("\n/approve <id> [message] — mark verified", None),
             ("\n/reject <id> <message> — mark rejected", None),
@@ -118,25 +129,18 @@ STATUS_LABELS = {
 }
 
 
-# Premium custom emojis for the bot buttons (Bot API 9.4 `icon_custom_emoji_id`).
-# Resolved from the user's own sets via getStickerSet; the bot owner has
-# Telegram Premium, which is what lets the bot use them. Older clients
-# ignore the icon and show the plain label instead.
-EMOJI_CROWN = "6052853159204757225"      # 👑 from emoji_H_M_by_TgEmodziBot
-EMOJI_CHART = "5190806721286657692"      # 📊 from FinanceEmoji
-EMOJI_DIAMOND = "6053338597883386982"   # 💎 from emoji_H_M_by_TgEmodziBot
-EMOJI_THINKING = "6334471179801200139"  # 🧐 from peachgomaemoji
-EMOJI_CHECK = "6055128392360010233"      # ✅ from emoji_H_M_by_TgEmodziBot
-EMOJI_TARGET = "5310278924616356636"     # 🎯 from FinanceEmoji
-EMOJI_CHART_UP = "5197503331215361533"   # 📈 from FinanceEmoji
+def _is_admin(telegram_id: int) -> bool:
+    """Server-side admin check: the bot allowlist, the same IDs as the API."""
+    return settings.is_admin(telegram_id)
 
 
-def _keyboard() -> InlineKeyboardMarkup:
+def _keyboard(admin: bool = False) -> InlineKeyboardMarkup:
     """Main menu: stacked full-width buttons, coloured via Bot API 9.4 `style`.
 
     Only three styles exist (primary=blue, success=green, danger=red) and
     older Telegram clients ignore them, so the labels carry the meaning too
     (emoji + words) and at most two buttons per keyboard are styled.
+    Admins get an extra Admin Panel button at the bottom.
     """
     rows = []
     if settings.mini_app_url:
@@ -146,6 +150,8 @@ def _keyboard() -> InlineKeyboardMarkup:
     if predict_url:
         rows.append([InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=predict_url), icon_custom_emoji_id=EMOJI_DIAMOND)])
     rows.append([InlineKeyboardButton("Help", callback_data="__help__", icon_custom_emoji_id=EMOJI_THINKING)])
+    if admin:
+        rows.append([InlineKeyboardButton("🛡 Admin Panel", callback_data="__admin__", icon_custom_emoji_id=EMOJI_CROWN)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -214,34 +220,57 @@ def _latest_status(telegram_id: int) -> tuple[str, Submission | None, User | Non
         db.close()
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, entities = _welcome_text()
-    if not settings.mini_app_url and not settings.registration_url:
-        text += "\n\nThe panel and registration links are not configured yet — ask the administrator to set MINI_APP_URL and REGISTRATION_URL."
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
+def _admin_dashboard() -> tuple[str, list, InlineKeyboardMarkup]:
+    """Live admin overview: counts by status, today's intake, recent rows."""
+    db = get_session_factory(settings.database_url)()
+    try:
+        rows = db.query(Submission).order_by(desc(Submission.submitted_at)).limit(5).all()
+        total = db.query(Submission).count()
+        counts = {s: 0 for s in STATUSES}
+        for st, n in db.query(Submission.status, func.count()).group_by(Submission.status).all():
+            counts[st] = n
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = db.query(Submission).filter(Submission.submitted_at >= today_start).count()
+        owners = {}
+        if rows:
+            owners = {
+                u.id: u.telegram_id
+                for u in db.query(User).filter(User.id.in_([r.user_id for r in rows])).all()
+            }
+    finally:
+        db.close()
+    segments = [
+        ("📊", ("custom", EMOJI_CHART)),
+        (" ", None),
+        ("Admin Panel", "bold"),
+        ("\n\n", None),
+        (f"Total: {total}  ·  Today: {today}", None),
+        ("\n", None),
+        (f"Pending: {counts['pending_review']}  ·  Under review: {counts['under_review']}", None),
+        ("\n", None),
+        (f"Verified: {counts['verified']}  ·  Rejected: {counts['rejected']}  ·  Info needed: {counts['info_required']}", None),
+    ]
+    if rows:
+        segments.append(("\n\nRecent:", "bold"))
+        for r in rows:
+            when = r.submitted_at.strftime("%m-%d %H:%M") if r.submitted_at else "—"
+            segments.append((
+                f"\n#{r.id} · {r.registration_uid} · {STATUS_LABELS.get(r.status, r.status)}"
+                f" · user {owners.get(r.user_id, '?')} · {when}",
+                None,
+            ))
+    else:
+        segments.append(("\n\nNo submissions yet.", None))
+    text, entities = _render(segments)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📋 Pending queue", callback_data="admin:pending"),
+        InlineKeyboardButton("🔄 Refresh", callback_data="admin:refresh:d"),
+    ]])
+    return text, entities, keyboard
 
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, entities = _help_text(admin=_is_admin(update.effective_user.id))
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
-
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    status, row, _ = _latest_status(update.effective_user.id)
-    text, entities = _status_card(status, row)
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
-
-
-def _is_admin(telegram_id: int) -> bool:
-    """Server-side admin check: the bot allowlist, the same IDs as the API."""
-    return settings.is_admin(telegram_id)
-
-
-async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin only: the review queue, newest first, with full UIDs."""
-    if not _is_admin(update.effective_user.id):
-        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
-        return
+def _pending_view() -> tuple[str, InlineKeyboardMarkup]:
+    """The review queue as text plus one-tap action buttons per row."""
     db = get_session_factory(settings.database_url)()
     try:
         rows = (
@@ -259,45 +288,78 @@ async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             }
     finally:
         db.close()
+    nav = [[
+        InlineKeyboardButton("📊 Admin Panel", callback_data="admin:dashboard"),
+        InlineKeyboardButton("🔄 Refresh", callback_data="admin:refresh:p"),
+    ]]
     if not rows:
-        await update.message.reply_text("No submissions are waiting for review.", reply_markup=_keyboard())
-        return
+        return "No submissions are waiting for review.", InlineKeyboardMarkup(nav)
     lines = ["Pending submissions (newest first):"]
+    keyboard_rows = []
     for r in rows:
         when = r.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if r.submitted_at else "—"
         lines.append(
             f"#{r.id} · {r.registration_uid} · {STATUS_LABELS.get(r.status, r.status)}"
             f" · user {owners.get(r.user_id, '?')} · {when}"
         )
-    lines.append("\n/approve <id> [message] · /reject <id> <message> · /needinfo <id> <message>")
-    await update.message.reply_text("\n".join(lines), reply_markup=_keyboard())
+        keyboard_rows.append([
+            InlineKeyboardButton(f"✅ #{r.id}", callback_data=f"admin:approve:{r.id}:p"),
+            InlineKeyboardButton(f"❌ #{r.id}", callback_data=f"admin:reject:{r.id}:p"),
+            InlineKeyboardButton(f"ℹ️ #{r.id}", callback_data=f"admin:info:{r.id}:p"),
+        ])
+    lines.append("\nTap ✅ to approve, ❌ to reject, ℹ️ to ask for more info.")
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows + nav)
 
 
-async def _admin_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to_status: str, command: str) -> None:
-    """Shared /approve /reject /needinfo: ``<id> [review message]``.
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    admin = _is_admin(update.effective_user.id)
+    text, entities = _welcome_text()
+    if not settings.mini_app_url and not settings.registration_url:
+        text += "\n\nThe panel and registration links are not configured yet — ask the administrator to set MINI_APP_URL and REGISTRATION_URL."
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+    if admin:
+        # An admin opening the bot sees the whole picture right away.
+        dtext, dentities, dkeyboard = _admin_dashboard()
+        await update.message.reply_text(dtext, entities=dentities, reply_markup=dkeyboard)
 
-    Uses the same transition as the Mini App admin (services), so the
-    history, audit trail and user notification are identical either way.
-    """
-    admin_id = update.effective_user.id
-    if not _is_admin(admin_id):
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    admin = _is_admin(update.effective_user.id)
+    text, entities = _help_text(admin=admin)
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    admin = _is_admin(update.effective_user.id)
+    status, row, _ = _latest_status(update.effective_user.id)
+    text, entities = _status_card(status, row)
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: the full panel — stats, recent rows, queue + refresh."""
+    if not _is_admin(update.effective_user.id):
         await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
         return
-    args = list(context.args or [])
-    if not args:
-        await update.message.reply_text(
-            f"Usage: /{command} <submission id> [review message]", reply_markup=_keyboard()
-        )
+    text, entities, keyboard = _admin_dashboard()
+    await update.message.reply_text(text, entities=entities, reply_markup=keyboard)
+
+
+async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin only: the review queue, newest first, with one-tap actions."""
+    if not _is_admin(update.effective_user.id):
+        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
         return
-    try:
-        submission_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text(
-            f"'{args[0]}' is not a submission id. Usage: /{command} <submission id> [review message]",
-            reply_markup=_keyboard(),
-        )
-        return
-    message = " ".join(args[1:]).strip() or None
+    text, keyboard = _pending_view()
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, message: str | None):
+    """Run the shared transition + user notification.
+
+    Returns ``(text, entities, error)``: on success the confirmation to show
+    the admin; on failure ``(None, None, human-readable reason)``.
+    """
     db = get_session_factory(settings.database_url)()
     try:
         row, error, _not_found = change_submission_status(
@@ -314,8 +376,7 @@ async def _admin_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, t
     finally:
         db.close()
     if error is not None:
-        await update.message.reply_text(error, reply_markup=_keyboard())
-        return
+        return None, None, error
     notified = False
     if owner_telegram_id is not None:
         notified = await notify_user(
@@ -337,7 +398,39 @@ async def _admin_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, t
         if notified
         else "\nThe user could not be notified (they may have blocked the bot)."
     )
-    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
+    return text, entities, None
+
+
+async def _admin_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to_status: str, command: str) -> None:
+    """Shared /approve /reject /needinfo: ``<id> [review message]``.
+
+    Uses the same transition as the Mini App admin (services), so the
+    history, audit trail and user notification are identical either way.
+    """
+    admin_id = update.effective_user.id
+    if not _is_admin(admin_id):
+        await update.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
+        return
+    args = list(context.args or [])
+    if not args:
+        await update.message.reply_text(
+            f"Usage: /{command} <submission id> [review message]", reply_markup=_keyboard(admin=True)
+        )
+        return
+    try:
+        submission_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text(
+            f"'{args[0]}' is not a submission id. Usage: /{command} <submission id> [review message]",
+            reply_markup=_keyboard(admin=True),
+        )
+        return
+    message = " ".join(args[1:]).strip() or None
+    text, entities, error = await _do_admin_action(admin_id, submission_id, to_status, message)
+    if error is not None:
+        await update.message.reply_text(error, reply_markup=_keyboard(admin=True))
+        return
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=True))
 
 
 async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -387,20 +480,74 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # no-op acknowledgement — it never deletes data.
     await update.message.reply_text(
         "Nothing pending to cancel. You can continue with /start or check /status.",
-        reply_markup=_keyboard(),
+        reply_markup=_keyboard(admin=_is_admin(update.effective_user.id)),
     )
 
 
 async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    if query.data == "__help__":
-        text, entities = _help_text(admin=_is_admin(query.from_user.id))
-        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard())
-    elif query.data == "__status__":
-        status, row, _ = _latest_status(query.from_user.id)
+    admin_id = query.from_user.id
+    admin = _is_admin(admin_id)
+    data = query.data or ""
+    if data == "__help__":
+        text, entities = _help_text(admin=admin)
+        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+    elif data == "__status__":
+        status, row, _ = _latest_status(admin_id)
         text, entities = _status_card(status, row)
-        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard())
+        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+    elif data == "__admin__" or data.startswith("admin:"):
+        if not admin:
+            await query.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
+            return
+        if data == "__admin__" or data == "admin:dashboard":
+            text, entities, keyboard = _admin_dashboard()
+            if data == "__admin__":
+                await query.message.reply_text(text, entities=entities, reply_markup=keyboard)
+            else:
+                await query.edit_message_text(text, entities=entities, reply_markup=keyboard)
+            return
+        if data == "admin:pending":
+            text, keyboard = _pending_view()
+            await query.edit_message_text(text, reply_markup=keyboard)
+            return
+        if data in ("admin:refresh:d", "admin:refresh:p"):
+            if data.endswith(":d"):
+                text, entities, keyboard = _admin_dashboard()
+                await query.edit_message_text(text, entities=entities, reply_markup=keyboard)
+            else:
+                text, keyboard = _pending_view()
+                await query.edit_message_text(text, reply_markup=keyboard)
+            return
+        parts = data.split(":")
+        if len(parts) == 4 and parts[1] in ("approve", "reject", "info"):
+            try:
+                sid = int(parts[2])
+            except ValueError:
+                return
+            to_status = {"approve": "verified", "reject": "rejected", "info": "info_required"}[parts[1]]
+            # One-tap decisions carry a default review message; the admin
+            # can still use /reject <id> <message> for a custom one first.
+            message = {
+                "verified": None,
+                "rejected": "Your submission was not approved by the administrator.",
+                "info_required": "Additional information is required. Please check the verification panel.",
+            }[to_status]
+            text, entities, error = await _do_admin_action(admin_id, sid, to_status, message)
+            if error is not None:
+                await query.message.reply_text(error, reply_markup=_keyboard(admin=True))
+                return
+            if parts[3] == "n":
+                # The new-submission alert: replace it with the outcome.
+                await query.edit_message_text(text, entities=entities)
+            else:
+                # The pending queue: confirmation on top, refreshed queue below.
+                ptext, pkeyboard = _pending_view()
+                await query.edit_message_text(
+                    text + "\n\n" + ptext, entities=entities, reply_markup=pkeyboard
+                )
+            return
 
 
 def register_handlers(app: Application) -> None:
@@ -410,6 +557,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("predict", predict_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(CommandHandler("approve", approve_cmd))
     app.add_handler(CommandHandler("reject", reject_cmd))
