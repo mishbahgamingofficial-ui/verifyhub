@@ -58,6 +58,16 @@ STATUS_LABELS = {
 }
 
 
+# Premium custom emojis for the bot buttons (Bot API 9.4 `icon_custom_emoji_id`).
+# Resolved from the user's own sets via getStickerSet; the bot owner has
+# Telegram Premium, which is what lets the bot use them. Older clients
+# ignore the icon and show the plain label instead.
+EMOJI_CROWN = "6052853159204757225"      # 👑 from emoji_H_M_by_TgEmodziBot
+EMOJI_CHART = "5190806721286657692"      # 📊 from FinanceEmoji
+EMOJI_DIAMOND = "6053338597883386982"   # 💎 from emoji_H_M_by_TgEmodziBot
+EMOJI_THINKING = "6334471179801200139"  # 🧐 from peachgomaemoji
+
+
 def _keyboard() -> InlineKeyboardMarkup:
     """Main menu: stacked full-width buttons, coloured via Bot API 9.4 `style`.
 
@@ -67,12 +77,12 @@ def _keyboard() -> InlineKeyboardMarkup:
     """
     rows = []
     if settings.mini_app_url:
-        rows.append([InlineKeyboardButton("👑 Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url), style="primary")])
-    rows.append([InlineKeyboardButton("📊 Check My Status", callback_data="__status__", style="success")])
+        rows.append([InlineKeyboardButton("Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url), style="primary", icon_custom_emoji_id=EMOJI_CROWN)])
+    rows.append([InlineKeyboardButton("Check My Status", callback_data="__status__", style="success", icon_custom_emoji_id=EMOJI_CHART)])
     predict_url = _predict_url()
     if predict_url:
-        rows.append([InlineKeyboardButton("💎 Open Predictions", web_app=WebAppInfo(url=predict_url))])
-    rows.append([InlineKeyboardButton("❓ Help", callback_data="__help__")])
+        rows.append([InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=predict_url), icon_custom_emoji_id=EMOJI_DIAMOND)])
+    rows.append([InlineKeyboardButton("Help", callback_data="__help__", icon_custom_emoji_id=EMOJI_THINKING)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -164,7 +174,7 @@ async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Tap below to open the predictions."
     )
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("💎 Open Predictions", web_app=WebAppInfo(url=url), style="success")]]
+        [[InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=url), style="success", icon_custom_emoji_id=EMOJI_DIAMOND)]]
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 

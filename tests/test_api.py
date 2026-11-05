@@ -253,17 +253,26 @@ def test_main_keyboard_is_colourful_and_complete():
     Older Telegram clients ignore `style`, so every button also carries its
     meaning in words + emoji; at most two buttons per keyboard are styled.
     """
-    from app.bot_handlers import _keyboard
+    from app.bot_handlers import (
+        EMOJI_CHART,
+        EMOJI_CROWN,
+        EMOJI_DIAMOND,
+        EMOJI_THINKING,
+        _keyboard,
+    )
 
     buttons = [b for row in _keyboard().inline_keyboard for b in row]
     by_text = {b.text: b for b in buttons}
-    assert by_text["👑 Open Verification Panel"].style == "primary"
-    assert by_text["📊 Check My Status"].style == "success"
-    assert "💎 Open Predictions" in by_text
-    assert "❓ Help" in by_text
+    assert by_text["Open Verification Panel"].style == "primary"
+    assert by_text["Open Verification Panel"].icon_custom_emoji_id == EMOJI_CROWN
+    assert by_text["Check My Status"].style == "success"
+    assert by_text["Check My Status"].icon_custom_emoji_id == EMOJI_CHART
+    assert by_text["Open Predictions"].icon_custom_emoji_id == EMOJI_DIAMOND
+    assert by_text["Help"].icon_custom_emoji_id == EMOJI_THINKING
     assert sum(1 for b in buttons if b.style is not None) <= 2
     # The style field serialises into the Bot API payload.
-    assert by_text["👑 Open Verification Panel"].to_dict()["style"] == "primary"
+    assert by_text["Open Verification Panel"].to_dict()["style"] == "primary"
+    assert by_text["Open Verification Panel"].to_dict()["icon_custom_emoji_id"] == EMOJI_CROWN
 
 
 def test_polling_bot_builds_with_updater_and_same_handlers():
