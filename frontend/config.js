@@ -5,10 +5,5 @@
 
    PLAN B (Hostinger SHARED hosting): the API runs on Render, on a
    different domain than the website. Then put the Render API URL here,
-   with NO trailing slash, e.g.:
-       window.VERIFYHUB_API_BASE = 'https://verifyhub-api.onrender.com';
-   The website stays on Hostinger; only the API calls go to Render.
-   CORS is already open on the API (allow_origins ["*"] in main.py),
-   and auth is the Telegram initData header, not cookies — so this
-   cross-domain setup works. */
-window.VERIFYHUB_API_BASE = '';
+   with NO trailing slash. THIS COPY is the live Plan B deployment. */
+window.VERIFYHUB_API_BASE = 'https://verifyhub-api-uyo8.onrender.com';
