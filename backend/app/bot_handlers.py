@@ -20,7 +20,9 @@ from telegram import (
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     MessageEntity,
+    ReplyKeyboardMarkup,
     Update,
     WebAppInfo,
 )
@@ -129,6 +131,7 @@ def _help_text(admin: bool = False):
             ("\n\n", None),
             ("Admin", "bold"),
             ("\nAdmin Panel — pending queue, one-tap decisions, and Manage Admins.", None),
+            ("\nAdmin keyboard — neeche wale buttons se Panel, Pending, Admins aur Stats kholo.", None),
         ]
     return _render(segments)
 
@@ -205,6 +208,26 @@ def _keyboard(admin: bool = False) -> InlineKeyboardMarkup:
     if admin:
         rows.append([InlineKeyboardButton("🛡 Admin Panel", callback_data="__admin__", icon_custom_emoji_id=EMOJI_CROWN)])
     return InlineKeyboardMarkup(rows)
+
+
+def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Persistent reply keyboard for admins only: every admin action from
+    the keyboard area (next to the message box), organised 1-2-1 like the
+    main menu.
+
+    Unlike the inline panel, this stays on screen in the chat, so an admin
+    never has to scroll back to the dashboard. Tapping a button sends its
+    label as a message, handled by _handle_text.
+    """
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🛡 Admin Panel")],
+            [KeyboardButton("📋 Pending"), KeyboardButton("👥 Admins")],
+            [KeyboardButton("📊 Live Stats")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
 
 
 def _window_lines(status: str) -> list[str]:
@@ -404,6 +427,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # An admin opening the bot sees the whole picture right away.
         dtext, dentities, dkeyboard = _admin_dashboard()
         await update.message.reply_text(dtext, entities=dentities, reply_markup=dkeyboard)
+        # Plus the persistent admin keyboard in the keyboard area.
+        await update.message.reply_text(
+            "Admin keyboard 👇 — neeche wale buttons se Panel, Pending, Admins aur Stats kholo.",
+            reply_markup=_admin_reply_keyboard(),
+        )
 
 
 def _stats_text(telegram_id: int) -> tuple[str, list]:
@@ -452,14 +480,37 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
 
 
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Plain-text replies: today only the add-admin ID prompt.
+    """Plain-text replies: admin reply-keyboard buttons + the add-admin ID prompt.
 
-    When an admin taps ➕ Add Admin, the bot asks for a Telegram ID and
-    waits for the reply here (a context.user_data flag). Anything else is
-    ignored — the bot is button-driven, so stray text gets a gentle nudge.
+    Tapping an admin keyboard button sends its label as a message — that is
+    dispatched here first (it also cancels a half-finished add-admin prompt).
+    When an admin taps ➕ Add Admin, the bot asks for a Telegram ID and waits
+    for the reply here (a context.user_data flag). Anything else is ignored —
+    the bot is button-driven, so stray text gets a gentle nudge.
     """
     user_id = update.effective_user.id
     text = (update.message.text or "").strip()
+    if _is_admin(user_id):
+        if text == "🛡 Admin Panel":
+            context.user_data.pop("awaiting", None)
+            dtext, dentities, dkeyboard = _admin_dashboard()
+            await update.message.reply_text(dtext, entities=dentities, reply_markup=dkeyboard)
+            return
+        if text == "📋 Pending":
+            context.user_data.pop("awaiting", None)
+            ptext, pkeyboard = _pending_view()
+            await update.message.reply_text(ptext, reply_markup=pkeyboard)
+            return
+        if text == "👥 Admins":
+            context.user_data.pop("awaiting", None)
+            atext, akeyboard = _admins_view()
+            await update.message.reply_text(atext, reply_markup=akeyboard)
+            return
+        if text == "📊 Live Stats":
+            context.user_data.pop("awaiting", None)
+            stext, sentities = _stats_text(user_id)
+            await update.message.reply_text(stext, entities=sentities, reply_markup=_keyboard(admin=True))
+            return
     if context.user_data.get("awaiting") == "add_admin" and _is_admin(user_id):
         # The prompt stays open until the admin succeeds or taps Cancel,
         # so a wrong number is just a retry, not a dead end.

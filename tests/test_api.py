@@ -789,8 +789,16 @@ def test_start_shows_dashboard_to_admin():
 
     update, context, message = _fake_update(ADMIN_ID)
     asyncio.run(start(update, context))
-    assert message.reply_text.await_count == 2
+    assert message.reply_text.await_count == 3
     assert "Admin Panel" in message.reply_text.await_args_list[1].args[0]
+    keyboard_msg = message.reply_text.await_args_list[2]
+    assert "Admin keyboard" in keyboard_msg.args[0]
+    from telegram import ReplyKeyboardMarkup
+
+    reply_kb = keyboard_msg.kwargs["reply_markup"]
+    assert isinstance(reply_kb, ReplyKeyboardMarkup)
+    labels = [b.text for row in reply_kb.keyboard for b in row]
+    assert labels == ["🛡 Admin Panel", "📋 Pending", "👥 Admins", "📊 Live Stats"]
 
     update, context, message = _fake_update(USER_ID)
     asyncio.run(start(update, context))
@@ -804,6 +812,43 @@ def test_admin_keyboard_has_panel_button_only_for_admin():
     assert admin_rows[3][0].text == "🛡 Admin Panel" and admin_rows[3][0].callback_data == "__admin__"
     user_rows = _keyboard().inline_keyboard
     assert all(b.text != "🛡 Admin Panel" for row in user_rows for b in row)
+
+
+def test_admin_reply_keyboard_is_organised_1_2_1():
+    from app.bot_handlers import _admin_reply_keyboard
+
+    kb = _admin_reply_keyboard()
+    assert kb.resize_keyboard is True
+    assert kb.one_time_keyboard is False
+    rows = kb.keyboard
+    assert [len(r) for r in rows] == [1, 2, 1]  # same 1-2-1 as the main menu
+    assert rows[0][0].text == "🛡 Admin Panel"
+    assert [b.text for b in rows[1]] == ["📋 Pending", "👥 Admins"]
+    assert rows[2][0].text == "📊 Live Stats"
+
+
+def test_admin_keyboard_buttons_open_the_right_views():
+    import asyncio
+
+    from app.bot_handlers import _handle_text
+
+    _make_submission(575, "KBD1")
+    for label, needle in [
+        ("🛡 Admin Panel", "Admin Panel"),
+        ("📋 Pending", "KBD1"),
+        ("👥 Admins", "Admins:"),
+        ("📊 Live Stats", "live stats"),
+    ]:
+        update, context, message = _fake_update(ADMIN_ID)
+        message.text = label
+        asyncio.run(_handle_text(update, context))
+        assert needle in message.reply_text.await_args.args[0], label
+
+    # A non-admin typing a label just gets the nudge, not the admin view.
+    update, context, message = _fake_update(USER_ID)
+    message.text = "🛡 Admin Panel"
+    asyncio.run(_handle_text(update, context))
+    assert "Use the buttons below" in message.reply_text.await_args.args[0]
 
 
 # ---------------- Live stats, badges, admin management ----------------

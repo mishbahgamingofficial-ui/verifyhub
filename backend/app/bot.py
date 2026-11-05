@@ -16,9 +16,10 @@ Polling is the mode the paid Render Background Worker uses. On the free
 tier the bot instead runs via webhook inside the API service — same
 handlers, no worker needed.
 
-Commands: /start opens the panel; everything else is an inline button.
-There is no command menu — the bot clears it at startup (see
-bot_handlers.clear_bot_commands).
+Commands: /start opens the panel; everything else is an inline button,
+plus a persistent reply keyboard for admins (see
+bot_handlers._admin_reply_keyboard). There is no command menu — the bot
+clears it at startup (see bot_handlers.clear_bot_commands).
 """
 from __future__ import annotations
 
