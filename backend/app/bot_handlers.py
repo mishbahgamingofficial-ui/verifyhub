@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import desc
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, Update, WebAppInfo
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .config import get_settings
@@ -23,30 +23,78 @@ from .db import Submission, User, get_session_factory, mask_uid
 logger = logging.getLogger("verifyhub.bot")
 settings = get_settings()
 
-WELCOME = """<b>🔥 VerifyHub — one pass, one verdict.</b>
+def _render(segments):
+    """Build (text, entities) from (text, kind) segments.
 
-✅ Send your UID once. An admin reviews it.
-🎯 Verified users unlock WinGo predictions.
+    kind is None (plain), "bold", "italic", "code", or ("custom", id).
+    A "custom" segment's text is the Unicode placeholder the premium emoji
+    replaces. Offsets/lengths are UTF-16 code units, as the Bot API requires
+    (astral-plane emoji count as 2). Messages built this way are sent with
+    ``entities=`` and no parse_mode, so their text is literal — no HTML
+    escaping is ever needed.
+    """
+    text = ""
+    entities = []
+    for part, kind in segments:
+        if not part:
+            continue
+        offset = len(text.encode("utf-16-le")) // 2
+        length = len(part.encode("utf-16-le")) // 2
+        text += part
+        if kind == "bold":
+            entities.append(MessageEntity(MessageEntity.BOLD, offset, length))
+        elif kind == "italic":
+            entities.append(MessageEntity(MessageEntity.ITALIC, offset, length))
+        elif kind == "code":
+            entities.append(MessageEntity(MessageEntity.CODE, offset, length))
+        elif isinstance(kind, tuple) and kind[0] == "custom":
+            entities.append(
+                MessageEntity(MessageEntity.CUSTOM_EMOJI, offset, length, custom_emoji_id=kind[1])
+            )
+    return text, entities
 
-Tap below to open the panel."""
 
-HELP_TEXT = """<b>VerifyHub — how it works</b>
+def _welcome_text():
+    return _render([
+        ("🔥 ", None),
+        ("VerifyHub — one pass, one verdict.", "bold"),
+        ("\n\n", None),
+        ("✅", ("custom", EMOJI_CHECK)),
+        (" Send your UID once. An admin reviews it.", None),
+        ("\n", None),
+        ("🎯", ("custom", EMOJI_TARGET)),
+        (" Verified users unlock WinGo predictions.", None),
+        ("\n\nTap below to open the panel.", None),
+    ])
 
-<b>1.</b> Register on the official site, copy your UID.
-<b>2.</b> Open the panel and send the UID once.
-<b>3.</b> An admin reviews it — watch the three windows.
 
-<b>Verified</b> = admin-approved. No guarantee of recovery, and not provider-confirmed.
-Verified users unlock the Prediction tab (WinGo 30s + 1 min) — a signal, never a guarantee.
-
-No passwords, OTPs or recovery phrases are ever asked for.
-
-<b>Commands</b>
-/start — open the panel
-/status — check your latest submission
-/predict — open predictions (verified users)
-/help — this guide
-/cancel — cancel any pending operation"""
+def _help_text():
+    return _render([
+        ("👑", ("custom", EMOJI_CROWN)),
+        (" ", None),
+        ("VerifyHub — how it works", "bold"),
+        ("\n\n", None),
+        ("1.", "bold"),
+        (" Register on the official site, copy your UID.", None),
+        ("\n", None),
+        ("2.", "bold"),
+        (" Open the panel and send the UID once.", None),
+        ("\n", None),
+        ("3.", "bold"),
+        (" An admin reviews it — watch the three windows.", None),
+        ("\n\n", None),
+        ("Verified", "bold"),
+        (" = admin-approved. No guarantee of recovery, and not provider-confirmed.", None),
+        ("\nVerified users unlock the Prediction tab (WinGo 30s + 1 min) — a signal, never a guarantee.", None),
+        ("\n\nNo passwords, OTPs or recovery phrases are ever asked for.", None),
+        ("\n\n", None),
+        ("Commands", "bold"),
+        ("\n/start — open the panel", None),
+        ("\n/status — check your latest submission", None),
+        ("\n/predict — open predictions (verified users)", None),
+        ("\n/help — this guide", None),
+        ("\n/cancel — cancel any pending operation", None),
+    ])
 
 STATUS_LABELS = {
     "not_submitted": "Not submitted",
@@ -66,6 +114,9 @@ EMOJI_CROWN = "6052853159204757225"      # 👑 from emoji_H_M_by_TgEmodziBot
 EMOJI_CHART = "5190806721286657692"      # 📊 from FinanceEmoji
 EMOJI_DIAMOND = "6053338597883386982"   # 💎 from emoji_H_M_by_TgEmodziBot
 EMOJI_THINKING = "6334471179801200139"  # 🧐 from peachgomaemoji
+EMOJI_CHECK = "6055128392360010233"      # ✅ from emoji_H_M_by_TgEmodziBot
+EMOJI_TARGET = "5310278924616356636"     # 🎯 from FinanceEmoji
+EMOJI_CHART_UP = "5197503331215361533"   # 📈 from FinanceEmoji
 
 
 def _keyboard() -> InlineKeyboardMarkup:
@@ -98,24 +149,39 @@ def _window_lines(status: str) -> list[str]:
     return [f"01 Received ✓", f"02 Under review {w2}", f"03 Decision {w3}"]
 
 
-def _status_card(status: str, row: Submission | None) -> str:
-    """Compact status card: badge word, masked UID, sent time, three windows."""
-    import html as _html
+def _status_card(status: str, row: Submission | None) -> tuple[str, list]:
+    """Compact status card: badge word, masked UID, sent time, three windows.
 
-    label = STATUS_LABELS.get(status, status)
+    Returns (text, entities) — see _render. The review message is literal
+    plain text, so it needs no escaping.
+    """
+    header = [
+        ("📊", ("custom", EMOJI_CHART)),
+        (" ", None),
+        ("Your status", "bold"),
+    ]
     if row is None:
-        return "<b>◆ Your status</b>\n\nYou have not submitted a UID yet.\n\nOpen the panel to send one."
-    lines = [
-        "<b>◆ Your status</b>",
-        "",
-        f"Status: <b>{label}</b>",
-        f"UID: <code>{mask_uid(row.registration_uid)}</code>",
-        f"Sent: {row.submitted_at.strftime('%Y-%m-%d %H:%M UTC') if row.submitted_at else '—'}",
-        "",
-    ] + _window_lines(status)
+        return _render(header + [
+            ("\n\nYou have not submitted a UID yet.\n\nOpen the panel to send one.", None),
+        ])
+    label = STATUS_LABELS.get(status, status)
+    segments = header + [
+        ("\n\nStatus: ", None),
+        (label, "bold"),
+        ("\nUID: ", None),
+        (mask_uid(row.registration_uid), "code"),
+        ("\nSent: ", None),
+        (row.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if row.submitted_at else "—", None),
+        ("\n\n", None),
+    ]
+    for i, line in enumerate(_window_lines(status)):
+        if i:
+            segments.append(("\n", None))
+        segments.append((line, None))
     if row.review_message:
-        lines += ["", f"Review message:\n{_html.escape(row.review_message)}"]
-    return "\n".join(lines)
+        segments.append(("\n\nReview message:\n", None))
+        segments.append((row.review_message, None))
+    return _render(segments)
 
 
 def _latest_status(telegram_id: int) -> tuple[str, Submission | None, User | None]:
@@ -137,20 +203,21 @@ def _latest_status(telegram_id: int) -> tuple[str, Submission | None, User | Non
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    name = settings.project_name
-    text = WELCOME.format(name=name)
+    text, entities = _welcome_text()
     if not settings.mini_app_url and not settings.registration_url:
-        text += "\n\n<i>The panel and registration links are not configured yet — ask the administrator to set MINI_APP_URL and REGISTRATION_URL.</i>"
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=_keyboard())
+        text += "\n\nThe panel and registration links are not configured yet — ask the administrator to set MINI_APP_URL and REGISTRATION_URL."
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=_keyboard())
+    text, entities = _help_text()
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status, row, _ = _latest_status(update.effective_user.id)
-    await update.message.reply_text(_status_card(status, row), parse_mode="HTML", reply_markup=_keyboard())
+    text, entities = _status_card(status, row)
+    await update.message.reply_text(text, entities=entities, reply_markup=_keyboard())
 
 
 def _predict_url() -> str | None:
@@ -168,15 +235,19 @@ async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "The verification panel is not configured yet — ask the administrator to set MINI_APP_URL."
         )
         return
-    text = (
-        "<b>💎 WinGo predictions</b>\n\n"
-        "📈 Live results, history and the next-period signal — for verified users only.\n\n"
-        "Tap below to open the predictions."
-    )
+    text, entities = _render([
+        ("💎", ("custom", EMOJI_DIAMOND)),
+        (" ", None),
+        ("WinGo predictions", "bold"),
+        ("\n\n", None),
+        ("📈", ("custom", EMOJI_CHART_UP)),
+        (" Live results, history and the next-period signal — for verified users only.", None),
+        ("\n\nTap below to open the predictions.", None),
+    ])
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=url), style="success", icon_custom_emoji_id=EMOJI_DIAMOND)]]
     )
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await update.message.reply_text(text, entities=entities, reply_markup=keyboard)
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -192,10 +263,12 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     if query.data == "__help__":
-        await query.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=_keyboard())
+        text, entities = _help_text()
+        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard())
     elif query.data == "__status__":
         status, row, _ = _latest_status(query.from_user.id)
-        await query.message.reply_text(_status_card(status, row), parse_mode="HTML", reply_markup=_keyboard())
+        text, entities = _status_card(status, row)
+        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard())
 
 
 def register_handlers(app: Application) -> None:

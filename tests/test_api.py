@@ -275,6 +275,73 @@ def test_main_keyboard_is_colourful_and_complete():
     assert by_text["Open Verification Panel"].to_dict()["icon_custom_emoji_id"] == EMOJI_CROWN
 
 
+def test_render_segments_counts_utf16_units():
+    """_render offsets are UTF-16 code units: astral-plane emoji count as 2."""
+    from telegram import MessageEntity
+
+    from app.bot_handlers import _render
+
+    text, entities = _render([
+        ("👑", ("custom", "111")),
+        (" Hi ", None),
+        ("bold", "bold"),
+        ("💎", ("custom", "222")),
+    ])
+    assert text == "👑 Hi bold💎"
+    by_key = {(e.type, e.offset): e for e in entities}
+    assert by_key[(MessageEntity.CUSTOM_EMOJI, 0)].length == 2
+    assert by_key[(MessageEntity.CUSTOM_EMOJI, 0)].custom_emoji_id == "111"
+    assert by_key[(MessageEntity.BOLD, 6)].length == 4
+    assert by_key[(MessageEntity.CUSTOM_EMOJI, 10)].length == 2
+    assert by_key[(MessageEntity.CUSTOM_EMOJI, 10)].custom_emoji_id == "222"
+
+
+def test_welcome_and_help_texts_use_premium_emojis():
+    from app.bot_handlers import (
+        EMOJI_CHECK,
+        EMOJI_CROWN,
+        EMOJI_TARGET,
+        _help_text,
+        _welcome_text,
+    )
+
+    text, entities = _welcome_text()
+    assert "VerifyHub — one pass, one verdict." in text
+    assert "Send your UID once." in text
+    customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
+    assert customs == {EMOJI_CHECK, EMOJI_TARGET}
+
+    text, entities = _help_text()
+    assert "VerifyHub — how it works" in text
+    assert "/start — open the panel" in text
+    customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
+    assert EMOJI_CROWN in customs
+
+
+def test_status_card_uses_entities_not_html():
+    from datetime import datetime, timezone
+
+    from app.bot_handlers import EMOJI_CHART, _status_card
+    from app.db import Submission, mask_uid
+
+    text, entities = _status_card("not_submitted", None)
+    assert "You have not submitted a UID yet." in text
+    assert "<b>" not in text and "<code>" not in text
+
+    row = Submission(
+        registration_uid="ABCDEF123456",
+        status="verified",
+        submitted_at=datetime(2026, 11, 5, 10, 0, tzinfo=timezone.utc),
+        review_message="Looks good <b>not a tag</b>",
+    )
+    text, entities = _status_card("verified", row)
+    assert "Verified (administrator-reviewed)" in text
+    assert mask_uid("ABCDEF123456") in text
+    assert "<b>not a tag</b>" in text  # literal: no HTML parsing anymore
+    customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
+    assert EMOJI_CHART in customs
+
+
 def test_polling_bot_builds_with_updater_and_same_handlers():
     from telegram.ext import CallbackQueryHandler, CommandHandler
 
