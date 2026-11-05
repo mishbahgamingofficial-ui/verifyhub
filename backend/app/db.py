@@ -98,6 +98,33 @@ class AuditEvent(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
 
 
+class SignalRecord(Base):
+    """One recorded prediction signal, settled against the real result.
+
+    The signal accuracy tracker is an honest record, never a claim:
+    a row is written when /api/prediction generates a signal for the
+    next period, and settled (lazily, on read) once that period's real
+    result is published. ``correct`` stays NULL while the period is
+    still pending. The (timer, period) unique constraint makes
+    recording idempotent — first signal wins, never overwritten, so the
+    record cannot be cherry-picked after the fact.
+    """
+    __tablename__ = "signal_records"
+    id = Column(Integer, primary_key=True)
+    timer = Column(String(8), nullable=False, index=True)  # "30s" / "1m" / "3m" / "5m"
+    period = Column(String(32), nullable=False)  # the WinGo issueNumber the signal was for
+    signal = Column(String(8), nullable=False)  # "BIG" or "SMALL"
+    reason = Column(Text, nullable=True)  # the signal reason text
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
+    actual_number = Column(Integer, nullable=True)
+    actual_size = Column(String(8), nullable=True)  # "BIG" / "SMALL", once settled
+    correct = Column(Boolean, nullable=True)  # True/False once settled, NULL while pending
+
+    __table_args__ = (
+        Index("ix_signal_records_timer_period", "timer", "period", unique=True),
+    )
+
+
 def make_engine(database_url: str):
     # Render's Postgres URLs use postgresql://; some providers emit the
     # legacy postgres:// scheme, which SQLAlchemy no longer accepts.

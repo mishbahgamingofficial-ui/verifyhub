@@ -482,3 +482,146 @@ def get_live(provider=None) -> dict:
     }
     _live_cache[id(p)] = (time.monotonic(), out)
     return out
+
+
+# ---------------- signal accuracy tracker (honest record, real data only) ----------------
+# A signal is recorded when /api/prediction generates one, and settled
+# (lazily, on read) once the period's real result is published. Nothing
+# here invents, rounds up, or cherry-picks: the summary counts exactly
+# what is stored, and accuracy_pct is null until a signal has settled.
+
+from sqlalchemy import desc as _desc  # noqa: E402
+from sqlalchemy.orm import Session as _Session  # noqa: E402
+
+from .db import SignalRecord as _SignalRecord  # noqa: E402
+
+_ACCURACY_LIMIT = 20
+
+
+def record_signal(db: _Session, timer: str, period: str, size: str, reason: str | None) -> None:
+    """Record a generated signal, first one wins. Never raises.
+
+    The (timer, period) unique constraint makes this idempotent: a
+    repeat call for the same period leaves the original row untouched,
+    so the record cannot be rewritten after the result is known.
+    Recording must never break the prediction response, so every
+    failure is logged and swallowed.
+    """
+    try:
+        size = (size or "").strip().upper()
+        if size not in ("BIG", "SMALL"):
+            return
+        exists = (
+            db.query(_SignalRecord)
+            .filter(_SignalRecord.timer == timer, _SignalRecord.period == str(period))
+            .first()
+        )
+        if exists is not None:
+            return
+        db.add(
+            _SignalRecord(
+                timer=timer,
+                period=str(period),
+                signal=size,
+                reason=(reason or "")[:500] or None,
+            )
+        )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception("Failed to record signal for %s %s; continuing.", timer, period)
+
+
+def settle_signals(db: _Session, provider, timer: str) -> int:
+    """Settle pending records for one timer against real results.
+
+    Fetches the recent results and fills actual_number / actual_size /
+    correct for every unsettled record whose period now appears in them.
+    Best-effort: a provider failure leaves the records pending and is
+    logged, never raised — the endpoint still returns the record as-is.
+    Returns how many records were settled.
+    """
+    try:
+        results = provider.fetch_results(timer, limit=20)
+    except Exception:
+        logger.warning("Accuracy settle skipped for %s: provider unavailable.", timer)
+        return 0
+    by_period = {r["period"]: r for r in results}
+    if not by_period:
+        return 0
+    pending = (
+        db.query(_SignalRecord)
+        .filter(_SignalRecord.timer == timer, _SignalRecord.correct.is_(None))
+        .all()
+    )
+    settled = 0
+    try:
+        for row in pending:
+            result = by_period.get(row.period)
+            if result is None:
+                continue
+            actual_size = classify(result["number"])["size"].upper()
+            row.actual_number = int(result["number"])
+            row.actual_size = actual_size
+            row.correct = row.signal == actual_size
+            settled += 1
+        if settled:
+            db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception("Failed to settle signals for %s; continuing.", timer)
+        return 0
+    return settled
+
+
+def _serialize_record(row: _SignalRecord) -> dict:
+    return {
+        "period": row.period,
+        "signal": row.signal,
+        "reason": row.reason,
+        "actual_number": row.actual_number,
+        "actual_size": row.actual_size,
+        "correct": row.correct,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def get_accuracy(db: _Session, timer: str, provider=None, limit: int = _ACCURACY_LIMIT) -> dict:
+    """Settle (best-effort) then return the last `limit` records, newest first.
+
+    Summary counts exactly what is stored: total, settled, correct,
+    wrong, pending, and accuracy_pct = correct / settled * 100 rounded
+    to 1 decimal — or null while nothing has settled yet. The provider
+    is resolved here (module-level get_provider) so tests can
+    monkeypatch it; callers pass one explicitly only to override.
+    """
+    p = provider or get_provider()
+    settle_signals(db, p, timer)
+    rows = (
+        db.query(_SignalRecord)
+        .filter(_SignalRecord.timer == timer)
+        .order_by(_desc(_SignalRecord.id))
+        .limit(limit)
+        .all()
+    )
+    settled_rows = [r for r in rows if r.correct is not None]
+    correct = sum(1 for r in settled_rows if r.correct)
+    accuracy_pct = round(correct / len(settled_rows) * 100, 1) if settled_rows else None
+    return {
+        "timer": timer,
+        "records": [_serialize_record(r) for r in rows],
+        "summary": {
+            "total": len(rows),
+            "settled": len(settled_rows),
+            "correct": correct,
+            "wrong": len(settled_rows) - correct,
+            "pending": len(rows) - len(settled_rows),
+            "accuracy_pct": accuracy_pct,
+        },
+    }

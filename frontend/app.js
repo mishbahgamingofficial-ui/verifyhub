@@ -346,6 +346,49 @@
     if (predCountdownId) clearInterval(predCountdownId);
     predCountdownId = setInterval(tickPredCountdown, 1000);
   }
+  // Accuracy tracker: honest record of past signals vs real results.
+  // Fetched with the prediction view; a failure here never breaks the
+  // signal above. Counts are shown exactly as the server returns them.
+  let accLastGood = null;
+  function renderAccuracy(d) {
+    const s = d.summary || {};
+    // Dots always render, oldest left, newest right (records arrive
+    // newest first). Grey = still pending, so the record visibly builds.
+    $('#acc-dots').innerHTML = (d.records || []).slice().reverse().map((r) =>
+      '<span class="acc-dot ' + (r.correct === true ? 'right' : r.correct === false ? 'wrong' : 'pending') + '" title="#' + esc(String(r.period).slice(-5)) + '"></span>').join('');
+    if (s.settled === 0) {
+      $('#acc-summary').textContent = '';
+      $('#acc-rows').innerHTML = '<p class="hint" style="margin:0">No settled signals yet — the record builds as periods finish.</p>';
+    } else {
+      $('#acc-summary').textContent = s.correct + ' RIGHT · ' + s.wrong + ' WRONG · ' + s.accuracy_pct + '%';
+      // Last 5, newest first: #0814 · BIG → 7 BIG ✓ (✗ when wrong, … while pending).
+      $('#acc-rows').innerHTML = (d.records || []).slice(0, 5).map((r) => {
+        const short = '#' + String(r.period).slice(-5);
+        const verdict = r.correct === true
+          ? esc(r.actual_number) + ' ' + esc(r.actual_size) + ' ✓'
+          : r.correct === false
+            ? esc(r.actual_number) + ' ' + esc(r.actual_size) + ' ✗'
+            : '…';
+        const cls = r.correct === true ? 'ok' : r.correct === false ? 'bad' : '';
+        return '<div class="acc-row"><span>' + esc(short) + ' · ' + esc(r.signal) + '</span><span class="' + cls + '">→ ' + verdict + '</span></div>';
+      }).join('');
+    }
+    $('#acc-err').textContent = '';
+    $('#pred-accuracy').hidden = false;
+    accLastGood = d;
+  }
+  async function loadAccuracy(timer) {
+    try {
+      const d = await api('/api/prediction/accuracy?timer=' + encodeURIComponent(timer));
+      if (timer !== predTimer) return; // timer switched mid-flight; the new load covers it
+      renderAccuracy(d);
+    } catch (e) {
+      if (e.status === 403) { $('#pred-accuracy').hidden = true; return; }
+      // 503 or anything else: keep the last good record, say so once.
+      $('#acc-err').textContent = 'Record temporarily unavailable.';
+      if (accLastGood) $('#pred-accuracy').hidden = false;
+    }
+  }
   async function loadPrediction() {
     if (predLoading) return;
     stopPredTimers();
@@ -361,6 +404,7 @@
       const d = await api('/api/prediction?timer=' + encodeURIComponent(predTimer));
       renderPrediction(d);
       showPredState('pred-open');
+      loadAccuracy(timerAtLoad);
       predRefreshId = setInterval(loadPrediction, 10000);
     } catch (e) {
       if (e.status === 403) {

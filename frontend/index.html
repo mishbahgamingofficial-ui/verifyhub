@@ -9,7 +9,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=9">
+<link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
 <div class="wrap">
@@ -247,6 +247,13 @@
             <p class="hint">Signal only — not a guarantee.</p>
             <div class="pred-history" id="pred-history"></div>
             <div class="row"><button class="btn full" id="pred-refresh-btn" type="button">Refresh</button></div>
+            <div class="acc" id="pred-accuracy" hidden>
+              <div class="acc-head"><span class="acc-title">SIGNAL RECORD — LAST 20</span><span class="acc-summary mono" id="acc-summary"></span></div>
+              <div class="acc-dots" id="acc-dots" aria-label="Signal accuracy dots"></div>
+              <div class="acc-rows" id="acc-rows"></div>
+              <p class="hint">Past signals only — not a guarantee of the next one.</p>
+              <p class="err" id="acc-err" role="alert"></p>
+            </div>
             <p class="err" id="pred-err" role="alert"></p>
           </div>
         </div>
@@ -285,6 +292,6 @@
      the Mini App aggressively. Bump the ?v= number on every JS change
      so users get the new files instead of the cached old ones. -->
 <script src="config.js?v=2"></script>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

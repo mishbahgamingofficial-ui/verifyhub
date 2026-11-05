@@ -49,7 +49,7 @@ from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
 from .notifications import notify_user
-from .prediction import TIMER_TYPE_IDS, ProviderError, get_live, get_prediction
+from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
 from .services import ACTIVE_STATUSES, STATUSES, can_transition
@@ -350,9 +350,39 @@ def prediction(
     if latest is None or latest.status != "verified":
         raise HTTPException(status_code=403, detail="Prediction unlocks after verification.")
     try:
-        return get_prediction(timer)
+        d = get_prediction(timer)
     except ProviderError:
         raise HTTPException(status_code=503, detail="Results temporarily unavailable.") from None
+    # Record the signal for the accuracy tracker (first one wins per
+    # period). Best-effort by design: record_signal never raises, so a
+    # recording failure can never break this response.
+    record_signal(db, timer, d["period"], d["signal"]["size"], d["signal"]["reason"])
+    return d
+
+
+@app.get("/api/prediction/accuracy")
+def prediction_accuracy(
+    timer: str = Query(default="1m"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Signal accuracy record for verified users only — same gate as
+    /api/prediction. Settles pending signals against real results
+    (best-effort; a provider failure returns the records as-is) and
+    returns the last 20 signals with an honest summary. Nothing here
+    is estimated or rounded up: the counts are exactly what is stored.
+    """
+    if timer not in TIMER_TYPE_IDS:
+        raise HTTPException(status_code=422, detail="Unknown timer. Use 30s, 1m, 3m or 5m.")
+    latest = (
+        db.query(Submission)
+        .filter(Submission.user_id == user.id)
+        .order_by(desc(Submission.submitted_at))
+        .first()
+    )
+    if latest is None or latest.status != "verified":
+        raise HTTPException(status_code=403, detail="Prediction unlocks after verification.")
+    return get_accuracy(db, timer)
 
 
 @app.get("/api/live")
