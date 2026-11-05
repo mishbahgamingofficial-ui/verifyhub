@@ -314,10 +314,17 @@
     try { await navigator.clipboard.writeText(config.registration_url); toast('Link copied.'); } catch (e) { toast('Copy failed. Long-press the link.'); }
   });
 
+  // Live ping on every panel status bar (21–29ms jitter, like the reference).
+  function tickPing() {
+    const ms = 21 + Math.floor(Math.random() * 9);
+    document.querySelectorAll('.ping-ms').forEach((el) => { el.textContent = ms + 'MS'; });
+  }
+  setInterval(tickPing, 2000); tickPing();
+
   // Init
   async function init() {
     if (tg) {
-      try { tg.ready(); tg.expand(); tg.setHeaderColor('#edeae2'); tg.setBackgroundColor('#edeae2'); } catch (e) { /* older clients */ }
+      try { tg.ready(); tg.expand(); tg.setHeaderColor('#150303'); tg.setBackgroundColor('#150303'); } catch (e) { /* older clients */ }
       tg.onEvent('backButtonClicked', () => { if ($('#detail-modal').classList.contains('show')) closeDetail(); else showTab('home'); });
     }
     if (isPreview) $('#preview-banner').classList.add('show');
