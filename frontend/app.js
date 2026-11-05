@@ -54,7 +54,7 @@
     const s = Math.max(0, Math.ceil(totalSeconds));
     return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
   }
-  // One-shot gold/red particle burst centred on el. Creates ~14 dots that
+  // One-shot teal/orange/purple particle burst centred on el. Creates ~14 dots that
   // fly outward and fade; the host is removed after the animation.
   function burst(el, count) {
     if (!el || !document.body) return;
@@ -702,7 +702,7 @@
   // Init
   async function init() {
     if (tg) {
-      try { tg.ready(); tg.expand(); tg.setHeaderColor('#150303'); tg.setBackgroundColor('#150303'); } catch (e) { /* older clients */ }
+      try { tg.ready(); tg.expand(); tg.setHeaderColor('#e8e8e8'); tg.setBackgroundColor('#e8e8e8'); } catch (e) { /* older clients */ }
       tg.onEvent('backButtonClicked', () => { if ($('#detail-modal').classList.contains('show')) closeDetail(); else showTab('home'); });
     }
     // The ticker is public data — it runs for everyone, preview included.

@@ -1,73 +1,76 @@
-/* VerifyHub design system — v8, "iFlexxAura"
-   A full rebuild replacing v7 "One Pass" at the user's request: he found
-   v7 complicated and messy, and chose the iFlexxAura reference he provided
-   (dark red glowing lattice panel, gold wordmark, REGISTER FIRST /
-   ACCESS LOCKED) over the restrained editorial look. So v7's rules are
-   deliberately superseded here: glossy red gradients, glow, gold and
-   lattice are the point, not violations.
-   - Single-column, phone-first flow (max-width 560px). Same 3-step flow
-     as before: Register -> Deposit proof -> Send UID, then windows.
-   - The anchor: the glowing red lattice panel with the gold italic
-     VerifyHub wordmark, VERIFY PANEL pill and LIVE status bar.
-   - Display face is Inter 900 italic (heavy, like the reference);
-     Inter stays for UI, JetBrains Mono for data.
-   - Motion is sparse and purposeful: wordmark shimmer, pill sweep,
-     primary-button breathing glow, live-dot pulse, ping jitter.
-   - ui/fun-upgrade (branch): same anchor, more delight — skeuomorphic
-     press physics, step/tab/view transitions, 3D window flip-in,
-     dramatic last-10s countdown, ball landing pops, aurora glow.
-     Every new animation is transform/opacity (or color/text-shadow)
-     only, and covered by the prefers-reduced-motion rule below.
-   - Verification-page rework (same branch): the page stopped reading
-     like a designed product because every block was the same card
-     (three identical panels, three thin-bordered window boxes, a
-     generic footer bar). The rework gives each part its own structure
-     inside the same identity: a step rail + ghost numerals + a distinct
-     screen per step (drop-zone deposit, perforated UID ticket), the
-     windows as a numbered journey timeline, the UID stub as a lattice
-     console header, the history as a ledger (not a card), and the dock
-     as a glossy system bar with the honest line engraved inside it. */
+/* VerifyHub design system — v9, "Gadget Premium"
+   A full rebuild replacing v8 "iFlexxAura" (dark red / gold) at the user's
+   request, from the 6-screen gadget shopping app mockup he sent
+   (~/workspace/user/files/78877_0_ujf6.jpg). The v8 look is deliberately
+   superseded on this branch only — main keeps v8 safe.
+   - Design direction (frontend-design skill): clean consumer-app premium.
+     Tone: Minimalist + Playful (never more than two). Anchor: the dark-navy
+     "product card" + teal CTA on a light-grey page — if the logo were
+     removed, the navy hero card, teal buttons and big-radius white cards
+     would still say VerifyHub.
+   - Tokens, measured from the reference: page #E8E8E8; white cards,
+     radius 24-28px, soft shadow 0 8px 24px rgba(11,43,58,.08); teal
+     #00C896 / deep teal #007A55 for CTAs and highlights; dark navy
+     #0B2B3A / #0F2A3D for hero/status/footer panels; orange #FF8A3D and
+     purple #A55EEA as small accent chips only; near-black headings,
+     grey body text; Inter bold, JetBrains Mono for data.
+   - Structure kept from the v8 rework (step rail, ghost numerals,
+     perforated UID ticket, journey timeline, ledger history, system dock)
+     but restyled into this light system — structure, not the old look.
+   - Card-based design skill: every card self-contained, clear boundaries
+     (white on grey), one primary action per card, no scrolling inside a card.
+   - Skeuomorphism (light touch): buttons sink on press (shadow collapses,
+     inset shading deepens) instead of just shrinking; the signal slab and
+     navy dock keep a soft top highlight like a physical object.
+   - 3D UI (light touch): windows flip in with perspective rotateX, the
+     signal ball lands with a rotate/scale entrance — transform/opacity only.
+   - Web Interface Guidelines (fetched 2026-11-05, vercel-labs): explicit
+     transition properties (never `transition: all`), :focus-visible rings,
+     tabular-nums for countdowns/periods, prefers-reduced-motion covers
+     every animation, touch-action manipulation, no user-scalable=no.
+   - anti-ui-slop: no invented metrics, no placeholder workflows — every
+     number on screen comes from the server (ticker, prediction, accuracy);
+     the only "sample" content is the labelled preview windows.
    Behaviour: every class/id used by app.js is preserved. No logic
    changes in this file — look only. */
 
 :root{
-  --bg:#150303; --bg-2:#1e0505; --surface:#220606; --surface-2:#2b0808; --surface-3:#3a0a0a;
-  --hairline:rgba(255,110,110,.32); --hairline-strong:rgba(255,140,140,.6);
-  --text:#ffffff; --muted:#e8b4b4; --muted-2:#c98a8a;
-  --red:#e60000; --red-bright:#ff2d2d; --red-deep:#7d0000;
-  --gold:#ffb300; --gold-light:#fff3b0; --gold-deep:#ff5e00;
-  --green:#22ff88; --amber:#ffb300; --slate:#9fb4c0; --red-state:#ff5252; --ochre:#ffcf5c;
-  --r:16px;
+  --bg:#e8e8e8; --bg-2:#f0f0f0; --surface:#ffffff; --surface-2:#f4f6f7; --surface-3:#e3e8eb;
+  --hairline:#dfe5e9; --hairline-strong:#c9d3da;
+  --text:#0f1b2d; --muted:#5b6b7a; --muted-2:#6b7a8a;
+  --navy:#0b2b3a; --navy-2:#0f2a3d; --navy-soft:#14394d;
+  --green:#00c896; --green-bright:#2ee6a8; --green-deep:#007a55; --green-btn:#00875f;
+  --orange:#ff8a3d; --purple:#a55eea;
+  --red-state:#c81e1e; --red-soft:#fdecea;
+  --amber:#b25e00; --amber-soft:#fff4e5; --ochre:#8a6d00; --ochre-soft:#fff7e0;
+  --slate:#4a6072; --slate-soft:#eef2f5;
+  --green-soft:#e6f7ef;
+  --r:24px;
   --dur:150ms;
   --safe-top:env(safe-area-inset-top,0px); --safe-bottom:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box}
 [hidden]{display:none !important}
-html{color-scheme:dark}
+html{color-scheme:light}
 body{
   margin:0; color:var(--text);
   font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;
   background:var(--bg); overflow-x:hidden;
 }
-body::before{
-  content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
-  background:radial-gradient(120% 70% at 50% 0%, #2b0606 0%, #150303 55%, #0d0101 100%);
-}
-/* ---- Aurora glow: two slow-drifting red/gold orbs behind the page ----
-   (aurora-ui technique, product palette only — no cyan/magenta, no
-   glass. Radial gradients only, no blur filter, so it stays cheap.) */
+/* ---- Soft teal blob: the reference's teal blob (screen 1) as a page
+   backdrop — one calm wash, not a gradient field. ---- */
 .aurora{position:fixed; inset:0; z-index:-1; pointer-events:none; overflow:hidden}
-.aurora i{position:absolute; width:320px; height:320px; border-radius:50%; background:radial-gradient(circle, rgba(255,60,60,.5) 0%, transparent 68%)}
-.aurora i:nth-child(1){top:-90px; left:-70px; animation:auroraDrift 24s ease-in-out infinite alternate}
-.aurora i:nth-child(2){bottom:-110px; right:-80px; width:300px; height:300px; background:radial-gradient(circle, rgba(255,179,0,.42) 0%, transparent 68%); animation:auroraDrift 28s ease-in-out infinite alternate-reverse}
-@keyframes auroraDrift{from{transform:translate(0,0) scale(1)}to{transform:translate(46px,60px) scale(1.15)}}
-a{color:var(--gold-light); text-underline-offset:3px}
-a:hover{color:var(--gold)}
+.aurora i{position:absolute; width:340px; height:340px; border-radius:50%; background:radial-gradient(circle, rgba(0,200,150,.16) 0%, transparent 68%)}
+.aurora i:nth-child(1){top:-110px; right:-90px; animation:auroraDrift 24s ease-in-out infinite alternate}
+.aurora i:nth-child(2){bottom:-130px; left:-100px; width:300px; height:300px; background:radial-gradient(circle, rgba(11,43,58,.10) 0%, transparent 68%); animation:auroraDrift 28s ease-in-out infinite alternate-reverse}
+@keyframes auroraDrift{from{transform:translate(0,0) scale(1)}to{transform:translate(40px,50px) scale(1.12)}}
+a{color:var(--green-deep); text-underline-offset:3px}
+a:hover{color:var(--navy)}
 button,input,select,textarea{font:inherit}
 button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:manipulation}
-:focus-visible{outline:2px solid var(--gold); outline-offset:2px}
-::selection{background:#7d0000; color:#fff}
+:focus-visible{outline:2px solid var(--green-deep); outline-offset:2px}
+::selection{background:#bfeee0; color:var(--navy)}
 
 /* ---------- Masthead + progress ---------- */
 .wrap{max-width:560px; margin:0 auto; padding:calc(14px + var(--safe-top)) 18px calc(28px + var(--safe-bottom))}
@@ -78,47 +81,39 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .brand{display:flex; gap:11px; align-items:center; min-width:0}
 .logo{
   width:38px; height:38px; flex:none; display:grid; place-items:center;
-  background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000);
-  border:1.5px solid rgba(255,255,255,.7); border-radius:12px;
-  box-shadow:0 4px 14px rgba(0,0,0,.45), inset 0 2px 0 rgba(255,255,255,.5), 0 0 14px rgba(255,40,40,.45);
+  background:linear-gradient(180deg,#00d9a5,#00a87e 55%,#007a55);
+  border:1.5px solid rgba(255,255,255,.8); border-radius:12px;
+  box-shadow:0 4px 14px rgba(11,43,58,.18), inset 0 2px 0 rgba(255,255,255,.5), 0 0 14px rgba(0,200,150,.35);
 }
-.logo-v{
-  font-weight:900; font-style:italic; font-size:22px; line-height:1;
-  background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00);
-  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
-}
+.logo-v{font-weight:900; font-size:22px; line-height:1; color:#fff}
 .brand b{
-  display:block; font-size:20px; font-weight:900; font-style:italic; letter-spacing:-.01em; line-height:1.1;
-  background:linear-gradient(100deg,#ffd76a 0%,#ff8c1a 25%,#ff2d00 50%,#ff8c1a 75%,#ffd76a 100%);
-  background-size:200% 100%; animation:logoShine 3.2s linear infinite;
-  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
-  filter:drop-shadow(0 2px 3px rgba(0,0,0,.45)) drop-shadow(0 0 10px rgba(255,120,0,.35));
+  display:block; font-size:20px; font-weight:900; letter-spacing:-.01em; line-height:1.1;
+  color:var(--navy);
 }
-@keyframes logoShine{to{background-position:-200% 0}}
 .brand span{
   display:block; margin-top:1px; font-family:"JetBrains Mono",ui-monospace,monospace;
   font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted);
 }
 .pill{
   flex:none; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px;
-  color:var(--text); border:1px solid var(--hairline-strong); padding:6px 10px; border-radius:20px;
-  background:rgba(25,0,0,.55);
+  color:var(--navy); border:1px solid var(--hairline-strong); padding:6px 10px; border-radius:20px;
+  background:#fff; box-shadow:0 2px 8px rgba(11,43,58,.06);
 }
 .icon{width:18px; height:18px; flex:none}
 .icon-sm{width:16px; height:16px; flex:none}
 .eyebrow{
   display:block; margin:0 0 8px; font-family:"JetBrains Mono",ui-monospace,monospace;
-  font-size:11px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--gold);
+  font-size:11px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--green-deep);
 }
 .banner{
-  display:none; border:1px solid rgba(255,179,0,.55); background:#2b0808;
-  color:#ffcf5c; border-radius:var(--r); padding:12px 14px; margin:14px 0 0; font-size:13.5px; line-height:1.55;
+  display:none; border:1px solid #f5c66b; background:#fff7e0;
+  color:#7a5200; border-radius:var(--r); padding:12px 14px; margin:14px 0 0; font-size:13.5px; line-height:1.55;
 }
 .banner.show{display:block}
 
-/* Progress: a glowing red track. */
-.progress{height:4px; background:#3a0a0a; margin-top:14px; border-radius:4px; overflow:hidden}
-.progress-fill{height:100%; width:33%; background:linear-gradient(90deg,#ff8a7a,#ff1e1e,#ff8a7a); background-size:200% 100%; box-shadow:0 0 10px rgba(255,40,40,.8); transition:width var(--dur); animation:fillFlow 1.8s linear infinite}
+/* Progress: a teal track on light grey. */
+.progress{height:4px; background:#d5dce1; margin-top:14px; border-radius:4px; overflow:hidden}
+.progress-fill{height:100%; width:33%; background:linear-gradient(90deg,#2ee6a8,#00c896,#007a55); background-size:200% 100%; box-shadow:0 0 8px rgba(0,200,150,.5); transition:width var(--dur); animation:fillFlow 1.8s linear infinite}
 @keyframes fillFlow{to{background-position:-200% 0}}
 .phase-line{
   display:flex; justify-content:space-between; gap:12px; margin-top:8px;
@@ -126,294 +121,301 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
 }
 
-/* ---------- Tabs: two only — Verification, Admin ---------- */
+/* ---------- Tabs: segmented control (reference screen 4 chips) ----------
+   A light-grey pill container; the active tab is a white card with teal
+   text and a soft shadow. */
 .tabs{
-  display:flex; gap:28px; background:transparent; border:0;
-  border-bottom:1px solid var(--hairline); padding:0; margin:14px 0 0; overflow-x:auto;
+  display:flex; gap:4px; background:#dfe4e8; border:0;
+  border-radius:16px; padding:4px; margin:14px 0 0; overflow-x:auto;
 }
 .tabs button{
-  flex:none; min-height:48px; border:0; border-bottom:2px solid transparent; background:transparent;
-  color:var(--muted); padding:12px 2px; border-radius:0; font-weight:700; font-size:15px;
-  display:inline-flex; align-items:center; gap:7px; white-space:nowrap;
-  transition:color var(--dur), border-color var(--dur), transform var(--dur);
+  flex:1; min-height:44px; border:0; background:transparent;
+  color:var(--muted); padding:10px 8px; border-radius:12px; font-weight:700; font-size:14.5px;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap;
+  transition:color var(--dur), background-color var(--dur), box-shadow var(--dur), transform var(--dur);
 }
-.tabs button:hover{color:var(--text)}
+.tabs button:hover{color:var(--navy)}
 .tabs button:active{transform:scale(.97)}
-.tabs button[aria-selected="true"]{color:#ffe9c9; border-bottom-color:var(--red-bright); box-shadow:0 2px 12px rgba(255,45,45,.45); background:transparent}
-.tabs button[aria-selected="true"]::before{content:""; width:6px; height:6px; flex:none; border-radius:50%; background:var(--gold); box-shadow:0 0 8px rgba(255,179,0,.8)}
+.tabs button[aria-selected="true"]{color:var(--green-deep); background:#fff; box-shadow:0 2px 8px rgba(11,43,58,.12)}
+.tabs button[aria-selected="true"]::before{content:""; width:6px; height:6px; flex:none; border-radius:50%; background:var(--green); box-shadow:0 0 8px rgba(0,200,150,.8)}
 .view{display:none}
 .view.active{display:block; animation:viewIn .28s ease both}
 @keyframes viewIn{from{opacity:0; transform:translateY(8px)}to{opacity:1; transform:translateY(0)}}
 
-/* ---------- Intro ---------- */
-.intro{padding:26px 0 18px; border-bottom:1px solid var(--hairline); margin-bottom:18px}
-.intro .eyebrow{display:inline-flex; align-items:center; gap:8px}
-.intro .eyebrow::before{content:""; width:18px; height:2px; flex:none; background:linear-gradient(90deg,var(--gold),var(--gold-deep)); border-radius:2px}
+/* ---------- Intro: the dark navy hero card (reference screen 1) ----------
+   White headline on navy, teal eyebrow, grey-blue body — the page's
+   anchor, like the "Let's Enjoy with Best Product" card. */
+.intro{
+  padding:22px 20px; margin:18px 0; border-radius:var(--r);
+  background:linear-gradient(160deg,#12384e 0%,#0b2b3a 55%,#08222e 100%);
+  box-shadow:0 14px 32px rgba(11,43,58,.28);
+  position:relative; overflow:hidden;
+}
+.intro::after{
+  content:""; position:absolute; right:-46px; top:-46px; width:150px; height:150px; border-radius:50%;
+  background:radial-gradient(circle, rgba(0,200,150,.35), transparent 70%); pointer-events:none;
+}
+.intro .eyebrow{display:inline-flex; align-items:center; gap:8px; color:var(--green-bright)}
+.intro .eyebrow::before{content:""; width:18px; height:2px; flex:none; background:var(--green); border-radius:2px}
 .intro h1{
-  margin:0 0 10px; font-size:32px; line-height:1.05;
-  letter-spacing:-.01em; font-weight:900; font-style:italic;
-  text-shadow:0 0 18px rgba(255,80,80,.45); text-wrap:balance;
+  position:relative; z-index:2; margin:0 0 10px; font-size:30px; line-height:1.08;
+  letter-spacing:-.01em; font-weight:900; color:#fff; text-wrap:balance;
 }
-.intro h1 em{
-  font-style:italic; font-weight:900;
-  background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00);
-  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
-}
-.intro p{color:var(--muted); margin:0; max-width:52ch; font-size:15px}
+.intro h1 em{font-style:normal; font-weight:900; color:var(--green-bright)}
+.intro p{position:relative; z-index:2; color:#b8cdd8; margin:0; max-width:52ch; font-size:15px}
 
-/* ---------- The glowing lattice panel (the anchor) ---------- */
+/* ---------- The white product card (the anchor panel) ----------
+   Reference screens 2/4: white card, radius ~26px, soft shadow, a teal
+   accent bar across the top. The wordmark is navy with a teal "Hub". */
 .panel{
   position:relative; border-radius:26px; overflow:hidden; margin-bottom:18px;
-  background:linear-gradient(165deg,#ff2e2e 0%,#d60000 28%,#a80000 55%,#7d0000 82%,#5f0000 100%);
-  border:2.5px solid rgba(255,235,235,.92);
-  box-shadow:0 0 0 2px rgba(255,40,40,.28), 0 0 34px rgba(255,30,30,.5), 0 22px 55px rgba(0,0,0,.55);
+  background:#fff;
+  border:1px solid rgba(11,43,58,.06);
+  box-shadow:0 10px 28px rgba(11,43,58,.10), 0 2px 6px rgba(11,43,58,.05);
 }
 .panel::before{
-  content:""; position:absolute; inset:0; pointer-events:none;
-  background:radial-gradient(120% 60% at 50% 0%, rgba(255,255,255,.30), transparent 55%);
+  content:""; position:absolute; left:0; right:0; top:0; height:5px; z-index:3;
+  background:linear-gradient(90deg,var(--green),#00a87e 55%,var(--navy));
 }
-.panel::after{
-  content:""; position:absolute; inset:0; pointer-events:none; opacity:.10;
-  background:
-    repeating-linear-gradient(45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px),
-    repeating-linear-gradient(-45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px);
-}
-.panel-inner{position:relative; z-index:2; padding:16px 16px 15px; display:flex; flex-direction:column; gap:12px}
+.panel-inner{position:relative; z-index:2; padding:20px 16px 16px; display:flex; flex-direction:column; gap:12px}
 /* Step transitions: the panel slides in from the right going forward,
    from the left going back. JS (showStep) adds the class after unhiding. */
 .panel.step-enter{animation:stepIn .3s cubic-bezier(.2,.9,.3,1) both}
 .panel.step-enter-back{animation:stepInBack .3s cubic-bezier(.2,.9,.3,1) both}
 @keyframes stepIn{from{opacity:0; transform:translateX(18px)}to{opacity:1; transform:translateX(0)}}
 @keyframes stepInBack{from{opacity:0; transform:translateX(-18px)}to{opacity:1; transform:translateX(0)}}
-/* ---- Step rail: the three steps as a journey, not three copies of a
-   card. Gold track fills to the current node (JS sets #rail-fill width);
-   done nodes go gold, the current node pulses. ---- */
+/* ---- Step rail: the three steps as a journey. Teal track fills to the
+   current node (JS sets #rail-fill width); done nodes go teal, the
+   current node is navy with a teal pulse ring. ---- */
 .step-rail{position:relative; margin:0 0 16px}
-.rail-track{position:absolute; left:16.67%; right:16.67%; top:15px; height:2px; background:rgba(255,110,110,.25); border-radius:2px}
-.rail-fill{height:100%; width:0; background:linear-gradient(90deg,#ffb300,#ff5e00); box-shadow:0 0 8px rgba(255,179,0,.6); border-radius:2px; transition:width .35s ease}
+.rail-track{position:absolute; left:16.67%; right:16.67%; top:15px; height:2px; background:#d5dce1; border-radius:2px}
+.rail-fill{height:100%; width:0; background:linear-gradient(90deg,var(--green),var(--green-deep)); box-shadow:0 0 8px rgba(0,200,150,.5); border-radius:2px; transition:width .35s ease}
 .rail-nodes{display:flex; justify-content:space-between; list-style:none; margin:0; padding:0; position:relative}
 .rail-nodes li{flex:1; display:flex; flex-direction:column; align-items:center; gap:6px}
 .rail-dot{
   width:30px; height:30px; border-radius:50%; display:grid; place-items:center;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700;
-  background:#220606; border:1.5px solid var(--hairline-strong); color:var(--muted);
+  background:#fff; border:1.5px solid var(--hairline-strong); color:var(--muted);
+  box-shadow:0 2px 6px rgba(11,43,58,.08);
 }
 .rail-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
-.rail-nodes li.done .rail-dot{background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); border-color:rgba(255,255,255,.7); color:#4a0000}
-.rail-nodes li.done .rail-label{color:var(--gold-light)}
-.rail-nodes li.current .rail-dot{border-color:var(--gold); color:var(--gold-light); animation:railPulse 1.6s ease-in-out infinite}
-.rail-nodes li.current .rail-label{color:var(--text)}
-@keyframes railPulse{0%,100%{box-shadow:0 0 0 3px rgba(255,179,0,.22), 0 0 10px rgba(255,60,60,.45)}50%{box-shadow:0 0 0 5px rgba(255,179,0,.12), 0 0 18px rgba(255,60,60,.7)}}
-/* Ghost step numeral in the panel's top corner — an outlined italic
-   number, so each step carries its own mark without new copy. */
+.rail-nodes li.done .rail-dot{background:var(--green); border-color:var(--green); color:#fff}
+.rail-nodes li.done .rail-label{color:var(--green-deep)}
+.rail-nodes li.current .rail-dot{background:var(--navy); border-color:var(--navy); color:#fff; animation:railPulse 1.6s ease-in-out infinite}
+.rail-nodes li.current .rail-label{color:var(--navy)}
+@keyframes railPulse{0%,100%{box-shadow:0 0 0 3px rgba(0,200,150,.28), 0 2px 6px rgba(11,43,58,.2)}50%{box-shadow:0 0 0 5px rgba(0,200,150,.14), 0 2px 10px rgba(0,200,150,.35)}}
+/* Ghost step numeral in the panel's top corner — an outlined number, so
+   each step carries its own mark without new copy. */
 .step-ghost{
-  position:absolute; top:4px; right:12px; z-index:3; pointer-events:none;
-  font-weight:900; font-style:italic; font-size:42px; line-height:1; letter-spacing:-2px;
-  color:transparent; -webkit-text-stroke:1.5px rgba(255,255,255,.16);
+  position:absolute; top:10px; right:14px; z-index:3; pointer-events:none;
+  font-weight:900; font-size:42px; line-height:1; letter-spacing:-2px;
+  color:transparent; -webkit-text-stroke:1.5px rgba(11,43,58,.12);
 }
 /* Phase 2 entrance: the verification windows slide up when they appear. */
 #phase-verify:not([hidden]){animation:phaseIn .35s ease both}
 @keyframes phaseIn{from{opacity:0; transform:translateY(10px)}to{opacity:1; transform:translateY(0)}}
 .panel-head{text-align:center}
 .wordmark{
-  font-weight:900; font-style:italic; font-size:33px; letter-spacing:-.5px; line-height:1;
-  background:linear-gradient(100deg,#ffd76a 0%,#ff8c1a 25%,#ff2d00 50%,#ff8c1a 75%,#ffd76a 100%);
-  background-size:200% 100%; animation:logoShine 3.2s linear infinite;
-  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
-  filter:drop-shadow(0 2px 3px rgba(0,0,0,.45)) drop-shadow(0 0 10px rgba(255,120,0,.35));
+  font-weight:900; font-size:30px; letter-spacing:-.5px; line-height:1;
+  color:var(--navy);
 }
+.wordmark span{color:var(--green-deep)}
 .vip-row{display:flex; align-items:center; justify-content:center; gap:9px; margin-top:10px}
-.swoosh{width:46px; height:2px; flex:none; background:linear-gradient(90deg,transparent,rgba(255,255,255,.85),transparent); border-radius:2px}
-.swoosh:first-child{background:linear-gradient(90deg,transparent,rgba(255,255,255,.85))}
-.swoosh:last-child{background:linear-gradient(90deg,rgba(255,255,255,.85),transparent)}
+.swoosh{width:46px; height:2px; flex:none; background:linear-gradient(90deg,transparent,#c9d3da,transparent); border-radius:2px}
+.swoosh:first-child{background:linear-gradient(90deg,transparent,#c9d3da)}
+.swoosh:last-child{background:linear-gradient(90deg,#c9d3da,transparent)}
 .vip-pill{
-  position:relative; overflow:hidden; background:linear-gradient(180deg,#ffffff,#ffd7d7); color:#8f0000;
+  position:relative; overflow:hidden; background:linear-gradient(180deg,#00d9a5,#00a87e); color:#fff;
   font-weight:800; font-size:12px; letter-spacing:3.5px; padding:5px 14px 4px; border-radius:20px;
-  box-shadow:0 2px 8px rgba(0,0,0,.35), inset 0 1px 0 #fff; white-space:nowrap;
+  box-shadow:0 2px 8px rgba(0,168,126,.35), inset 0 1px 0 rgba(255,255,255,.5); white-space:nowrap;
 }
 .vip-pill::after{
   content:""; position:absolute; top:0; left:-70%; width:45%; height:100%;
-  background:linear-gradient(100deg,transparent,rgba(255,255,255,.85),transparent);
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.6),transparent);
   transform:skewX(-20deg); animation:pillShine 2.8s ease-in-out infinite;
 }
 @keyframes pillShine{0%,55%{left:-70%}100%{left:135%}}
 .status-bar{
   display:flex; align-items:center; justify-content:space-between;
-  background:rgba(25,0,0,.55); border:1px solid rgba(255,90,90,.55); border-radius:20px;
+  background:var(--surface-2); border:1px solid var(--hairline); border-radius:20px;
   padding:7px 12px; font-family:"JetBrains Mono",ui-monospace,monospace;
-  font-size:11px; font-weight:700; letter-spacing:.5px; color:#fff; margin-top:10px;
+  font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--navy); margin-top:10px;
 }
 .status-bar .st-left,.status-bar .st-right{display:flex; align-items:center; gap:6px}
-.status-bar .live b{color:#ff4040}
-.live-dot{width:8px; height:8px; border-radius:50%; background:#22ff88; box-shadow:0 0 8px #22ff88; animation:livePulse 1.6s ease-in-out infinite}
+.status-bar .live b{color:var(--green-deep)}
+.live-dot{width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px rgba(0,200,150,.8); animation:livePulse 1.6s ease-in-out infinite}
 @keyframes livePulse{
-  0%,100%{box-shadow:0 0 6px rgba(34,255,136,.9), 0 0 0 0 rgba(34,255,136,.45); opacity:1}
-  50%{box-shadow:0 0 14px rgba(34,255,136,1), 0 0 0 6px rgba(34,255,136,0); opacity:.8}
+  0%,100%{box-shadow:0 0 6px rgba(0,200,150,.9), 0 0 0 0 rgba(0,200,150,.45); opacity:1}
+  50%{box-shadow:0 0 14px rgba(0,200,150,1), 0 0 0 6px rgba(0,200,150,0); opacity:.8}
 }
 @keyframes pulseDot{50%{opacity:.3}}
 
-/* ---- Live ticker: real WinGo 1-min data from /api/live, never invented ---- */
-.ticker{display:flex; align-items:center; gap:7px; margin-top:12px; padding:8px 12px; background:linear-gradient(180deg, rgba(43,5,5,.7), rgba(25,0,0,.55)); border:1px solid var(--hairline); border-left:2px solid rgba(255,179,0,.7); border-radius:20px; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--text); overflow:hidden}
-.ticker-dot{flex:none; width:8px; height:8px; border-radius:50%; background:#22ff88; box-shadow:0 0 8px #22ff88; animation:livePulse 1.6s ease-in-out infinite}
-.ticker-live{color:#ff4040}
-.ticker-live.reconnecting{color:#ffb300}
+/* ---- Live ticker: real WinGo 1-min data from /api/live, never invented ----
+   A white card pill with a teal LIVE dot — the reference's search-bar row. */
+.ticker{display:flex; align-items:center; gap:7px; margin-top:12px; padding:8px 12px; background:#fff; border:1px solid rgba(11,43,58,.06); border-left:3px solid var(--green); border-radius:20px; box-shadow:0 4px 14px rgba(11,43,58,.07); font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--navy); overflow:hidden}
+.ticker-dot{flex:none; width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px rgba(0,200,150,.8); animation:livePulse 1.6s ease-in-out infinite}
+.ticker-live{color:var(--green-deep)}
+.ticker-live.reconnecting{color:var(--amber)}
 .ticker-mid{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:6px}
 .ticker-mid .mini-ball{width:20px; height:20px; flex:none}
 .ticker-mid .mini-ball span{font-size:11px; line-height:20px}
 .ticker-right{flex:none; color:var(--muted)}
-.ticker-right b{color:var(--text); display:inline-block}
-.ticker-count{display:inline-block}
+.ticker-right b{color:var(--navy); display:inline-block; font-variant-numeric:tabular-nums}
+.ticker-count{display:inline-block; font-variant-numeric:tabular-nums}
 .ticker-count.pop,.pred-countdown.pop{animation:digitPop .25s ease}
 @keyframes digitPop{0%{transform:scale(1.15)}100%{transform:scale(1)}}
 
-/* ---- Embers: gold/red motes drifting up inside the lattice panels (must be VISIBLE) ---- */
+/* ---- Soft accent motes: teal/orange dots drifting up inside the panels
+   (the v8 embers, restyled — small, low-opacity, product colours). ---- */
 .embers{position:absolute; inset:0; z-index:1; pointer-events:none; overflow:hidden}
-.embers i{position:absolute; bottom:-10px; width:7px; height:7px; border-radius:50%; background:radial-gradient(circle,#fff3b0,#ffb300 55%,#ff5e00); box-shadow:0 0 10px 2px rgba(255,179,0,.75); opacity:0; animation:emberRise 7s linear infinite}
+.embers i{position:absolute; bottom:-10px; width:7px; height:7px; border-radius:50%; background:radial-gradient(circle,#7ff0cd,#00c896 55%,#007a55); box-shadow:0 0 8px 1px rgba(0,200,150,.4); opacity:0; animation:emberRise 7s linear infinite}
 .embers i:nth-child(1){left:8%; animation-delay:0s; animation-duration:6s}
 .embers i:nth-child(2){left:20%; animation-delay:1.2s; animation-duration:7.5s; width:6px; height:6px}
-.embers i:nth-child(3){left:34%; animation-delay:2.4s; animation-duration:6.5s; width:8px; height:8px; background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000); box-shadow:0 0 10px 2px rgba(255,45,45,.75)}
+.embers i:nth-child(3){left:34%; animation-delay:2.4s; animation-duration:6.5s; width:8px; height:8px; background:radial-gradient(circle,#ffc9a3,#ff8a3d 60%,#e86a00); box-shadow:0 0 8px 1px rgba(255,138,61,.4)}
 .embers i:nth-child(4){left:47%; animation-delay:.6s; animation-duration:8s; width:9px; height:9px}
 .embers i:nth-child(5){left:60%; animation-delay:3s; animation-duration:6s; width:6px; height:6px}
-.embers i:nth-child(6){left:71%; animation-delay:1.8s; animation-duration:7s; width:8px; height:8px; background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000); box-shadow:0 0 10px 2px rgba(255,45,45,.75)}
+.embers i:nth-child(6){left:71%; animation-delay:1.8s; animation-duration:7s; width:8px; height:8px; background:radial-gradient(circle,#ffc9a3,#ff8a3d 60%,#e86a00); box-shadow:0 0 8px 1px rgba(255,138,61,.4)}
 .embers i:nth-child(7){left:84%; animation-delay:4s; animation-duration:6.5s}
 .embers i:nth-child(8){left:93%; animation-delay:2.8s; animation-duration:8.5s; width:6px; height:6px}
 @keyframes emberRise{
   0%{transform:translate(0,0) scale(.6); opacity:0}
-  12%{opacity:.95}
-  55%{transform:translate(6px,-280px) scale(1); opacity:.85}
-  85%{opacity:.45}
+  12%{opacity:.55}
+  55%{transform:translate(6px,-280px) scale(1); opacity:.45}
+  85%{opacity:.25}
   100%{transform:translate(-5px,-560px) scale(.35); opacity:0}
 }
 
-/* ---- Celebration burst: one-shot gold/red particles, JS-created, removed after ---- */
+/* ---- Celebration burst: one-shot teal/orange/purple particles, JS-created, removed after ---- */
 .burst{position:fixed; z-index:60; width:0; height:0; pointer-events:none}
-.burst i{position:absolute; left:0; top:0; width:var(--s,4px); height:var(--s,4px); margin:calc(var(--s,4px) / -2) 0 0 calc(var(--s,4px) / -2); border-radius:50%; background:radial-gradient(circle,#fff3b0,#ffb300 55%,#ff5e00); box-shadow:0 0 8px rgba(255,179,0,.8); animation:burstFly .9s cubic-bezier(.1,.7,.3,1) forwards}
-.burst i:nth-child(even){background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000); box-shadow:0 0 8px rgba(255,45,45,.8)}
+.burst i{position:absolute; left:0; top:0; width:var(--s,4px); height:var(--s,4px); margin:calc(var(--s,4px) / -2) 0 0 calc(var(--s,4px) / -2); border-radius:50%; background:radial-gradient(circle,#7ff0cd,#00c896 55%,#007a55); box-shadow:0 0 8px rgba(0,200,150,.8); animation:burstFly .9s cubic-bezier(.1,.7,.3,1) forwards}
+.burst i:nth-child(3n+1){background:radial-gradient(circle,#ffc9a3,#ff8a3d 60%,#e86a00); box-shadow:0 0 8px rgba(255,138,61,.8)}
+.burst i:nth-child(3n+2){background:radial-gradient(circle,#e9c8ff,#a55eea 55%,#7a3fd1); box-shadow:0 0 8px rgba(165,94,234,.8)}
 @keyframes burstFly{0%{transform:translate(0,0) scale(1); opacity:1}100%{transform:translate(var(--tx,0px),var(--ty,0px)) scale(.3); opacity:0}}
 .stamp.pop{animation:stampPop .5s cubic-bezier(.2,.9,.3,1.2) both}
 @keyframes stampPop{0%{transform:rotate(-4deg) scale(.5); opacity:0}60%{transform:rotate(-4deg) scale(1.12); opacity:1}100%{transform:rotate(-4deg) scale(1); opacity:1}}
 
-/* Dark screen inside the panel: headline + content. */
+/* Light screen inside the panel: headline + content on soft grey. */
 .screen{
-  position:relative; background:radial-gradient(120% 135% at 50% 0%, #3a0202, #160000 65%, #0d0000);
-  border:1.5px solid rgba(255,110,110,.4); border-radius:18px; overflow:hidden;
+  position:relative; background:var(--surface-2);
+  border:1px solid var(--hairline); border-radius:20px; overflow:hidden;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   padding:20px 16px; text-align:center;
 }
 .screen::before{
   content:""; position:absolute; left:50%; top:50%; width:150%; height:62%;
-  border:1px dashed rgba(255,120,120,.28); border-radius:50%;
+  border:1px dashed rgba(0,168,126,.25); border-radius:50%;
   transform:translate(-50%,-50%) rotate(-16deg); pointer-events:none;
 }
 .screen>*{position:relative; z-index:2}
 .lock-badge{
   width:56px; height:56px; border-radius:16px; margin-bottom:12px;
-  background:radial-gradient(circle at 35% 30%, #3a0d02, #160000 70%);
-  border:2px solid rgba(255,200,60,.85); display:grid; place-items:center;
-  box-shadow:0 0 18px rgba(255,180,0,.35); color:var(--gold-light);
+  background:#e6faf3;
+  border:2px solid rgba(0,168,126,.5); display:grid; place-items:center;
+  box-shadow:0 4px 14px rgba(0,168,126,.18); color:var(--green-deep);
 }
 .lock-badge svg{width:26px; height:26px}
 .screen-title{
-  font-weight:900; font-style:italic; font-size:26px; letter-spacing:1px; line-height:1.1;
-  color:#ffe9e9; text-shadow:0 0 12px rgba(255,80,80,.6);
+  font-weight:900; font-size:26px; letter-spacing:.5px; line-height:1.1;
+  color:var(--navy);
 }
 .screen-sub{
-  font-size:11px; font-weight:800; letter-spacing:3px; color:#fff; margin-top:8px;
+  font-size:11px; font-weight:800; letter-spacing:3px; color:var(--muted); margin-top:8px;
 }
 .screen .hint{color:var(--muted); text-align:center}
 .screen .btn{width:100%}
 .screen .row{width:100%}
 
-/* ---------- Sections: dark cards ---------- */
+/* ---------- Sections: white cards ---------- */
 .card{
-  background:var(--surface); border:1px solid var(--hairline); border-radius:var(--r);
-  padding:20px; margin-bottom:16px; box-shadow:0 10px 30px rgba(0,0,0,.35);
+  background:var(--surface); border:1px solid rgba(11,43,58,.06); border-radius:var(--r);
+  padding:20px; margin-bottom:16px; box-shadow:0 8px 24px rgba(11,43,58,.08);
 }
-.card h2{margin:0 0 6px; font-size:21px; font-weight:900; font-style:italic; letter-spacing:-.01em; line-height:1.25}
-.card h3{margin:0 0 8px; font-size:15px; font-weight:800}
-.card h4{margin:18px 0 8px; font-size:14px}
+.card h2{margin:0 0 6px; font-size:21px; font-weight:900; letter-spacing:-.01em; line-height:1.25; color:var(--navy)}
+.card h3{margin:0 0 8px; font-size:15px; font-weight:800; color:var(--navy)}
+.card h4{margin:18px 0 8px; font-size:14px; color:var(--navy)}
 .card p{margin:0; color:var(--muted)}
 .card p strong{color:var(--text)}
-/* Help & support is a margin note, not another card: dashed gold frame,
-   no shadow, no filled background. The honest line inside it drops its
-   filled box and reads as a plain note. */
-.help-card{margin-top:20px; background:transparent; border:1.5px dashed rgba(255,179,0,.45); box-shadow:none; padding:16px}
+/* Help & support is a margin note, not another card: dashed teal frame,
+   no shadow, no filled background. */
+.help-card{margin-top:20px; background:transparent; border:1.5px dashed rgba(0,168,126,.5); box-shadow:none; padding:16px}
 .help-card .review-message{background:transparent; border-left:0; border-radius:0; padding:0; margin-top:10px; color:var(--muted)}
 
-/* Deposit drop-zone: gold dashed frame with corner ticks, so step 2
+/* Deposit drop-zone: teal dashed frame with corner ticks, so step 2
    reads as a place to put proof — not another copy of the step-1 screen. */
 .deposit-box{
-  border:1.5px dashed rgba(255,179,0,.5); border-radius:var(--r);
-  background-color:rgba(0,0,0,.35);
+  border:1.5px dashed rgba(0,168,126,.55); border-radius:var(--r);
+  background-color:#f2f8f6;
   background-image:
-    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold)),
-    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold)),
-    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold)),
-    linear-gradient(var(--gold),var(--gold)), linear-gradient(var(--gold),var(--gold));
+    linear-gradient(var(--green-deep),var(--green-deep)), linear-gradient(var(--green-deep),var(--green-deep)),
+    linear-gradient(var(--green-deep),var(--green-deep)), linear-gradient(var(--green-deep),var(--green-deep)),
+    linear-gradient(var(--green-deep),var(--green-deep)), linear-gradient(var(--green-deep),var(--green-deep)),
+    linear-gradient(var(--green-deep),var(--green-deep)), linear-gradient(var(--green-deep),var(--green-deep));
   background-size:16px 2px, 2px 16px, 16px 2px, 2px 16px, 16px 2px, 2px 16px, 16px 2px, 2px 16px;
   background-position:0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
   background-repeat:no-repeat;
   padding:18px; margin-top:14px; width:100%;
 }
-.deposit-box img{display:block; max-width:100%; max-height:260px; margin:14px auto 0; border:1px solid rgba(255,179,0,.55); border-radius:8px; box-shadow:0 0 16px rgba(255,179,0,.18)}
-.deposit-ok{color:var(--green); font-weight:800; margin-top:12px; text-shadow:0 0 12px rgba(34,255,136,.5); animation:popIn .35s cubic-bezier(.2,.9,.3,1.2) both}
+.deposit-box img{display:block; max-width:100%; max-height:260px; margin:14px auto 0; border:1px solid rgba(0,168,126,.5); border-radius:8px; box-shadow:0 4px 14px rgba(0,168,126,.15)}
+.deposit-ok{color:var(--green-deep); font-weight:800; margin-top:12px; animation:popIn .35s cubic-bezier(.2,.9,.3,1.2) both}
 .deposit-ok::before{content:"✓ "}
 @keyframes popIn{0%{transform:scale(.85); opacity:0}100%{transform:scale(1); opacity:1}}
 
 /* ---------- The ticket: UID form as a perforated ticket, not a plain
-   form in a box. Gold stub row, dashed perforation, dark ticket body. ---------- */
+   form in a box. Teal stub row, dashed perforation, white ticket body. ---------- */
 .ticket{
   display:block; width:100%; text-align:left;
-  background:rgba(0,0,0,.42); border:1.5px solid rgba(255,200,60,.45); border-radius:16px;
+  background:#fff; border:1.5px solid rgba(0,168,126,.45); border-radius:16px;
   padding:14px 14px 16px; margin-bottom:0; position:relative;
+  box-shadow:0 4px 14px rgba(11,43,58,.06);
 }
 .ticket-stub{
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
-  letter-spacing:.2em; text-transform:uppercase; color:var(--gold); line-height:1.7;
+  letter-spacing:.2em; text-transform:uppercase; color:var(--green-deep); line-height:1.7;
   border:0; border-radius:0; background:transparent; text-align:left;
-  padding:0 0 10px; margin-bottom:14px; border-bottom:1.5px dashed rgba(255,200,60,.55);
+  padding:0 0 10px; margin-bottom:14px; border-bottom:1.5px dashed rgba(0,168,126,.55);
 }
-.ticket-stub::after{content:"◆ ◆ ◆"; letter-spacing:.35em; color:rgba(255,179,0,.55)}
+.ticket-stub::after{content:"◆ ◆ ◆"; letter-spacing:.35em; color:rgba(0,168,126,.5)}
 .ticket-body{padding:0}
-.ticket-body .eyebrow{color:var(--gold)}
+.ticket-body .eyebrow{color:var(--green-deep)}
 
-/* ---------- Buttons: glossy red, dark secondary ---------- */
+/* ---------- Buttons: teal primary, white secondary ----------
+   Skeuomorphism, light touch: the primary button is a glossy teal slab
+   with a top highlight; pressing it sinks it in (shadow collapses,
+   inset shading deepens) instead of just shrinking it. */
 .btn{
   position:relative; overflow:hidden;
   display:inline-flex; align-items:center; justify-content:center; gap:8px;
-  min-height:50px; border-radius:14px; padding:12px 18px; font-weight:900; font-size:14px; letter-spacing:1.5px;
+  min-height:50px; border-radius:14px; padding:12px 18px; font-weight:800; font-size:14px; letter-spacing:.5px;
   border:1.5px solid rgba(255,255,255,.7); color:#fff; text-decoration:none;
-  background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000);
-  box-shadow:0 6px 16px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5);
+  background:linear-gradient(180deg,#00be8a,#00875f 60%,#007a55);
+  box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45);
   transition:transform .12s ease, filter .12s ease, box-shadow .12s ease;
   animation:breathe 2.2s ease-in-out infinite;
 }
 @keyframes breathe{
-  0%,100%{box-shadow:0 6px 16px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5)}
-  50%{box-shadow:0 6px 16px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5), 0 0 22px rgba(255,60,60,.75)}
+  0%,100%{box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45)}
+  50%{box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45), 0 0 18px rgba(0,200,150,.55)}
 }
 .btn::after{
   content:""; position:absolute; top:0; left:-80%; width:50%; height:100%;
-  background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);
   transform:skewX(-20deg); transition:left .5s ease; pointer-events:none;
 }
-/* Physical press (skeuomorphism): the button sinks in — shadow collapses,
-   inset shading deepens, scale drops — instead of just shrinking. */
 .btn:active{
   transform:translateY(2px) scale(.97);
-  box-shadow:0 2px 6px rgba(0,0,0,.4), inset 0 3px 8px rgba(0,0,0,.35), inset 0 -1px 0 rgba(255,255,255,.25);
+  box-shadow:0 2px 6px rgba(0,122,85,.35), inset 0 3px 8px rgba(0,0,0,.25), inset 0 -1px 0 rgba(255,255,255,.25);
 }
 .btn:active::after{left:135%}
-@media (hover:hover){.btn:hover{filter:brightness(1.08)}}
+@media (hover:hover){.btn:hover{filter:brightness(1.06)}}
 .btn.secondary{
-  background:linear-gradient(180deg,#3a0a0a,#1c0505);
-  border:1.5px solid var(--hairline-strong); color:#ffe9e9;
-  box-shadow:0 6px 16px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.12);
+  background:#fff;
+  border:1.5px solid var(--navy); color:var(--navy);
+  box-shadow:0 4px 12px rgba(11,43,58,.10), inset 0 1px 0 rgba(255,255,255,.8);
   animation:none;
 }
-.btn.secondary:hover{border-color:var(--red-bright)}
-.btn.ghost{background:transparent; color:var(--muted); border:1px solid var(--hairline); box-shadow:none; animation:none}
+.btn.secondary:hover{border-color:var(--green-deep); color:var(--green-deep)}
+.btn.ghost{background:transparent; color:var(--muted); border:1px solid var(--hairline-strong); box-shadow:none; animation:none}
 .btn.danger{background:linear-gradient(180deg,#ff5a4d,#c80000 55%,#8f0000); animation:none}
 .btn:disabled{opacity:.55; cursor:not-allowed; animation:none}
 .btn.full{width:100%}
@@ -426,31 +428,30 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .row{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px}
 
 /* ---------- Forms ---------- */
-label{display:block; font-size:13px; font-weight:700; margin:16px 0 6px; color:#ffe9e9; text-align:left}
+label{display:block; font-size:13px; font-weight:700; margin:16px 0 6px; color:var(--navy); text-align:left}
 label:first-child{margin-top:0}
 input[type=text],select,textarea{
-  width:100%; min-height:46px; background:#200606; border:1.5px solid var(--hairline-strong);
+  width:100%; min-height:46px; background:#fff; border:1.5px solid var(--hairline-strong);
   color:var(--text); border-radius:12px; padding:11px 12px;
   transition:border-color var(--dur), box-shadow var(--dur);
 }
 #uid{
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:20px; letter-spacing:.03em;
-  min-height:56px; padding:13px 14px; border-width:1.5px; border-color:rgba(255,140,140,.75);
+  min-height:56px; padding:13px 14px; border-width:1.5px; border-color:rgba(0,168,126,.6);
 }
-input[type=text]:hover,select:hover,textarea:hover{border-color:var(--red-bright)}
-input[type=text]:focus,select:focus,textarea:focus{border-color:var(--gold); outline:none; box-shadow:0 0 0 2px rgba(255,179,0,.35), 0 0 14px rgba(255,60,60,.35)}
+input[type=text]:hover,select:hover,textarea:hover{border-color:var(--green-deep)}
+input[type=text]:focus,select:focus,textarea:focus{border-color:var(--green-deep); outline:none; box-shadow:0 0 0 2px rgba(0,200,150,.3), 0 0 12px rgba(0,200,150,.2)}
 input.invalid,textarea.invalid{border-color:var(--red-state)}
-.err{color:#ff6a5e; font-size:13px; min-height:18px; margin-top:5px}
+.err{color:var(--red-state); font-size:13px; min-height:18px; margin-top:5px}
 .hint{color:var(--muted-2); font-size:12.5px; margin-top:6px; line-height:1.55}
 .optional{color:var(--muted-2); font-weight:400}
 .check{display:flex; gap:10px; align-items:flex-start; margin-top:16px; color:var(--muted); font-size:13.5px; line-height:1.55; cursor:pointer; text-align:left}
-.check input{accent-color:var(--red-bright); margin-top:3px; width:17px; height:17px; flex:none}
+.check input{accent-color:var(--green-deep); margin-top:3px; width:17px; height:17px; flex:none}
 
 /* ---------- Verification timeline: the three windows as a journey ----------
-   A gold-to-red rail runs down the left; each window hangs off it on a
-   numbered node (01 done = gold, 02 current = pulsing red, 03 next =
-   hollow). The windows themselves are dark console rows with a coloured
-   left edge — not three copies of the same thin-bordered card. */
+   A teal-to-navy rail runs down the left; each window hangs off it on a
+   numbered node (01 done = teal, 02 current = navy, 03 next = hollow).
+   The windows are white cards with a coloured left edge. */
 .sample-label{
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; letter-spacing:.1em;
   text-transform:uppercase; color:var(--muted); margin:4px 0 10px;
@@ -458,24 +459,25 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .timeline{position:relative; padding-left:36px; margin-bottom:6px}
 .timeline::before{
   content:""; position:absolute; left:16px; top:26px; bottom:26px; width:2px; border-radius:2px;
-  background:linear-gradient(180deg, var(--gold), var(--red-bright) 60%, rgba(255,110,110,.25));
+  background:linear-gradient(180deg, var(--green), var(--navy) 60%, #d5dce1);
 }
 .timeline .window{position:relative}
 .timeline .window::before{
   content:""; position:absolute; left:-30px; top:16px; z-index:2;
   width:22px; height:22px; border-radius:50%; display:grid; place-items:center;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
-  background:#220606; border:1.5px solid var(--hairline-strong); color:var(--muted);
+  background:#fff; border:1.5px solid var(--hairline-strong); color:var(--muted);
+  box-shadow:0 2px 6px rgba(11,43,58,.10);
 }
 .timeline .window:nth-of-type(1)::before{content:"01"}
 .timeline .window:nth-of-type(2)::before{content:"02"}
 .timeline .window:nth-of-type(3)::before{content:"03"}
-.timeline .window.done::before{background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); border-color:rgba(255,255,255,.7); color:#4a0000}
-.timeline .window.active::before{background:var(--red-bright); border-color:#fff; color:#fff; animation:railPulse 1.6s ease-in-out infinite}
+.timeline .window.done::before{background:var(--green); border-color:var(--green); color:#fff}
+.timeline .window.active::before{background:var(--navy); border-color:var(--navy); color:#fff; animation:railPulse 1.6s ease-in-out infinite}
 .window{
   position:relative;
-  background:#1c0404; border:1px solid var(--hairline); border-left:3px solid var(--hairline-strong); border-radius:12px;
-  margin-bottom:12px;
+  background:#fff; border:1px solid rgba(11,43,58,.06); border-left:3px solid var(--hairline-strong); border-radius:16px;
+  margin-bottom:12px; box-shadow:0 6px 18px rgba(11,43,58,.07);
   animation:winIn .45s cubic-bezier(.2,.9,.3,1) both;
 }
 /* Windows flip in with a touch of 3D (3d-ui: perspective rotateX), staggered. */
@@ -491,72 +493,67 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
 }
 .window-body{padding:14px}
-.window-body b{display:block; font-size:15px}
+.window-body b{display:block; font-size:15px; color:var(--navy)}
 .window-body span{display:block; color:var(--muted); font-size:13.5px; margin-top:3px; line-height:1.55}
 .dot{width:10px; height:10px; border-radius:50%; flex:none; border:1.5px solid var(--hairline-strong); background:transparent}
-.dot.filled{background:var(--green); border-color:var(--green); box-shadow:0 0 8px rgba(34,255,136,.7)}
+.dot.filled{background:var(--green); border-color:var(--green); box-shadow:0 0 8px rgba(0,200,150,.6)}
 .dot.hollow{background:transparent}
 .window.done{border-left:3px solid var(--green)}
-.window.active{border:2px solid var(--red-bright); box-shadow:0 0 18px rgba(255,45,45,.35); animation:winIn .45s cubic-bezier(.2,.9,.3,1) both, winBreathe 2.2s ease-in-out .5s infinite}
+.window.active{border:2px solid var(--green-deep); box-shadow:0 0 18px rgba(0,200,150,.28); animation:winIn .45s cubic-bezier(.2,.9,.3,1) both, winBreathe 2.2s ease-in-out .5s infinite}
 /* The current window breathes — its glow swells so the eye lands on it. */
-@keyframes winBreathe{0%,100%{box-shadow:0 0 18px rgba(255,45,45,.35)}50%{box-shadow:0 0 30px rgba(255,45,45,.6)}}
-.window.active .dot.filled{background:var(--red-bright); border-color:var(--red-bright); box-shadow:0 0 8px rgba(255,45,45,.9); animation:pulseDot 1.2s ease-in-out infinite}
+@keyframes winBreathe{0%,100%{box-shadow:0 0 18px rgba(0,200,150,.28)}50%{box-shadow:0 0 28px rgba(0,200,150,.5)}}
+.window.active .dot.filled{background:var(--navy); border-color:var(--navy); box-shadow:0 0 8px rgba(11,43,58,.6); animation:pulseDot 1.2s ease-in-out infinite}
 .window.next{opacity:.72; border-style:dashed}
 .window.next .window-body b{color:var(--muted)}
 
-/* Locked UID stub — the console header of phase 2: deep-red gradient
-   with a faint lattice, a gold rule across the top, and the stamp. */
+/* Locked UID stub — the navy console header of phase 2: dark navy card
+   with a teal rule across the top and the stamp. */
 .uid-stub{
   display:flex; justify-content:space-between; align-items:flex-start; gap:14px;
-  background:linear-gradient(180deg,#2b0505,#1a0303);
-  border:1.5px solid rgba(255,140,140,.6); border-radius:var(--r);
-  padding:18px; margin-bottom:16px; box-shadow:0 10px 30px rgba(0,0,0,.35);
-  position:relative; overflow:hidden;
-}
-.uid-stub::before{
-  content:""; position:absolute; inset:0; pointer-events:none; opacity:.07;
-  background:
-    repeating-linear-gradient(45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px),
-    repeating-linear-gradient(-45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px);
+  background:linear-gradient(160deg,#12384e,#0b2b3a 60%,#08222e);
+  border:1px solid rgba(255,255,255,.08); border-radius:var(--r);
+  padding:18px; margin-bottom:16px; box-shadow:0 10px 28px rgba(11,43,58,.25);
+  position:relative; overflow:hidden; color:#fff;
 }
 .uid-stub::after{
-  content:""; position:absolute; left:0; right:0; top:0; height:2px;
-  background:linear-gradient(90deg,transparent,rgba(255,179,0,.9),rgba(255,60,60,.9),transparent);
+  content:""; position:absolute; left:0; right:0; top:0; height:3px;
+  background:linear-gradient(90deg,transparent,var(--green),var(--green-bright),transparent);
 }
 .uid-stub>*{position:relative; z-index:2}
-.uid-stub .eyebrow{color:var(--gold)}
+.uid-stub .eyebrow{color:var(--green-bright)}
+.uid-stub p{color:#b8cdd8}
 /* Previous submissions is a ledger, not another card: no fill, no
    shadow — a ruled section under a hairline. */
 #phase-verify .card{background:transparent; border:0; border-top:1px solid var(--hairline); border-radius:0; box-shadow:none; padding:18px 2px 0; margin-bottom:0}
 .stamp{
   flex:none; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
   letter-spacing:.12em; text-transform:uppercase; text-align:center; line-height:1.6;
-  color:var(--gold); border:1.5px solid var(--gold); padding:8px 10px; border-radius:8px;
-  transform:rotate(-4deg); box-shadow:0 0 14px rgba(255,179,0,.35);
+  color:var(--green-bright); border:1.5px solid var(--green); padding:8px 10px; border-radius:8px;
+  transform:rotate(-4deg); box-shadow:0 0 14px rgba(0,200,150,.3);
 }
 
-/* ---------- Status tags ---------- */
+/* ---------- Status tags: light tinted chips (reference's accent chips) ---------- */
 .badge{
   display:inline-flex; align-items:center; gap:7px;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11.5px; font-weight:700;
   letter-spacing:.08em; text-transform:uppercase;
-  padding:6px 10px; border-radius:20px; border:1.5px solid var(--hairline-strong); background:rgba(0,0,0,.4);
+  padding:6px 10px; border-radius:20px; border:1.5px solid transparent; background:var(--slate-soft);
 }
 .badge::before{content:""; width:6px; height:6px; border-radius:50%; background:currentColor; flex:none; box-shadow:0 0 6px currentColor}
-.b-pending_review{color:var(--amber)}
-.b-under_review{color:var(--slate)}
-.b-verified{color:var(--green)}
-.b-rejected{color:var(--red-state)}
-.b-info_required{color:var(--ochre)}
-.b-not_submitted{color:var(--muted)}
+.b-pending_review{color:var(--amber); background:var(--amber-soft)}
+.b-under_review{color:var(--slate); background:var(--slate-soft)}
+.b-verified{color:var(--green-deep); background:var(--green-soft)}
+.b-rejected{color:var(--red-state); background:var(--red-soft)}
+.b-info_required{color:var(--ochre); background:var(--ochre-soft)}
+.b-not_submitted{color:var(--muted); background:#eef1f3}
 .mono{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:13.5px; word-break:break-all}
 .meta{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px}
 .meta div{background:var(--surface-2); border:1px solid var(--hairline); border-radius:12px; padding:11px 12px; min-width:0}
 .meta dt{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted-2)}
-.meta dd{margin:3px 0 0; font-weight:700; font-size:14.5px; overflow-wrap:anywhere}
+.meta dd{margin:3px 0 0; font-weight:700; font-size:14.5px; overflow-wrap:anywhere; color:var(--navy)}
 .review-message{
   margin-top:14px; padding:12px 14px; background:var(--surface-2);
-  border-left:3px solid var(--red-bright); border-radius:12px;
+  border-left:3px solid var(--green-deep); border-radius:12px; color:var(--muted);
 }
 .review-message strong{color:var(--text)}
 
@@ -568,15 +565,15 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 }
 .list li:last-child{border-bottom:0}
 .list small{color:var(--muted); display:block; margin-top:3px; line-height:1.5}
-.list strong.mono{font-size:14.5px}
+.list strong.mono{font-size:14.5px; color:var(--navy)}
 .stats{
   display:flex; flex-wrap:wrap; gap:0; margin-bottom:16px;
-  border-top:2px solid var(--red-bright); border-bottom:1px solid var(--hairline-strong); padding:6px 0;
+  border-top:2px solid var(--green); border-bottom:1px solid var(--hairline-strong); padding:6px 0;
 }
 .stat{background:transparent; border:0; border-left:1px solid var(--hairline); border-radius:0; padding:14px 16px}
 .stat:first-child{border-left:0; padding-left:0}
 .stat:hover{transform:none}
-.stat b{font-size:30px; font-weight:900; font-style:italic; display:block; line-height:1.05; letter-spacing:-.01em; color:var(--gold)}
+.stat b{font-size:30px; font-weight:900; display:block; line-height:1.05; letter-spacing:-.01em; color:var(--green-deep)}
 .stat span{
   display:block; margin-top:3px; font-family:"JetBrains Mono",ui-monospace,monospace;
   font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
@@ -584,7 +581,7 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .stat .dot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px}
 .controls{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px}
 .controls input,.controls select{flex:1; min-width:140px}
-.admin-item{cursor:pointer; border-radius:12px; padding:14px 10px; margin:0 -10px; transition:background var(--dur), transform var(--dur)}
+.admin-item{cursor:pointer; border-radius:12px; padding:14px 10px; margin:0 -10px; transition:background-color var(--dur), transform var(--dur)}
 .admin-item:active{transform:scale(.99)}
 .admin-item:hover{background:var(--surface-2)}
 .admin-item:focus-visible{background:var(--surface-2)}
@@ -593,135 +590,134 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .skel{height:16px; border-radius:8px; background:var(--surface-3)}
 .empty{
   text-align:center; color:var(--muted); padding:28px 14px;
-  border:1px dashed var(--hairline-strong); border-radius:var(--r); margin-top:4px;
+  border:1px dashed var(--hairline-strong); border-radius:var(--r); margin-top:4px; background:#fff;
 }
-.empty b{display:block; color:var(--text); margin-bottom:4px}
+.empty b{display:block; color:var(--navy); margin-bottom:4px}
 .toast{
   position:fixed; left:50%; bottom:calc(22px + var(--safe-bottom)); z-index:50;
-  transform:translateX(-50%); background:#220606; color:#fff;
-  border:1.5px solid var(--hairline-strong); box-shadow:0 0 24px rgba(255,40,40,.35);
+  transform:translateX(-50%); background:var(--navy); color:#fff;
+  border:1.5px solid rgba(255,255,255,.25); box-shadow:0 10px 28px rgba(11,43,58,.35);
   padding:12px 18px; border-radius:14px;
   max-width:calc(100% - 32px); text-align:center; font-size:14px; font-weight:700;
   animation:toastIn .3s cubic-bezier(.2,.9,.3,1.2) both;
 }
 @keyframes toastIn{from{opacity:0; transform:translate(-50%,14px) scale(.96)}to{opacity:1; transform:translate(-50%,0) scale(1)}}
-.toast.success{border-color:var(--green); box-shadow:0 0 24px rgba(34,255,136,.3)}
-.toast.error{border-color:var(--red-bright)}
+.toast.success{border-color:var(--green); box-shadow:0 10px 28px rgba(0,200,150,.35)}
+.toast.error{border-color:#ff6a5e}
 .modal-backdrop{
-  position:fixed; inset:0; background:rgba(10,0,0,.72); display:none;
+  position:fixed; inset:0; background:rgba(11,43,58,.55); display:none;
   align-items:flex-end; justify-content:center; z-index:40; padding:16px;
+  overscroll-behavior:contain;
 }
 .modal-backdrop.show{display:flex; animation:fadeIn .18s ease both}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .modal-backdrop.show .modal{animation:modalIn .32s cubic-bezier(.2,.9,.3,1.15) both}
 @keyframes modalIn{from{opacity:0; transform:translateY(16px) scale(.98)}to{opacity:1; transform:translateY(0) scale(1)}}
+/* Bottom sheet (reference screen 6): white, rounded top, drag handle. */
 .modal{
-  background:var(--surface); border:1px solid var(--hairline-strong); border-top:3px solid var(--red-bright); border-radius:var(--r);
+  background:#fff; border:1px solid var(--hairline); border-top:3px solid var(--green); border-radius:24px;
   padding:22px; width:100%; max-width:520px; max-height:85vh; overflow:auto;
-  box-shadow:0 0 40px rgba(255,30,30,.35);
+  box-shadow:0 -8px 32px rgba(11,43,58,.25);
+  position:relative;
 }
-.modal h3{margin-top:0; font-size:18px}
-/* ---- Bottom dock: a system bar, not a templated footer ----
-   Deep-red gradient slab with a faint lattice, a gold-to-red rule across
-   the top, a glossy red lozenge around the gold V, a live dot with a
-   ring, and the status badge as a gold-edged chip. The honest line is
-   engraved inside the dock (gold-tinted mono under a hairline) instead
-   of grey small print floating below it. Static, at the end of the home
-   view — never fixed. */
+.modal::before{
+  content:""; display:block; width:40px; height:4px; border-radius:4px;
+  background:#d5dce1; margin:0 auto 16px;
+}
+.modal h3{margin-top:0; font-size:18px; color:var(--navy)}
+/* ---- Bottom dock: the navy system bar (reference screen 1 bottom card
+   / screen 2 price bar) — dark navy slab, teal LIVE, white V lozenge,
+   status chip, honest line engraved inside under a hairline. Static, at
+   the end of the home view — never fixed. ---- */
 .dock{
   margin-top:24px; padding:0; overflow:hidden; position:relative;
-  background:linear-gradient(180deg,#2b0505 0%,#1c0303 55%,#150202 100%);
-  border:1.5px solid rgba(255,140,140,.55); border-radius:18px;
-  box-shadow:0 10px 30px rgba(0,0,0,.45), 0 0 22px rgba(255,30,30,.22);
-}
-.dock::before{
-  content:""; position:absolute; inset:0; pointer-events:none; opacity:.07;
-  background:
-    repeating-linear-gradient(45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px),
-    repeating-linear-gradient(-45deg, rgba(255,255,255,.9) 0 2px, transparent 2px 16px);
+  background:linear-gradient(160deg,#12384e 0%,#0b2b3a 60%,#08222e 100%);
+  border:1px solid rgba(255,255,255,.08); border-radius:18px;
+  box-shadow:0 10px 28px rgba(11,43,58,.28), 0 0 22px rgba(0,200,150,.12);
 }
 .dock::after{
-  content:""; position:absolute; left:0; right:0; top:0; height:2px;
-  background:linear-gradient(90deg,transparent,rgba(255,179,0,.9),rgba(255,60,60,.9),transparent);
+  content:""; position:absolute; left:0; right:0; top:0; height:3px;
+  background:linear-gradient(90deg,transparent,var(--green),var(--green-bright),transparent);
 }
 .dock-row{position:relative; z-index:2; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:13px 14px 12px}
 .dock-cell{display:flex; align-items:center; gap:7px; min-width:0}
-.dock-left{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.06em; color:var(--text); white-space:nowrap; overflow:hidden}
+.dock-left{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.06em; color:#fff; white-space:nowrap; overflow:hidden}
 .dock-left .live-dot{width:9px; height:9px}
-.dock-live{color:#ff4040}
-.dock-period{color:var(--muted); overflow:hidden; text-overflow:ellipsis}
+.dock-live{color:var(--green-bright)}
+.dock-period{color:#b8cdd8; overflow:hidden; text-overflow:ellipsis; font-variant-numeric:tabular-nums}
 .dock-centre{flex:none}
 .dock-mark{
   width:30px; height:30px; flex:none; display:grid; place-items:center;
-  background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000);
-  border:1.5px solid rgba(255,255,255,.7); border-radius:9px;
-  box-shadow:0 3px 10px rgba(0,0,0,.45), inset 0 2px 0 rgba(255,255,255,.5), 0 0 12px rgba(255,40,40,.5);
+  background:linear-gradient(180deg,#00d9a5,#00a87e 55%,#007a55);
+  border:1.5px solid rgba(255,255,255,.8); border-radius:9px;
+  box-shadow:0 3px 10px rgba(0,0,0,.3), inset 0 2px 0 rgba(255,255,255,.5), 0 0 12px rgba(0,200,150,.4);
 }
-.dock-v{font-size:17px}
-.dock-name{font-weight:900; font-style:italic; font-size:14px; letter-spacing:1.5px; background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
+.dock-v{font-size:17px; color:#fff; font-weight:900}
+.dock-name{font-weight:900; font-size:14px; letter-spacing:1.5px; color:#fff}
 .dock-right{flex:none}
-.dock-right .badge{background:rgba(0,0,0,.55); border-color:rgba(255,179,0,.55)}
+.dock-right .badge{background:rgba(255,255,255,.12); border-color:rgba(255,255,255,.2); color:#fff}
 .dock-honest{
-  position:relative; z-index:2; margin:0; padding:11px 14px 12px; border-top:1px solid var(--hairline);
+  position:relative; z-index:2; margin:0; padding:11px 14px 12px; border-top:1px solid rgba(255,255,255,.12);
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10.5px; letter-spacing:.06em;
-  color:#e8c98a; text-align:center; line-height:1.6;
+  color:#9fc3d1; text-align:center; line-height:1.6;
 }
 
 /* ---------- Prediction (verified users only) ---------- */
-.pred-timers{display:flex; gap:8px; margin:0 0 14px}
+.pred-timers{display:flex; gap:4px; margin:0 0 14px; background:#dfe4e8; border-radius:16px; padding:4px}
 .pred-timer{
-  flex:1; min-height:44px; border-radius:12px; border:1.5px solid var(--hairline-strong);
-  background:rgba(0,0,0,.4); color:var(--muted); font-weight:800; font-size:14px; letter-spacing:1px;
+  flex:1; min-height:44px; border-radius:12px; border:0;
+  background:transparent; color:var(--muted); font-weight:800; font-size:14px; letter-spacing:1px;
   font-family:"JetBrains Mono",ui-monospace,monospace;
-  transition:transform .12s ease, background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
+  transition:transform .12s ease, background-color .15s ease, color .15s ease, box-shadow .15s ease;
 }
 .pred-timer:active{transform:scale(.95)}
 .pred-timer.active{
-  background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000); color:#fff; border-color:rgba(255,255,255,.7);
-  box-shadow:0 4px 14px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5), 0 0 16px rgba(255,60,60,.5);
+  background:linear-gradient(180deg,#00be8a,#00875f); color:#fff;
+  box-shadow:0 4px 12px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45);
 }
 .pred-period{
   font-size:22px; font-weight:700; letter-spacing:1px;
-  color:var(--gold-light); margin-top:6px; font-variant-numeric:tabular-nums;
+  color:var(--navy); margin-top:6px; font-variant-numeric:tabular-nums;
 }
 .pred-countdown{
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:15px; font-weight:700; letter-spacing:2px;
-  color:#fff; margin-top:4px; font-variant-numeric:tabular-nums;
+  color:var(--navy); margin-top:4px; font-variant-numeric:tabular-nums;
 }
-/* Final 10 seconds: the countdown turns gold and throbs — color, glow
+/* Final 10 seconds: the countdown turns orange and throbs — color, glow
    AND a scale pulse (so it composes with, and replaces, the digit pop
-   while urgent is on). */
+   while urgent is on). Orange is the reference's small accent chip. */
 .pred-countdown.urgent{animation:countUrgent .5s ease-in-out infinite}
 .ticker-count.urgent{animation:countUrgent .5s ease-in-out infinite}
-@keyframes countUrgent{0%,100%{color:#fff; text-shadow:0 0 0 rgba(255,179,0,0); transform:scale(1)}50%{color:#ffb300; text-shadow:0 0 12px rgba(255,179,0,.9); transform:scale(1.07)}}
+@keyframes countUrgent{0%,100%{color:var(--navy); text-shadow:0 0 0 rgba(255,138,61,0); transform:scale(1)}50%{color:#e86a00; text-shadow:0 0 12px rgba(255,138,61,.7); transform:scale(1.07)}}
 .pred-signal{display:flex; align-items:center; justify-content:center; gap:16px; width:100%; margin-top:14px}
 .pred-size{
   min-width:118px; height:66px; border-radius:14px; padding:0 14px;
-  background:linear-gradient(180deg,#ff6a5e,#d60000 55%,#9e0000);
+  background:linear-gradient(180deg,#12384e,#0b2b3a 60%,#08222e);
   border:2px solid rgba(255,255,255,.85);
-  box-shadow:0 6px 18px rgba(0,0,0,.4), inset 0 2px 0 rgba(255,255,255,.55);
-  color:#fff; font-weight:900; font-style:italic; font-size:25px; letter-spacing:1px;
+  box-shadow:0 6px 18px rgba(11,43,58,.3), inset 0 2px 0 rgba(255,255,255,.25);
+  color:#fff; font-weight:900; font-size:25px; letter-spacing:1px;
   display:flex; align-items:center; justify-content:center;
   position:relative; overflow:hidden;
 }
 /* Slow sheen sweep across the signal slab (mirrors the VIP pill). */
 .pred-size::after{
   content:""; position:absolute; top:0; left:-70%; width:45%; height:100%;
-  background:linear-gradient(100deg,transparent,rgba(255,255,255,.5),transparent);
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.35),transparent);
   transform:skewX(-20deg); animation:sizeSheen 3.2s ease-in-out infinite; pointer-events:none;
 }
 @keyframes sizeSheen{0%,60%{left:-70%}100%{left:135%}}
 /* The signal lands as an event: a small pop when a new period arrives. */
 .pred-signal.signal-pop{animation:signalPop .4s ease both}
 @keyframes signalPop{0%{transform:scale(1)}40%{transform:scale(1.045)}100%{transform:scale(1)}}
-/* WinGo balls: red / green / violet, plus the mixed violet balls (0 = red+violet, 5 = green+violet). */
+/* WinGo balls: red / green / violet, plus the mixed violet balls (0 = red+violet, 5 = green+violet).
+   These are data colours, not theme colours — they stay exactly as the game defines them. */
 .ball{
   width:68px; height:68px; border-radius:50%; position:relative; flex-shrink:0;
   display:flex; align-items:center; justify-content:center;
 }
 .ball span{position:relative; z-index:2; font-weight:900; font-size:30px; color:#fff; text-shadow:0 2px 4px rgba(0,0,0,.35)}
 .ball::before{content:""; position:absolute; inset:5px; border-radius:50%; background:radial-gradient(circle at 35% 28%, rgba(255,255,255,.9), transparent 55%); z-index:1}
-.ball::after{content:""; position:absolute; inset:-9px; border-radius:50%; border:1.5px dashed rgba(255,255,255,.65); animation:spinSlow 7s linear infinite}
+.ball::after{content:""; position:absolute; inset:-9px; border-radius:50%; border:1.5px dashed rgba(11,43,58,.35); animation:spinSlow 7s linear infinite}
 @keyframes spinSlow{to{transform:rotate(360deg)}}
 .ball.red{background:radial-gradient(circle at 32% 28%, #ffc9c9, #ff5a4d 45%, #b30000 92%)}
 .ball.green{background:radial-gradient(circle at 32% 28%, #c8ffd9, #37d67a 45%, #0a7a33 92%)}
@@ -753,23 +749,23 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .acc{margin-top:16px; padding-top:14px; border-top:1px solid var(--hairline); width:100%}
 .acc-head{display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap}
 .acc-title{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700}
-.acc-summary{font-size:12px; font-weight:700; letter-spacing:1px; color:var(--gold-light)}
+.acc-summary{font-size:12px; font-weight:700; letter-spacing:1px; color:var(--green-deep)}
 .acc-conf{font-size:11px; letter-spacing:1px; color:var(--muted); text-align:right; margin-top:4px}
 .acc-dots{display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-top:12px}
-.acc-dot{width:10px; height:10px; border-radius:50%; background:rgba(255,255,255,.25)}
-.acc-dot.right{background:#22ff88; box-shadow:0 0 6px rgba(34,255,136,.7)}
-.acc-dot.wrong{background:#ff3b30; box-shadow:0 0 6px rgba(255,59,48,.7)}
+.acc-dot{width:10px; height:10px; border-radius:50%; background:#d5dce1}
+.acc-dot.right{background:#00c896; box-shadow:0 0 6px rgba(0,200,150,.6)}
+.acc-dot.wrong{background:#ff3b30; box-shadow:0 0 6px rgba(255,59,48,.6)}
 .acc-rows{margin-top:12px; display:flex; flex-direction:column; gap:4px}
 .acc-row{display:flex; justify-content:space-between; gap:8px; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:12px; color:var(--muted)}
-.acc-row .ok{color:#22ff88; font-weight:700}
-.acc-row .bad{color:#ff6b61; font-weight:700}
+.acc-row .ok{color:var(--green-deep); font-weight:700}
+.acc-row .bad{color:#d92d20; font-weight:700}
 
 /* ---------- Responsive ---------- */
 @media (max-width:560px){
   .wrap{padding-left:14px; padding-right:14px}
-  .tabs{gap:20px}
-  .intro{padding:20px 0 14px; margin-bottom:14px}
-  .intro h1{font-size:27px}
+  .tabs{gap:4px}
+  .intro{padding:20px 16px; margin:14px 0}
+  .intro h1{font-size:26px}
   .intro p{font-size:14.5px}
   .stats{flex-direction:column}
   .stat{border-left:0; border-top:1px solid var(--hairline); padding-left:0}
@@ -777,8 +773,8 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   .meta{grid-template-columns:1fr}
   .card{padding:18px 16px}
   .brand span{display:none}
-  .panel-inner{padding:14px 12px 13px}
-  .wordmark{font-size:29px}
+  .panel-inner{padding:18px 12px 14px}
+  .wordmark{font-size:27px}
   .screen-title{font-size:23px}
   .screen{padding:18px 12px}
   .uid-stub{flex-wrap:wrap}
