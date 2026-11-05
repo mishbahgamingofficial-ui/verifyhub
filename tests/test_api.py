@@ -247,6 +247,25 @@ def test_telegram_application_builds_with_all_handlers():
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
 
 
+def test_main_keyboard_is_colourful_and_complete():
+    """The /start menu uses Bot API 9.4 button styles: blue panel, green status.
+
+    Older Telegram clients ignore `style`, so every button also carries its
+    meaning in words + emoji; at most two buttons per keyboard are styled.
+    """
+    from app.bot_handlers import _keyboard
+
+    buttons = [b for row in _keyboard().inline_keyboard for b in row]
+    by_text = {b.text: b for b in buttons}
+    assert by_text["🚀 Open Verification Panel"].style == "primary"
+    assert by_text["📊 Check My Status"].style == "success"
+    assert "🎯 Open Predictions" in by_text
+    assert "❓ Help" in by_text
+    assert sum(1 for b in buttons if b.style is not None) <= 2
+    # The style field serialises into the Bot API payload.
+    assert by_text["🚀 Open Verification Panel"].to_dict()["style"] == "primary"
+
+
 def test_polling_bot_builds_with_updater_and_same_handlers():
     from telegram.ext import CallbackQueryHandler, CommandHandler
 

@@ -25,7 +25,8 @@ settings = get_settings()
 
 WELCOME = """<b>🔥 VerifyHub — one pass, one verdict.</b>
 
-Send your UID once. An admin reviews it. Verified users unlock WinGo predictions.
+✅ Send your UID once. An admin reviews it.
+🎯 Verified users unlock WinGo predictions.
 
 Tap below to open the panel."""
 
@@ -58,13 +59,20 @@ STATUS_LABELS = {
 
 
 def _keyboard() -> InlineKeyboardMarkup:
+    """Main menu: stacked full-width buttons, coloured via Bot API 9.4 `style`.
+
+    Only three styles exist (primary=blue, success=green, danger=red) and
+    older Telegram clients ignore them, so the labels carry the meaning too
+    (emoji + words) and at most two buttons per keyboard are styled.
+    """
     rows = []
     if settings.mini_app_url:
-        rows.append([InlineKeyboardButton("Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url))])
-    rows.append([
-        InlineKeyboardButton("Check my status", callback_data="__status__"),
-        InlineKeyboardButton("Help", callback_data="__help__"),
-    ])
+        rows.append([InlineKeyboardButton("🚀 Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url), style="primary")])
+    rows.append([InlineKeyboardButton("📊 Check My Status", callback_data="__status__", style="success")])
+    predict_url = _predict_url()
+    if predict_url:
+        rows.append([InlineKeyboardButton("🎯 Open Predictions", web_app=WebAppInfo(url=predict_url))])
+    rows.append([InlineKeyboardButton("❓ Help", callback_data="__help__")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -151,12 +159,12 @@ async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     text = (
-        "<b>🔥 WinGo predictions</b>\n\n"
-        "Live results, history and the next-period signal — for verified users only.\n\n"
+        "<b>🎯 WinGo predictions</b>\n\n"
+        "📈 Live results, history and the next-period signal — for verified users only.\n\n"
         "Tap below to open the predictions."
     )
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=url))]]
+        [[InlineKeyboardButton("🎯 Open Predictions", web_app=WebAppInfo(url=url), style="success")]]
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
