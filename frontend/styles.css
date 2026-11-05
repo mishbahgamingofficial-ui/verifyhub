@@ -437,6 +437,65 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   border-top:1px solid var(--hairline); line-height:1.6;
 }
 
+/* ---------- Prediction (verified users only) ---------- */
+.pred-timers{display:flex; gap:8px; margin:0 0 14px}
+.pred-timer{
+  flex:1; min-height:44px; border-radius:12px; border:1.5px solid var(--hairline-strong);
+  background:rgba(0,0,0,.4); color:var(--muted); font-weight:800; font-size:14px; letter-spacing:1px;
+  font-family:"JetBrains Mono",ui-monospace,monospace;
+}
+.pred-timer.active{
+  background:linear-gradient(180deg,#ff7a6e,#e60000 45%,#a80000); color:#fff; border-color:rgba(255,255,255,.7);
+  box-shadow:0 4px 14px rgba(0,0,0,.35), inset 0 2px 0 rgba(255,255,255,.5), 0 0 16px rgba(255,60,60,.5);
+}
+.pred-period{
+  font-size:22px; font-weight:700; letter-spacing:1px;
+  color:var(--gold-light); margin-top:6px;
+}
+.pred-countdown{
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:15px; font-weight:700; letter-spacing:2px;
+  color:#fff; margin-top:4px;
+}
+.pred-signal{display:flex; align-items:center; justify-content:center; gap:16px; width:100%; margin-top:14px}
+.pred-size{
+  min-width:118px; height:66px; border-radius:14px; padding:0 14px;
+  background:linear-gradient(180deg,#ff6a5e,#d60000 55%,#9e0000);
+  border:2px solid rgba(255,255,255,.85);
+  box-shadow:0 6px 18px rgba(0,0,0,.4), inset 0 2px 0 rgba(255,255,255,.55);
+  color:#fff; font-weight:900; font-style:italic; font-size:25px; letter-spacing:1px;
+  display:flex; align-items:center; justify-content:center;
+}
+/* WinGo balls: red / green / violet, plus the mixed violet balls (0 = red+violet, 5 = green+violet). */
+.ball{
+  width:68px; height:68px; border-radius:50%; position:relative; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+}
+.ball span{position:relative; z-index:2; font-weight:900; font-size:30px; color:#fff; text-shadow:0 2px 4px rgba(0,0,0,.35)}
+.ball::before{content:""; position:absolute; inset:5px; border-radius:50%; background:radial-gradient(circle at 35% 28%, rgba(255,255,255,.9), transparent 55%); z-index:1}
+.ball::after{content:""; position:absolute; inset:-9px; border-radius:50%; border:1.5px dashed rgba(255,255,255,.65); animation:spinSlow 7s linear infinite}
+@keyframes spinSlow{to{transform:rotate(360deg)}}
+.ball.red{background:radial-gradient(circle at 32% 28%, #ffc9c9, #ff5a4d 45%, #b30000 92%)}
+.ball.green{background:radial-gradient(circle at 32% 28%, #c8ffd9, #37d67a 45%, #0a7a33 92%)}
+.ball.violet{background:radial-gradient(circle at 32% 28%, #e9c8ff, #a55eea 45%, #5b1a9e 92%)}
+.ball.vr{background:linear-gradient(135deg, #ff5a4d 0 50%, #a55eea 50% 100%)}
+.ball.vg{background:linear-gradient(135deg, #37d67a 0 50%, #a55eea 50% 100%)}
+.pred-ball{animation:ballIn .7s cubic-bezier(.2,.9,.3,1.2) both}
+@keyframes ballIn{0%{transform:rotate(-360deg) scale(.3); opacity:0}60%{transform:rotate(12deg) scale(1.15); opacity:1}100%{transform:rotate(0deg) scale(1); opacity:1}}
+.pred-reason{font-size:12px; color:var(--muted); margin-top:10px; text-align:center}
+.pred-history{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; margin-top:14px; width:100%}
+.pred-history-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700}
+.mini-ball{
+  width:30px; height:30px; border-radius:50%; position:relative; flex-shrink:0;
+  display:inline-flex; align-items:center; justify-content:center;
+}
+.mini-ball span{position:relative; z-index:2; font-weight:900; font-size:14px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.35)}
+.mini-ball::before{content:""; position:absolute; inset:2px; border-radius:50%; background:radial-gradient(circle at 35% 28%, rgba(255,255,255,.9), transparent 55%); z-index:1}
+.mini-ball.red{background:radial-gradient(circle at 32% 28%, #ffc9c9, #ff5a4d 45%, #b30000 92%)}
+.mini-ball.green{background:radial-gradient(circle at 32% 28%, #c8ffd9, #37d67a 45%, #0a7a33 92%)}
+.mini-ball.violet{background:radial-gradient(circle at 32% 28%, #e9c8ff, #a55eea 45%, #5b1a9e 92%)}
+.mini-ball.vr{background:linear-gradient(135deg, #ff5a4d 0 50%, #a55eea 50% 100%)}
+.mini-ball.vg{background:linear-gradient(135deg, #37d67a 0 50%, #a55eea 50% 100%)}
+
 /* ---------- Responsive ---------- */
 @media (max-width:560px){
   .wrap{padding-left:14px; padding-right:14px}

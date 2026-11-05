@@ -9,7 +9,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=5">
+<link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
 <div class="wrap">
@@ -27,6 +27,7 @@
 
   <nav class="tabs" role="tablist" aria-label="Panel sections">
     <button role="tab" aria-selected="true" aria-controls="view-home" data-tab="home">Verification</button>
+    <button role="tab" aria-selected="false" aria-controls="view-prediction" data-tab="prediction">Prediction</button>
     <button role="tab" aria-selected="false" aria-controls="view-admin" data-tab="admin" id="admin-tab" hidden>Admin</button>
   </nav>
 
@@ -168,6 +169,70 @@
     </div>
   </section>
 
+  <!-- PREDICTION (verified users only — the server gates it, not the tab) -->
+  <section class="view" id="view-prediction" role="tabpanel">
+    <div class="pred-timers" role="group" aria-label="WinGo timer">
+      <button type="button" class="pred-timer" data-timer="30s">30s</button>
+      <button type="button" class="pred-timer active" data-timer="1m">1 min</button>
+    </div>
+
+    <div id="pred-loading" hidden>
+      <div class="empty"><b>Loading prediction…</b>Fetching the latest results.</div>
+    </div>
+
+    <div id="pred-locked" hidden>
+      <section class="panel" aria-label="Prediction locked">
+        <div class="panel-inner">
+          <div class="panel-head">
+            <div class="wordmark">VerifyHub</div>
+            <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
+            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> PREDICTION MODE</span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+          </div>
+          <div class="screen">
+            <div class="lock-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+            <div class="screen-title">PREDICTION LOCKED</div>
+            <div class="screen-sub">VERIFIED USERS ONLY</div>
+            <p class="hint" id="pred-locked-status">The prediction page unlocks when an administrator marks you Verified.</p>
+            <div class="row"><button class="btn secondary full" id="pred-back-btn" type="button">Back to Verification</button></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div id="pred-error" hidden>
+      <div class="empty"><b>Results temporarily unavailable.</b><span id="pred-error-text">Please try again in a moment.</span>
+        <div class="row" style="justify-content:center"><button class="btn secondary" id="pred-error-refresh" type="button">Try again</button></div>
+      </div>
+    </div>
+
+    <div id="pred-open" hidden>
+      <section class="panel" aria-label="Prediction">
+        <div class="panel-inner">
+          <div class="panel-head">
+            <div class="wordmark">VerifyHub</div>
+            <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
+            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> LIVE : <b>ACTIVE</b></span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+          </div>
+          <div class="screen">
+            <div class="screen-sub">NEXT PERIOD</div>
+            <div class="pred-period mono" id="pred-period">—</div>
+            <div class="screen-sub" style="margin-top:10px">CLOSES IN</div>
+            <div class="pred-countdown" id="pred-countdown">—</div>
+            <div class="pred-signal">
+              <div class="pred-size" id="pred-size">—</div>
+              <div class="pred-ball ball red" id="pred-ball"><span>–</span></div>
+            </div>
+            <p class="pred-reason mono" id="pred-reason"></p>
+            <p class="hint">Signal only — not a guarantee.</p>
+            <div class="pred-history" id="pred-history"></div>
+            <div class="row"><button class="btn full" id="pred-refresh-btn" type="button">Refresh</button></div>
+            <p class="err" id="pred-err" role="alert"></p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
   <!-- ADMIN -->
   <section class="view" id="view-admin" role="tabpanel">
     <div class="stats" id="admin-stats"></div>
@@ -201,6 +266,6 @@
      the Mini App aggressively. Bump the ?v= number on every JS change
      so users get the new files instead of the cached old ones. -->
 <script src="config.js?v=2"></script>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

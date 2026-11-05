@@ -51,7 +51,7 @@
     try {
       const res = await fetch(API_BASE + path, Object.assign({ headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData }, signal: controller.signal }, opts || {}));
       let data = null; try { data = await res.json(); } catch (e) { /* empty */ }
-      if (!res.ok) throw new Error(friendlyError(res.status, data && data.detail));
+      if (!res.ok) { const err = new Error(friendlyError(res.status, data && data.detail)); err.status = res.status; throw err; }
       return data;
     } catch (err) {
       if (!_retried && (err.name === 'AbortError' || err instanceof TypeError)) {
@@ -133,6 +133,8 @@
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
     if (tg && tg.BackButton) { if (name !== 'home') tg.BackButton.show(); else tg.BackButton.hide(); }
     if (name === 'admin') loadAdmin();
+    if (name === 'prediction') loadPrediction();
+    else stopPredTimers();
   }
   document.querySelectorAll('[role="tab"]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
   const resubmitBtn = $('#resubmit-btn');
@@ -235,6 +237,97 @@
       $('#deposit-pick-btn').textContent = 'Change screenshot';
     } catch (err) { $('#deposit-err').textContent = 'Could not read that image. Try another.'; }
   });
+
+  // Prediction (verified users only — the server gates /api/prediction;
+  // the tab is always visible, but the content is locked for anyone else).
+  // Signal only, never a guarantee: the page says so, and the signal's
+  // confidence is never "high".
+  let predTimer = '1m', predRefreshId = null, predCountdownId = null;
+  let predRemainingMs = 0, predFetchedAt = 0, predLoading = false;
+  function stopPredTimers() {
+    if (predRefreshId) { clearInterval(predRefreshId); predRefreshId = null; }
+    if (predCountdownId) { clearInterval(predCountdownId); predCountdownId = null; }
+  }
+  function showPredState(name) {
+    ['pred-locked', 'pred-open', 'pred-error', 'pred-loading'].forEach((id) => {
+      const el = $('#' + id); if (el) el.hidden = id !== name;
+    });
+  }
+  // WinGo ball colour from the number alone: 0 = red+violet, 5 = green+violet.
+  function ballClass(n) {
+    if (n === 0) return 'vr';
+    if (n === 5) return 'vg';
+    return n % 2 === 0 ? 'red' : 'green';
+  }
+  function tickPredCountdown() {
+    const left = Math.max(0, predRemainingMs - (Date.now() - predFetchedAt));
+    const s = Math.ceil(left / 1000);
+    const el = $('#pred-countdown');
+    if (el) el.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+    if (left <= 0) { clearInterval(predCountdownId); predCountdownId = null; loadPrediction(); }
+  }
+  function renderPrediction(d) {
+    $('#pred-period').textContent = d.period;
+    $('#pred-size').textContent = d.signal.size === 'big' ? 'BIG' : 'SMALL';
+    const ball = $('#pred-ball');
+    ball.className = 'pred-ball ball ' + ballClass(d.signal.number);
+    ball.innerHTML = '<span>' + esc(d.signal.number) + '</span>';
+    $('#pred-reason').textContent = d.signal.reason + ' · Confidence: ' + d.signal.confidence;
+    $('#pred-history').innerHTML = '<span class="pred-history-label">LAST 10</span>' + (d.results || []).map((r) =>
+      '<span class="mini-ball ' + ballClass(r.number) + '" title="' + esc(r.period) + '"><span>' + esc(r.number) + '</span></span>').join('');
+    $('#pred-err').textContent = '';
+    // Countdown from the SERVER clock (endTime - serviceTime), not the
+    // client clock, so a wrong phone time cannot skew it.
+    predRemainingMs = new Date(d.next_period_at).getTime() - new Date(d.server_time).getTime();
+    predFetchedAt = Date.now();
+    tickPredCountdown();
+    if (predCountdownId) clearInterval(predCountdownId);
+    predCountdownId = setInterval(tickPredCountdown, 1000);
+  }
+  async function loadPrediction() {
+    if (predLoading) return;
+    stopPredTimers();
+    if (isPreview) {
+      $('#pred-locked-status').textContent = 'Open this panel from Telegram — the prediction page unlocks after verification.';
+      showPredState('pred-locked');
+      return;
+    }
+    predLoading = true;
+    const timerAtLoad = predTimer;
+    showPredState('pred-loading');
+    try {
+      const d = await api('/api/prediction?timer=' + encodeURIComponent(predTimer));
+      renderPrediction(d);
+      showPredState('pred-open');
+      predRefreshId = setInterval(loadPrediction, 10000);
+    } catch (e) {
+      if (e.status === 403) {
+        // Locked: show the user's real status, fetched live.
+        let statusText = 'Not submitted';
+        try { const latest = await api('/api/me/latest'); statusText = LABELS[latest.status] || latest.status; } catch (e2) { /* keep default */ }
+        $('#pred-locked-status').textContent = 'Your status: ' + statusText + ' — the prediction page unlocks when an administrator marks you Verified.';
+        showPredState('pred-locked');
+      } else {
+        $('#pred-error-text').textContent = e.status === 503
+          ? 'Results temporarily unavailable. Please try again in a moment.'
+          : (e.message || 'Could not load the prediction.');
+        showPredState('pred-error');
+      }
+    } finally {
+      predLoading = false;
+      // The timer was switched while a load was in flight: reload with the new timer.
+      if (predTimer !== timerAtLoad) loadPrediction();
+    }
+  }
+  document.querySelectorAll('.pred-timer').forEach((b) => b.addEventListener('click', () => {
+    if (predTimer === b.dataset.timer) return;
+    predTimer = b.dataset.timer;
+    document.querySelectorAll('.pred-timer').forEach((x) => x.classList.toggle('active', x === b));
+    loadPrediction();
+  }));
+  $('#pred-refresh-btn').addEventListener('click', loadPrediction);
+  $('#pred-error-refresh').addEventListener('click', loadPrediction);
+  $('#pred-back-btn').addEventListener('click', () => showTab('home'));
 
   // Admin
   async function loadAdminStats() {

@@ -47,6 +47,7 @@ from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
 from .notifications import notify_user
+from .prediction import TIMER_TYPE_IDS, ProviderError, get_prediction
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
 from .services import ACTIVE_STATUSES, STATUSES, can_transition
@@ -321,6 +322,35 @@ def my_latest(user: User = Depends(get_current_user), db: Session = Depends(get_
     if row is None:
         return {"status": "not_submitted", "submission": None}
     return {"status": row.status, "submission": _public_submission(row)}
+
+
+@app.get("/api/prediction")
+def prediction(
+    timer: str = Query(default="1m"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """WinGo prediction for verified users only.
+
+    The gate is server-side: the user's latest submission must be
+    status == "verified". The tab being visible in the Mini App means
+    nothing — this endpoint is the lock. The signal is a pattern
+    signal, never a guarantee (see app.prediction).
+    """
+    if timer not in TIMER_TYPE_IDS:
+        raise HTTPException(status_code=422, detail="Unknown timer. Use 30s, 1m, 3m or 5m.")
+    latest = (
+        db.query(Submission)
+        .filter(Submission.user_id == user.id)
+        .order_by(desc(Submission.submitted_at))
+        .first()
+    )
+    if latest is None or latest.status != "verified":
+        raise HTTPException(status_code=403, detail="Prediction unlocks after verification.")
+    try:
+        return get_prediction(timer)
+    except ProviderError:
+        raise HTTPException(status_code=503, detail="Results temporarily unavailable.") from None
 
 
 class SubmissionIn(BaseModel):
