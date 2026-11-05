@@ -43,6 +43,15 @@ class Settings:
     api_per_minute: int = int(os.environ.get("API_PER_MINUTE", "120"))
     host: str = os.environ.get("HOST", "0.0.0.0")
     port: int = int(os.environ.get("PORT", "8000"))
+    # Telegram webhook mode (free tier: the bot runs inside the API service,
+    # no polling worker). PUBLIC_BASE_URL is the public URL of this API
+    # service, e.g. https://verifyhub-api-uyo8.onrender.com — the webhook
+    # is registered at PUBLIC_BASE_URL + "/telegram/webhook".
+    # TELEGRAM_WEBHOOK_SECRET is the secret Telegram sends back in the
+    # X-Telegram-Bot-Api-Secret-Token header; requests without a matching
+    # secret are rejected with 403.
+    telegram_webhook_secret: str = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+    public_base_url: str = os.environ.get("PUBLIC_BASE_URL", "")
 
     @property
     def uid_regex(self) -> "re.Pattern[str]":

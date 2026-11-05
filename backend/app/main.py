@@ -11,6 +11,12 @@ Routes:
   GET  /api/admin/submissions/{id}  admin only, full UID + history
   POST /api/admin/submissions/{id}/status  admin only, validated transition + audit + notify
   GET  /api/admin/audit       admin only, recent audit events
+  POST /telegram/webhook      Telegram bot updates (webhook mode, free tier)
+
+The Telegram bot runs inside this process via webhook — no polling
+worker is needed on the free tier. The same handlers as the polling
+bot (app.bot_handlers) process the updates; see the webhook section
+below. Startup never fails if the webhook cannot be registered.
 
 The frontend is served from ../frontend when present, so one process can
 serve both API and Mini App in development. In production put the
@@ -18,8 +24,10 @@ frontend behind HTTPS (see README) and set MINI_APP_URL to that URL.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +38,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
+from telegram import Update as TelegramUpdate
+from telegram.ext import Application as TelegramApplication
 
 from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
@@ -40,7 +50,85 @@ from .security import TelegramIdentity
 from .services import ACTIVE_STATUSES, STATUSES, can_transition
 
 logger = logging.getLogger("verifyhub.api")
-app = FastAPI(title="VerifyHub API", version="1.0.0")
+
+
+# ---------------- Telegram webhook (free tier: bot runs inside the API) ----------------
+# The bot is NOT polled here. Telegram delivers updates to
+# POST /telegram/webhook, which feeds them to a shared python-telegram-bot
+# Application (built with updater=None) using the exact same handlers as
+# the polling worker (app.bot_handlers). Only ONE transport may be active
+# for a token at a time — never run the polling worker while this webhook
+# is registered, or Telegram returns 409 conflicts.
+
+_telegram_app: TelegramApplication | None = None
+
+
+def get_telegram_app() -> TelegramApplication | None:
+    """Build (once) the PTB Application used for webhook updates.
+
+    Returns None when no BOT_TOKEN is configured. Built lazily so importing
+    this module never touches the network.
+    """
+    global _telegram_app
+    if _telegram_app is not None:
+        return _telegram_app
+    settings = get_settings()
+    if not settings.bot_token:
+        return None
+    from .bot_handlers import build_telegram_application
+
+    _telegram_app = build_telegram_application(settings.bot_token, with_updater=False)
+    return _telegram_app
+
+
+async def _initialize_telegram_app(ptb: TelegramApplication) -> bool:
+    """Initialize the PTB app (idempotent). False on failure — never raises."""
+    try:
+        await ptb.initialize()
+        return True
+    except Exception:
+        logger.exception("Failed to initialize Telegram application.")
+        return False
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    try:
+        ptb = get_telegram_app()
+    except Exception:
+        # Building the PTB app must never crash startup — the API keeps
+        # serving even if the bot cannot be built.
+        logger.exception("Failed to build Telegram application; webhook disabled.")
+        ptb = None
+    if ptb is not None:
+        if await _initialize_telegram_app(ptb):
+            if settings.public_base_url:
+                url = settings.public_base_url.rstrip("/") + "/telegram/webhook"
+                try:
+                    kwargs: dict = {}
+                    if settings.telegram_webhook_secret:
+                        kwargs["secret_token"] = settings.telegram_webhook_secret
+                    await ptb.bot.set_webhook(url=url, **kwargs)
+                    info = await ptb.bot.get_webhook_info()
+                    logger.info(
+                        "Telegram webhook set: url=%s pending_update_count=%s",
+                        info.url,
+                        info.pending_update_count,
+                    )
+                except Exception:
+                    # Startup must never crash because the webhook could
+                    # not be registered — the API keeps serving.
+                    logger.exception("Failed to set Telegram webhook; API continues without it.")
+    yield
+    if ptb is not None:
+        try:
+            await ptb.shutdown()
+        except Exception:
+            logger.exception("Error shutting down Telegram application.")
+
+
+app = FastAPI(title="VerifyHub API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,6 +194,55 @@ def public_config(settings: Settings = Depends(get_settings)):
 
 @app.get("/api/health")
 def health():
+    return {"ok": True}
+
+
+# ---------------- Telegram webhook ----------------
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request, settings: Settings = Depends(get_settings)):
+    """Receive Telegram updates via webhook (free tier: no polling worker).
+
+    Telegram sends the X-Telegram-Bot-Api-Secret-Token header when a secret
+    was registered with setWebhook. When TELEGRAM_WEBHOOK_SECRET is set we
+    require an exact match (403 otherwise); when it is unset (local dev
+    only) we log a warning and still accept the update.
+    """
+    secret = settings.telegram_webhook_secret
+    if secret:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if not token or not hmac.compare_digest(token, secret):
+            raise HTTPException(status_code=403, detail="Invalid webhook secret.")
+    else:
+        logger.warning(
+            "TELEGRAM_WEBHOOK_SECRET is not set; accepting webhook update without secret check (local dev only)."
+        )
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON body.") from None
+    try:
+        ptb = get_telegram_app()
+    except Exception:
+        logger.exception("Failed to build Telegram application.")
+        raise HTTPException(status_code=503, detail="Telegram application unavailable; please retry.") from None
+    if ptb is None:
+        # No BOT_TOKEN configured — nothing can process this update.
+        logger.warning("Telegram webhook received but BOT_TOKEN is not set; update ignored.")
+        return {"ok": True}
+    if not await _initialize_telegram_app(ptb):
+        # Transient failure (e.g. Telegram unreachable) — 503 so Telegram
+        # retries delivery instead of dropping the update.
+        raise HTTPException(status_code=503, detail="Telegram application unavailable; please retry.") from None
+    try:
+        update = TelegramUpdate.de_json(data, ptb.bot)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid Telegram update.") from None
+    try:
+        await ptb.process_update(update)
+    except Exception:
+        logger.exception("Failed to process Telegram update.")
+        raise HTTPException(status_code=503, detail="Failed to process update; please retry.") from None
     return {"ok": True}
 
 

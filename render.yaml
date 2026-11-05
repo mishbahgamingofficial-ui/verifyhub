@@ -77,6 +77,18 @@ services:
           property: connectionString
       - key: PYTHON_VERSION
         value: 3.12.0
+      # Webhook mode (free tier): the Telegram bot runs inside this API
+      # service via POST /telegram/webhook — no polling worker needed.
+      # The live services were created individually (not via this
+      # Blueprint), so also set these in the Render dashboard:
+      #   TELEGRAM_WEBHOOK_SECRET — secret token, sync:false (generate one,
+      #     never commit it)
+      #   PUBLIC_BASE_URL — public URL of this API service, e.g.
+      #     https://verifyhub-api-uyo8.onrender.com
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: PUBLIC_BASE_URL
+        value: https://verifyhub-api-uyo8.onrender.com
 
 databases:
   - name: verifyhub-db

@@ -33,6 +33,13 @@ os.environ["DATABASE_URL"] = f"sqlite:///{tmp.name}"
 os.environ["REGISTRATION_URL"] = "https://example-registration.test/register"
 os.environ["MINI_APP_URL"] = "https://example.test/"
 
+# The sandbox sets NO_PROXY with bracketed IPv6 entries (e.g. "[::1]")
+# that httpx cannot parse when python-telegram-bot builds its HTTP client.
+# Strip them so PTB applications can be built in tests. Production
+# (Render) does not set NO_PROXY like this.
+for _proxy_key in ("no_proxy", "NO_PROXY"):
+    os.environ[_proxy_key] = "localhost,127.0.0.1"
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app.main import app  # noqa: E402
@@ -146,3 +153,115 @@ def test_admin_only_and_status_transitions():
     # Stats are derived, not hardcoded
     stats = client.get("/api/admin/stats", headers=H(ADMIN_ID)).json()
     assert stats["total"] >= 2 and stats["by_status"]["verified"] >= 1
+
+
+# ---------------- Telegram webhook ----------------
+
+def _override_settings(monkeypatch, **overrides):
+    """Override Settings for the webhook tests.
+
+    Settings dataclass defaults are frozen at import time, so env-var
+    patching and class-attribute patching do not work. Build an override
+    instance with dataclasses.replace and install it both as a FastAPI
+    dependency override (used by the endpoint) and as main.get_settings
+    (used by get_telegram_app).
+    """
+    import app.main as main_module
+
+    from dataclasses import replace
+
+    from app.config import Settings, get_settings
+
+    settings = replace(Settings(), **overrides)
+    monkeypatch.setitem(app.dependency_overrides, get_settings, lambda: settings)
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+
+
+def _webhook_update():
+    return {
+        "update_id": 1,
+        "message": {
+            "message_id": 1,
+            "date": 1700000000,
+            "text": "/start",
+            "chat": {"id": USER_ID, "type": "private"},
+            "from": {"id": USER_ID, "is_bot": False, "first_name": "Test"},
+        },
+    }
+
+
+def test_webhook_rejects_missing_or_wrong_secret(monkeypatch):
+    _override_settings(monkeypatch, telegram_webhook_secret="test-webhook-secret")
+    # No header at all -> 403
+    assert client.post("/telegram/webhook", json=_webhook_update()).status_code == 403
+    # Wrong secret -> 403
+    r = client.post("/telegram/webhook",
+                    headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-secret"},
+                    json=_webhook_update())
+    assert r.status_code == 403
+
+
+def test_webhook_correct_secret_processes_update(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    import app.main as main_module
+
+    _override_settings(monkeypatch, telegram_webhook_secret="test-webhook-secret")
+    mock_app = MagicMock()
+    mock_app.initialize = AsyncMock()
+    mock_app.process_update = AsyncMock()
+    mock_app.bot = MagicMock()
+    mock_app.bot.defaults = None  # real bots have no defaults; a MagicMock default breaks date parsing
+    monkeypatch.setattr(main_module, "get_telegram_app", lambda: mock_app)
+    r = client.post("/telegram/webhook",
+                    headers={"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"},
+                    json=_webhook_update())
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True}
+    mock_app.process_update.assert_awaited_once()
+    processed = mock_app.process_update.await_args.args[0]
+    assert processed.update_id == 1
+    assert processed.message.text == "/start"
+
+
+def test_webhook_without_bot_token_is_ignored(monkeypatch):
+    import app.main as main_module
+
+    _override_settings(monkeypatch, bot_token="", telegram_webhook_secret="")
+    monkeypatch.setattr(main_module, "_telegram_app", None)
+    r = client.post("/telegram/webhook", json=_webhook_update())
+    assert r.status_code == 200 and r.json() == {"ok": True}
+
+
+def test_telegram_application_builds_with_all_handlers():
+    from telegram.ext import CallbackQueryHandler, CommandHandler
+
+    from app.bot_handlers import build_telegram_application
+
+    app = build_telegram_application("test-token-123", with_updater=False)
+    assert app.updater is None  # webhook mode: no poller
+    handlers = [h for group in app.handlers.values() for h in group]
+    assert len(handlers) == 5
+    commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
+    assert commands == ["cancel", "help", "start", "status"]
+    assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
+
+
+def test_polling_bot_builds_with_updater_and_same_handlers():
+    from telegram.ext import CallbackQueryHandler, CommandHandler
+
+    from app.bot import build_app
+    from app.bot_handlers import build_telegram_application
+
+    polling = build_app()
+    assert polling.updater is not None  # polling path intact
+    webhook = build_telegram_application("test-token-123", with_updater=False)
+
+    def _sig(a):
+        return sorted(
+            (type(h).__name__, tuple(sorted(h.commands)) if isinstance(h, CommandHandler) else ())
+            for group in a.handlers.values() for h in group
+        )
+
+    assert _sig(polling) == _sig(webhook)
+    assert len([h for group in polling.handlers.values() for h in group]) == 5
