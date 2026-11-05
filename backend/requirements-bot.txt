@@ -1,0 +1,8 @@
+# Bot only — used by the Render Background Worker.
+# No FastAPI / uvicorn here: the worker only polls Telegram and talks to
+# the shared PostgreSQL database.
+sqlalchemy>=2.0
+python-telegram-bot>=20.7
+httpx>=0.27
+# PostgreSQL driver — needed when DATABASE_URL is postgresql://...
+psycopg[binary]>=3.1

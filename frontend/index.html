@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#edeae2">
+<title>VerifyHub — Verification Panel</title>
+<meta name="description" content="Send your UID once, then track verification. Admin-reviewed, never auto-approved.">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;0,9..144,700;1,9..144,600&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18"/><path d="m8 12.5 2.5 2.5 5-5.5"/></svg></div><div><b id="brand-name">VerifyHub</b><span>One pass · Admin-reviewed</span></div></div>
+    <span class="pill" id="who-pill">Connecting…</span>
+  </header>
+
+  <div class="progress" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
+  <div class="phase-line"><span id="phase-label">Step 1 of 2 — Send UID</span><span id="phase-count">01 / 02</span></div>
+
+  <div class="banner" id="preview-banner" role="alert">
+    <b>Browser preview.</b> Sign in through Telegram to use this panel.
+  </div>
+
+  <nav class="tabs" role="tablist" aria-label="Panel sections">
+    <button role="tab" aria-selected="true" aria-controls="view-home" data-tab="home">Verification</button>
+    <button role="tab" aria-selected="false" aria-controls="view-admin" data-tab="admin" id="admin-tab" hidden>Admin</button>
+  </nav>
+
+  <!-- FLOW: one pass — send once, then verification windows -->
+  <section class="view active" id="view-home" role="tabpanel">
+
+    <!-- PHASE 1 — SEND ONCE -->
+    <div id="phase-send">
+      <div class="intro">
+        <span class="eyebrow">One-time submission</span>
+        <h1>Send your UID <em>once.</em></h1>
+        <p>Send it — the form locks. Then watch the windows.</p>
+      </div>
+
+      <div class="register-strip" id="register-card">
+        <div>
+          <b>1 · Register first</b>
+          <p id="register-text">Register on the official site, then return with your UID.</p>
+        </div>
+        <div class="row">
+          <a class="btn" id="register-link" href="#" target="_blank" rel="noopener">Register Account <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg></a>
+          <button class="btn secondary" id="copy-link-btn" type="button">Copy link</button>
+        </div>
+        <p class="hint">Never share passwords or OTPs. We never ask for them.</p>
+      </div>
+
+      <div class="ticket" id="submit-card">
+        <div class="ticket-stub" aria-hidden="true"><span>One<br>time</span></div>
+        <div class="ticket-body">
+          <span class="eyebrow">2 · Your UID — send once</span>
+          <form id="submit-form" novalidate>
+            <label for="uid">Registration UID</label>
+            <input id="uid" name="uid" type="text" autocomplete="off" inputmode="text" placeholder="e.g. ABC12345" aria-describedby="uid-err uid-hint">
+            <div class="err" id="uid-err" role="alert"></div>
+            <p class="hint" id="uid-hint"></p>
+            <label for="reference">Reference <span class="optional">(optional)</span></label>
+            <input id="reference" name="reference" type="text" autocomplete="off" placeholder="Optional">
+            <label class="check"><input id="confirm" type="checkbox"> <span>This UID is correct and mine.</span></label>
+            <div class="err" id="confirm-err" role="alert"></div>
+            <div class="row"><button class="btn full" id="submit-btn" type="submit">Send UID once</button></div>
+          </form>
+          <p class="one-time-note">One send only. Check twice — then the form locks.</p>
+        </div>
+      </div>
+
+      <!-- Sample windows, preview only: shows what Phase 2 looks like without a login. -->
+      <div id="sample-windows" hidden>
+        <p class="sample-label">Sample — after you send</p>
+        <div class="window done"><div class="window-bar"><span>Window 01 — Received</span><span class="dot filled"></span></div><div class="window-body"><b>UID received.</b><span>Queued for review.</span></div></div>
+        <div class="window active"><div class="window-bar"><span>Window 02 — Under review</span><span class="dot filled"></span></div><div class="window-body"><b>Checking it.</b><span>Compared against the official link.</span></div></div>
+        <div class="window next"><div class="window-bar"><span>Window 03 — Decision</span><span class="dot hollow"></span></div><div class="window-body"><b>Waiting.</b><span>Decision appears here.</span></div></div>
+      </div>
+    </div>
+
+    <!-- PHASE 2 — VERIFICATION WINDOWS -->
+    <div id="phase-verify" hidden>
+      <div class="intro">
+        <span class="eyebrow">Step 2 of 2 — Verification</span>
+        <h1>Your UID is <em>in.</em></h1>
+        <p>Sent once, now locked. The windows update as an administrator works.</p>
+      </div>
+
+      <div class="uid-stub" id="current-card">
+        <div>
+          <span class="eyebrow">Sent UID — locked</span>
+          <div id="current-body"><div class="skel"></div><div class="skel" style="margin-top:8px;width:60%"></div></div>
+        </div>
+        <span class="stamp">Sent —<br>locked</span>
+      </div>
+
+      <div id="verify-windows" aria-live="polite">
+        <div id="status-body"><div class="skel"></div><div class="skel" style="margin-top:8px;width:60%"></div></div>
+      </div>
+
+      <div class="row"><button class="btn secondary full" id="resubmit-btn" type="button" hidden>Submit a corrected UID</button></div>
+      <p class="hint" id="resubmit-hint" hidden>Admin asked for more info. Send one corrected UID.</p>
+
+      <div class="card">
+        <span class="eyebrow">Earlier</span>
+        <h2>Previous submissions</h2>
+        <ul class="list" id="activity-list"><li><span class="skel" style="width:100%"></span></li></ul>
+      </div>
+    </div>
+
+    <div class="card help-card">
+      <span class="eyebrow">Good to know</span>
+      <h3>Help &amp; support</h3>
+      <p>If Window 03 asks for more info, read its message, then send one corrected UID. Anything else — use Help in the bot.</p>
+      <p class="hint review-message">Verified = admin-approved. No guarantee of recovery, and not provider-confirmed.</p>
+    </div>
+  </section>
+
+  <!-- ADMIN -->
+  <section class="view" id="view-admin" role="tabpanel">
+    <div class="stats" id="admin-stats"></div>
+    <div class="card">
+      <span class="eyebrow">Administration</span>
+      <h2>Submissions</h2>
+      <div class="controls">
+        <input id="admin-search" type="text" placeholder="Search UID, ID, or Telegram ID" aria-label="Search submissions">
+        <select id="admin-status" aria-label="Filter by status"><option value="">All statuses</option><option value="pending_review">Pending review</option><option value="under_review">Under review</option><option value="verified">Verified</option><option value="rejected">Rejected</option><option value="info_required">Info required</option></select>
+        <select id="admin-sort" aria-label="Sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+      </div>
+      <ul class="list" id="admin-list"><li><span class="skel" style="width:100%"></span></li></ul>
+      <div class="empty" id="admin-empty" hidden><b>No submissions match.</b>Try a different search or filter.</div>
+    </div>
+  </section>
+
+  <p class="foot">VerifyHub · Admin-reviewed only.<br>Identity checked server-side on every request.</p>
+</div>
+
+<div class="modal-backdrop" id="detail-modal" role="dialog" aria-modal="true" aria-label="Submission details">
+  <div class="modal"><div id="detail-body"></div><div class="row"><button class="btn ghost" id="detail-close" type="button">Close</button></div></div>
+</div>
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-label="Confirm status change">
+  <div class="modal">
+    <h3>Confirm status change</h3><p id="confirm-text"></p>
+    <div class="row"><button class="btn danger" id="confirm-yes" type="button">Confirm change</button><button class="btn secondary" id="confirm-no" type="button">Cancel</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" hidden role="status"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

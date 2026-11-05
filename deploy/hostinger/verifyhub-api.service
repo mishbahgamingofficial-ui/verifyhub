@@ -1,0 +1,27 @@
+# VerifyHub API + Mini App — systemd service for the Hostinger VPS.
+# Install: copy to /etc/systemd/system/verifyhub-api.service, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now verifyhub-api
+#   sudo systemctl status verifyhub-api
+# Logs: sudo journalctl -u verifyhub-api -f
+#
+# This runs uvicorn (the FastAPI server) on 127.0.0.1:8000 only.
+# Nginx (see nginx-verifyhub.conf) faces the internet and proxies to it.
+# The Mini App frontend is served by the same process (app mounts
+# ../frontend), so website + API share one origin — no CORS problems.
+
+[Unit]
+Description=VerifyHub API and Mini App
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/verifyhub/backend
+EnvironmentFile=/opt/verifyhub/.env
+ExecStart=/opt/verifyhub/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

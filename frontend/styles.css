@@ -1,0 +1,343 @@
+/* VerifyHub design system — v7, "One Pass"
+   A complete rebuild, not a polish of v6:
+   - Single-column, phone-first flow (max-width 560px). No top-tab trio,
+     no asymmetric 5/7 home grid, no hero + five cards. One pass:
+     Phase 1 = send the UID once. Phase 2 = verification windows.
+   - Sharp corners everywhere (radius 0). Bone background, ink text,
+     oxide used only for the locked stamp / rejected state, pine only
+     for the verified state. Fraunces is now the display face;
+     Inter stays for UI, JetBrains Mono for data.
+   - Strict-rules compliance, by construction:
+     No gradients anywhere (no gradient functions in this file).
+     No glassmorphism (no backdrop-filter). No glowing borders
+     (focus is a solid outline). No floating blobs / decorative
+     shapes. No repetitive rounded cards. No generic SaaS template.
+     No unnecessary animation: only colour/border transitions.
+   Behaviour: every class/id used by app.js is preserved, plus the
+   new phase / window hooks (phase-send, phase-verify, verify-windows,
+   resubmit-btn, ticket, window). */
+
+:root{
+  --bg:#edeae2; --surface:#fffdf8; --surface-2:#e6e1d3; --surface-3:#ddd6c2;
+  --hairline:#d5cfbe; --hairline-strong:#b3a888;
+  --text:#191712; --muted:#6b6455; --muted-2:#978d78;
+  --pine:#24513f; --pine-deep:#1a3d2f;
+  --oxide:#9c3a1e; --amber:#8a5a00; --slate:#3f4a52; --red:#9b2c1f; --ochre:#7a5a12;
+  --r:0px;
+  --dur:150ms;
+  --safe-top:env(safe-area-inset-top,0px); --safe-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box}
+html{color-scheme:light}
+body{
+  margin:0; color:var(--text);
+  font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  background:var(--bg); overflow-x:hidden;
+}
+a{color:var(--pine); text-underline-offset:3px}
+a:hover{color:var(--pine-deep)}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer; -webkit-tap-highlight-color:transparent}
+:focus-visible{outline:2px solid var(--pine); outline-offset:2px}
+::selection{background:#d8e6da}
+
+/* ---------- Masthead + progress: one thin column ---------- */
+.wrap{max-width:560px; margin:0 auto; padding:calc(14px + var(--safe-top)) 18px calc(28px + var(--safe-bottom))}
+.topbar{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding-bottom:12px; border-bottom:2px solid var(--text);
+}
+.brand{display:flex; gap:11px; align-items:center; min-width:0}
+.logo{
+  width:38px; height:38px; flex:none; display:grid; place-items:center; color:#fff;
+  background:var(--text); border-radius:var(--r);
+}
+.logo svg{width:20px; height:20px}
+.brand b{display:block; font-family:"Fraunces",Georgia,serif; font-size:20px; font-weight:700; letter-spacing:-.01em; line-height:1.1}
+.brand span{
+  display:block; margin-top:1px; font-family:"JetBrains Mono",ui-monospace,monospace;
+  font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted);
+}
+.pill{
+  flex:none; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px;
+  color:var(--muted); border:1px solid var(--hairline-strong); padding:6px 10px; border-radius:var(--r); background:var(--surface);
+}
+.icon{width:18px; height:18px; flex:none}
+.icon-sm{width:16px; height:16px; flex:none}
+.eyebrow{
+  display:block; margin:0 0 8px; font-family:"JetBrains Mono",ui-monospace,monospace;
+  font-size:11px; font-weight:500; letter-spacing:.13em; text-transform:uppercase; color:var(--oxide);
+}
+.banner{
+  display:none; border:1px solid #d9b25f; background:#fdf3d7;
+  color:#6b4a00; border-radius:var(--r); padding:12px 14px; margin:14px 0 0; font-size:13.5px; line-height:1.55;
+}
+.banner.show{display:block}
+
+/* Progress: a 3px ink track. Phase 1 = half, Phase 2 = full. */
+.progress{height:3px; background:var(--surface-3); margin-top:14px}
+.progress-fill{height:100%; width:50%; background:var(--text); transition:width var(--dur)}
+.phase-line{
+  display:flex; justify-content:space-between; gap:12px; margin-top:8px;
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
+}
+
+/* ---------- Tabs: two only — Verification, Admin ---------- */
+.tabs{
+  display:flex; gap:28px; background:transparent; border:0;
+  border-bottom:1px solid var(--hairline); padding:0; margin:14px 0 0; overflow-x:auto;
+}
+.tabs button{
+  flex:none; min-height:48px; border:0; border-bottom:2px solid transparent; background:transparent;
+  color:var(--muted); padding:12px 2px; border-radius:0; font-weight:650; font-size:15px;
+  display:inline-flex; align-items:center; gap:7px; white-space:nowrap;
+  transition:color var(--dur), border-color var(--dur);
+}
+.tabs button:hover{color:var(--text)}
+.tabs button[aria-selected="true"]{color:var(--text); border-bottom-color:var(--text); box-shadow:none; background:transparent}
+.view{display:none}
+.view.active{display:block}
+
+/* ---------- Intro: Fraunces display, short and direct ---------- */
+.intro{padding:26px 0 18px; border-bottom:1px solid var(--hairline-strong); margin-bottom:18px}
+.intro h1{
+  margin:0 0 10px; font-family:"Fraunces",Georgia,serif; font-size:34px; line-height:1.05;
+  letter-spacing:-.01em; font-weight:700;
+}
+.intro h1 em{font-style:italic; font-weight:600; color:var(--oxide)}
+.intro p{color:var(--muted); margin:0; max-width:52ch; font-size:15px}
+
+/* ---------- Sections: sharp flat panels ---------- */
+.card{
+  background:var(--surface); border:1px solid var(--hairline); border-radius:var(--r);
+  padding:20px; margin-bottom:16px;
+}
+.card h2{margin:0 0 6px; font-family:"Fraunces",Georgia,serif; font-size:21px; font-weight:700; letter-spacing:-.01em; line-height:1.25}
+.card h3{margin:0 0 8px; font-size:15px; font-weight:750}
+.card h4{margin:18px 0 8px; font-size:14px}
+.card p{margin:0; color:var(--muted)}
+.card p strong{color:var(--text)}
+.help-card{margin-top:20px}
+
+/* Register strip: a plain ruled block, not a card. */
+.register-strip{padding:0 0 18px; border-bottom:1px solid var(--hairline); margin-bottom:18px}
+.register-strip b{display:block; font-size:15px; font-weight:750}
+.register-strip p{color:var(--muted); margin:4px 0 0; font-size:14px}
+
+/* ---------- The ticket: UID form with a perforated stub ---------- */
+.ticket{
+  display:grid; grid-template-columns:52px 1fr;
+  background:var(--surface); border:1.5px solid var(--text); border-radius:var(--r);
+  margin-bottom:18px;
+}
+.ticket-stub{
+  display:flex; align-items:center; justify-content:center;
+  border-right:1.5px dashed var(--hairline-strong);
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:600;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--muted-2); text-align:center; line-height:1.7;
+}
+.ticket-body{padding:20px 18px}
+.ticket-body .eyebrow{color:var(--oxide)}
+.one-time-note{
+  margin:14px 0 0; padding-top:12px; border-top:1px solid var(--hairline);
+  color:var(--muted); font-size:13px; line-height:1.55;
+}
+
+/* ---------- Buttons: solid ink, sharp ---------- */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  min-height:48px; border:0; border-radius:var(--r); padding:12px 18px; font-weight:700; font-size:14.5px;
+  background:var(--text); color:#fff; text-decoration:none;
+  transition:background var(--dur), border-color var(--dur);
+}
+.btn:hover{background:#000}
+.btn:active{transform:none}
+.btn.secondary{background:var(--surface); color:var(--text); border:1px solid var(--hairline-strong)}
+.btn.secondary:hover{border-color:var(--text)}
+.btn.ghost{background:transparent; color:var(--muted); border:1px solid var(--hairline)}
+.btn.danger{background:var(--red); color:#fff}
+.btn:disabled{opacity:.55; cursor:not-allowed}
+.btn.full{width:100%}
+.btn.is-loading{pointer-events:none; opacity:.8}
+.btn.is-loading::after{
+  content:""; width:15px; height:15px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.35); border-top-color:#fff; animation:spin .7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.row{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px}
+
+/* ---------- Forms ---------- */
+label{display:block; font-size:13px; font-weight:650; margin:16px 0 6px}
+label:first-child{margin-top:0}
+input[type=text],select,textarea{
+  width:100%; min-height:46px; background:var(--surface); border:1px solid var(--hairline-strong);
+  color:var(--text); border-radius:var(--r); padding:11px 12px;
+  transition:border-color var(--dur), background var(--dur);
+}
+#uid{
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:20px; letter-spacing:.03em;
+  min-height:56px; padding:13px 14px; border-width:1.5px; border-color:var(--text);
+}
+input[type=text]:hover,select:hover,textarea:hover{border-color:var(--text)}
+input[type=text]:focus,select:focus,textarea:focus{border-color:var(--pine); outline:2px solid var(--pine); outline-offset:1px}
+input.invalid,textarea.invalid{border-color:var(--red)}
+.err{color:var(--red); font-size:13px; min-height:18px; margin-top:5px}
+.hint{color:var(--muted-2); font-size:12.5px; margin-top:6px; line-height:1.55}
+.optional{color:var(--muted-2); font-weight:400}
+.check{display:flex; gap:10px; align-items:flex-start; margin-top:16px; color:var(--muted); font-size:13.5px; line-height:1.55; cursor:pointer}
+.check input{accent-color:var(--pine); margin-top:3px; width:17px; height:17px; flex:none}
+
+/* ---------- Verification windows ---------- */
+.sample-label{
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--muted); margin:4px 0 10px;
+}
+.window{
+  background:var(--surface); border:1px solid var(--hairline-strong); border-radius:var(--r);
+  margin-bottom:12px;
+}
+.window-bar{
+  display:flex; justify-content:space-between; align-items:center; gap:12px;
+  padding:11px 14px; border-bottom:1px solid var(--hairline);
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase;
+}
+.window-body{padding:14px}
+.window-body b{display:block; font-size:15px}
+.window-body span{display:block; color:var(--muted); font-size:13.5px; margin-top:3px; line-height:1.55}
+.dot{width:10px; height:10px; border-radius:50%; flex:none; border:1.5px solid var(--hairline-strong); background:transparent}
+.dot.filled{background:var(--pine); border-color:var(--pine)}
+.dot.hollow{background:transparent}
+.window.done{border-left:3px solid var(--pine)}
+.window.active{border:2px solid var(--text)}
+.window.next{opacity:.72; border-style:dashed}
+.window.next .window-body b{color:var(--muted)}
+
+/* Locked UID stub, with an oxide stamp. */
+.uid-stub{
+  display:flex; justify-content:space-between; align-items:flex-start; gap:14px;
+  background:var(--surface); border:1.5px solid var(--text); border-radius:var(--r);
+  padding:18px; margin-bottom:16px;
+}
+.uid-stub .eyebrow{color:var(--oxide)}
+.stamp{
+  flex:none; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:600;
+  letter-spacing:.12em; text-transform:uppercase; text-align:center; line-height:1.6;
+  color:var(--oxide); border:1.5px solid var(--oxide); padding:8px 10px;
+}
+
+/* ---------- Status tags: mono labels, square dots ---------- */
+.badge{
+  display:inline-flex; align-items:center; gap:7px;
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11.5px; font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase;
+  padding:6px 10px; border-radius:var(--r); border:1.5px solid var(--hairline-strong); background:var(--surface);
+}
+.badge::before{content:""; width:6px; height:6px; border-radius:1px; background:currentColor; flex:none}
+.b-pending_review{color:var(--amber)}
+.b-under_review{color:var(--slate)}
+.b-verified{color:var(--pine)}
+.b-rejected{color:var(--red)}
+.b-info_required{color:var(--ochre)}
+.b-not_submitted{color:var(--muted)}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:13.5px; word-break:break-all}
+.meta{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px}
+.meta div{background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--r); padding:11px 12px; min-width:0}
+.meta dt{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted-2)}
+.meta dd{margin:3px 0 0; font-weight:650; font-size:14.5px; overflow-wrap:anywhere}
+.review-message{
+  margin-top:14px; padding:12px 14px; background:var(--surface-2);
+  border-left:3px solid var(--oxide); border-radius:var(--r);
+}
+.review-message strong{color:var(--text)}
+
+/* ---------- Lists, ledger stats, admin ---------- */
+.list{list-style:none; margin:0; padding:0}
+.list li{
+  padding:13px 0; border-bottom:1px solid var(--hairline);
+  display:flex; justify-content:space-between; gap:12px; align-items:flex-start;
+}
+.list li:last-child{border-bottom:0}
+.list small{color:var(--muted); display:block; margin-top:3px; line-height:1.5}
+.list strong.mono{font-size:14.5px}
+.stats{
+  display:flex; flex-wrap:wrap; gap:0; margin-bottom:16px;
+  border-top:2px solid var(--text); border-bottom:1px solid var(--hairline-strong); padding:6px 0;
+}
+.stat{background:transparent; border:0; border-left:1px solid var(--hairline); border-radius:0; padding:14px 16px}
+.stat:first-child{border-left:0; padding-left:0}
+.stat:hover{transform:none}
+.stat b{font-family:"Fraunces",Georgia,serif; font-size:30px; display:block; line-height:1.05; letter-spacing:-.01em}
+.stat span{
+  display:block; margin-top:3px; font-family:"JetBrains Mono",ui-monospace,monospace;
+  font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
+}
+.stat .dot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px}
+.controls{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px}
+.controls input,.controls select{flex:1; min-width:140px}
+.admin-item{cursor:pointer; border-radius:0; padding:14px 10px; margin:0 -10px; transition:background var(--dur)}
+.admin-item:hover{background:var(--surface-2)}
+.admin-item:focus-visible{background:var(--surface-2)}
+
+/* ---------- Loading, empty, toast, modal (static, no choreography) ---------- */
+.skel{height:16px; border-radius:var(--r); background:var(--surface-3)}
+.empty{
+  text-align:center; color:var(--muted); padding:28px 14px;
+  border:1px dashed var(--hairline-strong); border-radius:var(--r); margin-top:4px;
+}
+.empty b{display:block; color:var(--text); margin-bottom:4px}
+.toast{
+  position:fixed; left:50%; bottom:calc(22px + var(--safe-bottom)); z-index:50;
+  transform:translateX(-50%); background:var(--text); color:#fff; border:0;
+  padding:12px 18px; border-radius:var(--r);
+  max-width:calc(100% - 32px); text-align:center; font-size:14px; font-weight:600;
+}
+.toast.success{border:0}
+.toast.error{border:0}
+.modal-backdrop{
+  position:fixed; inset:0; background:rgba(25,23,18,.5); display:none;
+  align-items:flex-end; justify-content:center; z-index:40; padding:16px;
+}
+.modal-backdrop.show{display:flex}
+.modal{
+  background:var(--surface); border:1px solid var(--hairline-strong); border-top:3px solid var(--text); border-radius:var(--r);
+  padding:22px; width:100%; max-width:520px; max-height:85vh; overflow:auto;
+}
+.modal h3{margin-top:0; font-size:18px}
+.foot{
+  color:var(--muted-2); font-size:12.5px; text-align:center; margin-top:24px; padding-top:16px;
+  border-top:1px solid var(--hairline); line-height:1.6;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width:560px){
+  .wrap{padding-left:14px; padding-right:14px}
+  .tabs{gap:20px}
+  .intro{padding:20px 0 14px; margin-bottom:14px}
+  .intro h1{font-size:28px}
+  .intro p{font-size:14.5px}
+  .stats{flex-direction:column}
+  .stat{border-left:0; border-top:1px solid var(--hairline); padding-left:0}
+  .stat:first-child{border-top:0}
+  .meta{grid-template-columns:1fr}
+  .card{padding:18px 16px}
+  .brand span{display:none}
+  /* Ticket stacks on phones: the stub becomes a top strip, not a side sliver. */
+  .ticket{grid-template-columns:1fr}
+  .ticket-stub{border-right:0; border-bottom:1.5px dashed var(--hairline-strong); padding:9px 12px}
+  .ticket-stub span br{display:none}
+  .ticket-body{padding:18px 14px}
+  /* Register buttons share the row instead of squeezing side by side. */
+  .register-strip .btn{flex:1 1 140px}
+  /* Locked UID stub wraps instead of squeezing the stamp. */
+  .uid-stub{flex-wrap:wrap}
+  .window-bar{flex-wrap:wrap}
+}
+@media (min-width:900px){
+  .modal-backdrop{align-items:center}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none !important; transition:none !important}
+}
