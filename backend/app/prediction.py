@@ -102,14 +102,51 @@ _CANDIDATES: dict[tuple[str, str], list[int]] = {
 }
 
 
-def predict(results: list[dict]) -> dict:
+def _size_of(r: dict) -> str:
+    return r.get("size") or classify(r["number"])["size"]
+
+
+# Reason shown when the pattern is too weak to signal (see predict()'s
+# min_strength): the panel stays visible with the countdown and history,
+# it just carries no direction for that period.
+NO_SIGNAL_REASON = "No clear pattern — wait for the next period."
+
+
+def predict(results: list[dict], *, window: int = 30, weighting: str = "recency",
+            direction: str = "revert", min_strength: int = 0) -> dict | None:
     """Deterministic pattern signal from recent results (newest first).
 
-    Analyses the last 20 results: colour streaks, Big/Small balance,
-    and whether a violet ball just hit. The result is a *signal* —
-    a named pattern, not a forecast. Confidence is "low" or "medium",
-    never "high". No randomness and no clock: the same history always
-    returns the same signal.
+    Analyses the last ``window`` results: colour streaks, Big/Small
+    balance, and whether a violet ball just hit. The result is a
+    *signal* — a named pattern, not a forecast. Confidence is "low"
+    or "medium", never "high". No randomness and no clock: the same
+    history always returns the same signal.
+
+    Defaults (window 30, recency weighting) are the most
+    stable/defensible variant, chosen by backtest, not by an accuracy
+    claim: tests/backtest_signal.py measured 12 variants on ~950 real
+    periods (1m + 30s) and every one landed within ~1 standard error
+    of 50% — WinGo draws are independent, so no pattern rule beats a
+    coin flip. A 30-result window smooths single-ball noise versus 20,
+    and recency weighting (0.85**i) keeps the pattern responsive to
+    the latest balls. The accuracy tracker keeps reporting the real
+    numbers, whatever they are.
+
+    Parameters (all keyword-only; the backtest in
+    tests/backtest_signal.py varies them to measure which variant, if
+    any, beats chance):
+    - window: how many recent results form the pattern window.
+    - weighting: "none" (plain counts) or "recency" (exponential decay
+      0.85**i, newest first, scaled back to window-sized counts so the
+      reason still reads like "Big leading 11-9").
+    - direction: "revert" (predict the minority side of each balance,
+      the original mean-reversion logic) or "follow" (predict the
+      majority side; ties follow the newest result instead of opposing
+      it).
+    - min_strength: when > 0, only signal when the pattern is strong:
+      strength = max(abs(big - small), 2 * streak), i.e. the current
+      "medium" condition (streak >= 3 or imbalance >= 6). Otherwise
+      returns None (no signal for that period) instead of a weak one.
     """
     if not results:
         return {
@@ -119,10 +156,46 @@ def predict(results: list[dict]) -> dict:
             "confidence": "low",
             "reason": "Not enough history yet — first signal.",
         }
-    window = results[:20]
-    newest = window[0]
+    window_results = results[:window]
+    newest = window_results[0]
     newest_base = _base_colour(newest.get("colour", ""))
     newest_size = newest.get("size") or classify(newest["number"])["size"]
+
+    # Streak of the newest base colour, counting from the top.
+    streak = 0
+    for r in window_results:
+        if _base_colour(r.get("colour", "")) == newest_base:
+            streak += 1
+        else:
+            break
+
+    if weighting == "recency":
+        weights = [0.85 ** i for i in range(len(window_results))]
+        total_w = sum(weights)
+        scale = len(window_results) / total_w if total_w else 1.0
+        big = sum(w for w, r in zip(weights, window_results) if _size_of(r) == "big") * scale
+        small = sum(w for w, r in zip(weights, window_results) if _size_of(r) == "small") * scale
+        reds = sum(w for w, r in zip(weights, window_results)
+                   if _base_colour(r.get("colour", "")) == "red") * scale
+        greens = sum(w for w, r in zip(weights, window_results)
+                     if _base_colour(r.get("colour", "")) == "green") * scale
+        weighted = True
+    elif weighting != "none":
+        raise ValueError(f"Unknown weighting: {weighting!r}")
+    else:
+        big = sum(1 for r in window_results if _size_of(r) == "big")
+        small = len(window_results) - big
+        reds = sum(1 for r in window_results if _base_colour(r.get("colour", "")) == "red")
+        greens = sum(1 for r in window_results if _base_colour(r.get("colour", "")) == "green")
+        weighted = False
+
+    # Strength gate: only a strong pattern earns a signal. The score is
+    # exactly the current "medium" condition (streak >= 3 or imbalance
+    # >= 6), so min_strength=6 means "signal only on medium-or-better".
+    if min_strength:
+        strength = max(abs(big - small), 2 * streak)
+        if strength < min_strength:
+            return None
 
     # Violet just hit on the newest ball: watch the violet family again.
     if newest["number"] in (0, 5):
@@ -135,47 +208,45 @@ def predict(results: list[dict]) -> dict:
             "reason": f"Violet just hit ({newest['number']}) — watching it again.",
         }
 
-    # Streak of the newest base colour, counting from the top.
-    streak = 0
-    for r in window:
-        if _base_colour(r.get("colour", "")) == newest_base:
-            streak += 1
+    def _fmt(n) -> str:
+        return f"{n:.1f}" if weighted else str(int(n))
+
+    if direction == "follow":
+        # Streak-follow: predict the majority side of each balance.
+        # Ties follow the newest result.
+        size = "big" if big > small else "small" if small > big else newest_size
+        colour = "red" if reds > greens else "green" if greens > reds else newest_base
+    elif direction != "revert":
+        raise ValueError(f"Unknown direction: {direction!r}")
+    else:
+        # Mean reversion: predict the minority side of each balance.
+        # Ties go to the opposite of the newest result (deterministic).
+        if big > small:
+            size = "small"
+        elif small > big:
+            size = "big"
         else:
-            break
-
-    def _size(r: dict) -> str:
-        return r.get("size") or classify(r["number"])["size"]
-
-    big = sum(1 for r in window if _size(r) == "big")
-    small = len(window) - big
-    reds = sum(1 for r in window if _base_colour(r.get("colour", "")) == "red")
-    greens = sum(1 for r in window if _base_colour(r.get("colour", "")) == "green")
-
-    # Mean reversion: predict the minority side of each balance. Ties go
-    # to the opposite of the newest result (deterministic).
-    if big > small:
-        size = "small"
-    elif small > big:
-        size = "big"
-    else:
-        size = "big" if newest_size == "small" else "small"
-    if reds > greens:
-        colour = "green"
-    elif greens > reds:
-        colour = "red"
-    else:
-        colour = "green" if newest_base == "red" else "red"
+            size = "big" if newest_size == "small" else "small"
+        if reds > greens:
+            colour = "green"
+        elif greens > reds:
+            colour = "red"
+        else:
+            colour = "green" if newest_base == "red" else "red"
 
     parts = []
     if streak >= 2:
         parts.append(f"{streak} {newest_base}s in a row")
-    parts.append(f"{'Big' if big > small else 'Small'} leading {big}-{small}")
+    parts.append(
+        f"{'Big' if big > small else 'Small'} leading {_fmt(big)}-{_fmt(small)}"
+        + (" (recency-weighted)" if weighted else "")
+    )
     reason = ", ".join(parts)
 
     confidence = "medium" if (streak >= 3 or abs(big - small) >= 6) else "low"
 
     candidates = _CANDIDATES[(colour, size)]
-    index = sum(r["number"] for r in window[:5]) % len(candidates)
+    index = sum(r["number"] for r in window_results[:5]) % len(candidates)
     return {
         "size": size,
         "colour": colour,
@@ -439,7 +510,9 @@ def get_prediction(timer: str, provider=None) -> dict:
     if entry and entry[0] > time.monotonic():
         return copy.deepcopy(entry[1])
     current = p.fetch_current(timer)
-    history = p.fetch_results(timer, limit=20)
+    # Fetch the full pattern window (30) for predict(); the frontend
+    # still only shows the last 10 (history[:10] below).
+    history = p.fetch_results(timer, limit=30)
     if not history:
         raise ProviderError("No results returned by the provider.")
     signal = predict(history)
@@ -524,19 +597,25 @@ from .db import SignalRecord as _SignalRecord  # noqa: E402
 _ACCURACY_LIMIT = 20
 
 
-def record_signal(db: _Session, timer: str, period: str, size: str, reason: str | None) -> None:
+def record_signal(db: _Session, timer: str, period: str, size: str, reason: str | None,
+                  confidence: str | None = None) -> None:
     """Record a generated signal, first one wins. Never raises.
 
     The (timer, period) unique constraint makes this idempotent: a
     repeat call for the same period leaves the original row untouched,
     so the record cannot be rewritten after the result is known.
     Recording must never break the prediction response, so every
-    failure is logged and swallowed.
+    failure is logged and swallowed. A period with no signal is never
+    recorded at all (callers skip the call when the signal is None) —
+    the record is a record of signals, not of periods.
     """
     try:
         size = (size or "").strip().upper()
         if size not in ("BIG", "SMALL"):
             return
+        conf = (confidence or "").strip().lower()
+        if conf not in ("low", "medium"):
+            conf = None
         exists = (
             db.query(_SignalRecord)
             .filter(_SignalRecord.timer == timer, _SignalRecord.period == str(period))
@@ -550,6 +629,7 @@ def record_signal(db: _Session, timer: str, period: str, size: str, reason: str 
                 period=str(period),
                 signal=size,
                 reason=(reason or "")[:500] or None,
+                confidence=conf,
             )
         )
         db.commit()
@@ -611,6 +691,7 @@ def _serialize_record(row: _SignalRecord) -> dict:
         "period": row.period,
         "signal": row.signal,
         "reason": row.reason,
+        "confidence": row.confidence,
         "actual_number": row.actual_number,
         "actual_size": row.actual_size,
         "correct": row.correct,
@@ -618,12 +699,22 @@ def _serialize_record(row: _SignalRecord) -> dict:
     }
 
 
+def _confidence_bucket(row: _SignalRecord) -> str:
+    """Confidence bucket for a record. Rows recorded before confidence
+    tracking (confidence NULL) count as "low" — the conservative
+    default, documented in the SignalRecord model — rather than
+    inventing a confidence after the fact."""
+    return row.confidence if row.confidence in ("low", "medium") else "low"
+
+
 def get_accuracy(db: _Session, timer: str, provider=None, limit: int = _ACCURACY_LIMIT) -> dict:
     """Settle (best-effort) then return the last `limit` records, newest first.
 
     Summary counts exactly what is stored: total, settled, correct,
     wrong, pending, and accuracy_pct = correct / settled * 100 rounded
-    to 1 decimal — or null while nothing has settled yet. The provider
+    to 1 decimal — or null while nothing has settled yet. The
+    by_confidence split applies the same honest counting per
+    confidence tier (NULL-confidence rows count as "low"). The provider
     is resolved here (module-level get_provider) so tests can
     monkeypatch it; callers pass one explicitly only to override.
     """
@@ -639,6 +730,16 @@ def get_accuracy(db: _Session, timer: str, provider=None, limit: int = _ACCURACY
     settled_rows = [r for r in rows if r.correct is not None]
     correct = sum(1 for r in settled_rows if r.correct)
     accuracy_pct = round(correct / len(settled_rows) * 100, 1) if settled_rows else None
+
+    def _split(bucket: str) -> dict:
+        settled_b = [r for r in settled_rows if _confidence_bucket(r) == bucket]
+        correct_b = sum(1 for r in settled_b if r.correct)
+        return {
+            "settled": len(settled_b),
+            "correct": correct_b,
+            "accuracy_pct": round(correct_b / len(settled_b) * 100, 1) if settled_b else None,
+        }
+
     return {
         "timer": timer,
         "records": [_serialize_record(r) for r in rows],
@@ -649,5 +750,6 @@ def get_accuracy(db: _Session, timer: str, provider=None, limit: int = _ACCURACY
             "wrong": len(settled_rows) - correct,
             "pending": len(rows) - len(settled_rows),
             "accuracy_pct": accuracy_pct,
+            "by_confidence": {"low": _split("low"), "medium": _split("medium")},
         },
     }

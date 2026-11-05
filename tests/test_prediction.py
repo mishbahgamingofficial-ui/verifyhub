@@ -111,6 +111,58 @@ def test_predict_violet_hit_is_named():
     assert "Violet" in s["reason"]
 
 
+def test_predict_defaults_are_window30_recency():
+    # The shipped defaults (window 30, recency weighting) are the most
+    # stable/defensible variant from the backtest — NOT an accuracy
+    # claim: tests/backtest_signal.py measured every variant within
+    # ~1 standard error of 50% on ~950 real periods, so no pattern
+    # rule beats a coin flip; the choice is a stability one (a longer
+    # window smooths single-ball noise, recency keeps it responsive).
+    h = _results([2, 4] * 4 + [2] + [6, 8] * 5 + [6]
+                 + [1, 6, 3, 8, 1, 6, 3, 8, 1, 6, 3, 8, 1, 6, 3])
+    assert len(h) == 35
+    assert predict(h) == predict(h, window=30, weighting="recency")
+    # Recency flips the direction here: the newest balls are small, so
+    # the weighted balance says small is leading and mean reversion
+    # predicts big — while plain 20-counts say big is leading.
+    assert predict(h)["size"] == "big"
+    assert predict(h, window=20, weighting="none")["size"] == "small"
+
+
+def test_predict_follow_direction_is_majority():
+    h = _results([2, 4] * 4 + [6, 8] * 6)  # 8 small newest, 12 big older
+    assert predict(h, window=20, weighting="none", direction="follow")["size"] == "big"
+    assert predict(h, window=20, weighting="none", direction="revert")["size"] == "small"
+
+
+def test_predict_no_signal_threshold():
+    weak = _results([1, 6, 3, 8] * 5)  # balanced 10-10, streak 1: too weak
+    assert predict(weak, min_strength=6) is None
+    assert predict(weak)["size"] in ("big", "small")  # default still signals
+    strong = _results([6, 8, 6, 8, 6, 8, 6, 8, 6, 8, 6, 8, 6, 8, 1, 3, 1, 3, 1, 3])
+    assert predict(strong, min_strength=6) is not None
+    assert predict(strong, min_strength=6)["size"] == "small"
+    with pytest.raises(ValueError):
+        predict(weak, weighting="bogus")
+    with pytest.raises(ValueError):
+        predict(weak, direction="bogus")
+
+
+def test_get_prediction_fetches_full_window():
+    """predict() now uses a 30-result window, so get_prediction must
+    fetch 30 results (the frontend still only shows the last 10)."""
+    seen = {}
+
+    class _CountingProvider(FixtureProvider):
+        def fetch_results(self, timer, limit=20):
+            seen["limit"] = limit
+            return super().fetch_results(timer, limit=limit)
+
+    d = get_prediction("1m", provider=_CountingProvider())
+    assert seen["limit"] == 30
+    assert len(d["results"]) == 10  # display still shows last 10 only
+
+
 # ---------------- signing — deterministic given fixed random/timestamp ----------------
 
 def test_signing_matches_known_vectors():

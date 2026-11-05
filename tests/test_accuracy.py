@@ -78,10 +78,11 @@ class _FailingProvider:
         raise ProviderError("boom")
 
 
-def _seed(timer, period, signal, reason="test"):
+def _seed(timer, period, signal, reason="test", confidence=None):
     db = _db()
     try:
-        row = SignalRecord(timer=timer, period=period, signal=signal, reason=reason)
+        row = SignalRecord(timer=timer, period=period, signal=signal, reason=reason,
+                           confidence=confidence)
         db.add(row)
         db.commit()
         return row.id
@@ -104,7 +105,63 @@ def test_accuracy_summary_empty(monkeypatch):
     assert d["summary"] == {
         "total": 0, "settled": 0, "correct": 0, "wrong": 0, "pending": 0,
         "accuracy_pct": None,  # null while nothing has settled
+        "by_confidence": {
+            "low": {"settled": 0, "correct": 0, "accuracy_pct": None},
+            "medium": {"settled": 0, "correct": 0, "accuracy_pct": None},
+        },
     }
+
+
+# ---------------- confidence-tier split ----------------
+
+def test_accuracy_by_confidence_split(monkeypatch):
+    # Runs after test_accuracy_summary_empty, on the same "30s" timer
+    # while it still holds no other rows (no other test in this file
+    # seeds 30s), so the summary counts exactly these four rows.
+    results = [_result("20270101100010770", 7), _result("20270101100010771", 2),
+               _result("20270101100010772", 9), _result("20270101100010773", 4)]
+    monkeypatch.setattr(pred, "get_provider", lambda: _FixedProvider("20270101100010800", results))
+    _seed("30s", "20270101100010770", "BIG", confidence="medium")  # 7 big -> correct
+    _seed("30s", "20270101100010771", "BIG", confidence="medium")  # 2 small -> wrong
+    _seed("30s", "20270101100010772", "SMALL", confidence="low")   # 9 big -> wrong
+    _seed("30s", "20270101100010773", "SMALL")  # 4 small -> correct; NULL confidence -> low bucket
+    uid = 9305
+    _user_with_status(uid, "verified")
+    r = client.get("/api/prediction/accuracy?timer=30s", headers=H(uid))
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["summary"]["total"] == 4 and d["summary"]["settled"] == 4
+    assert d["summary"]["correct"] == 2 and d["summary"]["accuracy_pct"] == 50.0
+    assert d["summary"]["by_confidence"] == {
+        # Rows recorded before confidence tracking (NULL) count as "low".
+        "low": {"settled": 2, "correct": 1, "accuracy_pct": 50.0},
+        "medium": {"settled": 2, "correct": 1, "accuracy_pct": 50.0},
+    }
+    by_period = {rec["period"]: rec for rec in d["records"]}
+    assert by_period["20270101100010770"]["confidence"] == "medium"
+    assert by_period["20270101100010773"]["confidence"] is None  # recorded pre-tracking
+
+
+def test_record_signal_stores_confidence():
+    timer, period = "5m", "20270101100010802"
+    db = _db()
+    try:
+        record_signal(db, timer, period, "BIG", "reason", "medium")
+        record_signal(db, timer, "20270101100010803", "SMALL", "reason", "bogus")
+    finally:
+        db.close()
+    db = _db()
+    try:
+        row = db.query(SignalRecord).filter(
+            SignalRecord.timer == timer, SignalRecord.period == period
+        ).first()
+        assert row.confidence == "medium"
+        row2 = db.query(SignalRecord).filter(
+            SignalRecord.timer == timer, SignalRecord.period == "20270101100010803"
+        ).first()
+        assert row2.confidence is None  # invalid confidence is stored as NULL
+    finally:
+        db.close()
 
 
 # ---------------- recording is idempotent ----------------
@@ -141,6 +198,14 @@ def test_prediction_records_signal_once(monkeypatch):
         r = client.get("/api/prediction?timer=1m", headers=H(uid))
         assert r.status_code == 200, r.text
     assert _count("1m", "20270101100010801") == 1
+    db = _db()
+    try:
+        row = db.query(SignalRecord).filter(
+            SignalRecord.timer == "1m", SignalRecord.period == "20270101100010801"
+        ).first()
+        assert row.confidence == "low"  # the fixture signal is low-confidence
+    finally:
+        db.close()
 
 
 # ---------------- settlement + summary math ----------------
@@ -172,6 +237,12 @@ def test_accuracy_settles_and_summarizes(monkeypatch):
     assert d["summary"] == {
         "total": 3, "settled": 2, "correct": 1, "wrong": 1, "pending": 1,
         "accuracy_pct": 50.0,  # 1 / 2, never rounded up
+        # All three seeded rows predate confidence tracking (NULL), so
+        # they all count in the "low" bucket.
+        "by_confidence": {
+            "low": {"settled": 2, "correct": 1, "accuracy_pct": 50.0},
+            "medium": {"settled": 0, "correct": 0, "accuracy_pct": None},
+        },
     }
 
 

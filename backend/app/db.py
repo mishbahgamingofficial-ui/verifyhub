@@ -115,6 +115,10 @@ class SignalRecord(Base):
     period = Column(String(32), nullable=False)  # the WinGo issueNumber the signal was for
     signal = Column(String(8), nullable=False)  # "BIG" or "SMALL"
     reason = Column(Text, nullable=True)  # the signal reason text
+    # "low" or "medium" (never "high"). Added after the tracker shipped,
+    # so older rows are NULL — the accuracy endpoint counts those in the
+    # "low" bucket and says so, rather than inventing a confidence.
+    confidence = Column(String(8), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     actual_number = Column(Integer, nullable=True)
     actual_size = Column(String(8), nullable=True)  # "BIG" / "SMALL", once settled
@@ -191,6 +195,24 @@ def ensure_deposit_screenshot_column(engine):
             logger.info("Added submissions.deposit_screenshot column.")
 
 
+def ensure_signal_confidence_column(engine):
+    """Add signal_records.confidence if it does not exist yet
+    (Postgres only). Idempotent; never raises. Nullable, so rows
+    recorded before confidence tracking simply have NULL there."""
+    with engine.begin() as conn:
+        exists = conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'signal_records' "
+                "AND column_name = 'confidence'"
+            )
+        ).scalar()
+        if not exists:
+            logger.warning("Adding signal_records.confidence column.")
+            conn.execute(text("ALTER TABLE signal_records ADD COLUMN confidence VARCHAR(8)"))
+            logger.info("Added signal_records.confidence column.")
+
+
 def make_session_factory(database_url: str):
     engine = make_engine(database_url)
     Base.metadata.create_all(engine)
@@ -198,6 +220,7 @@ def make_session_factory(database_url: str):
         try:
             ensure_bigint_telegram_ids(engine)
             ensure_deposit_screenshot_column(engine)
+            ensure_signal_confidence_column(engine)
         except Exception:
             logger.exception("Failed to run startup schema migration; submissions may 503.")
     # Keep attributes loaded after commit so a failed db.refresh() after a

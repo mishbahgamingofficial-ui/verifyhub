@@ -355,8 +355,12 @@ def prediction(
         raise HTTPException(status_code=503, detail="Results temporarily unavailable.") from None
     # Record the signal for the accuracy tracker (first one wins per
     # period). Best-effort by design: record_signal never raises, so a
-    # recording failure can never break this response.
-    record_signal(db, timer, d["period"], d["signal"]["size"], d["signal"]["reason"])
+    # recording failure can never break this response. A period with no
+    # signal (predict() returned None under a strength threshold) is
+    # not recorded — the record is a record of signals, not periods.
+    if d["signal"] is not None:
+        record_signal(db, timer, d["period"], d["signal"]["size"],
+                      d["signal"]["reason"], d["signal"]["confidence"])
     return d
 
 
