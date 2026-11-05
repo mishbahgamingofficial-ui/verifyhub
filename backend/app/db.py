@@ -83,14 +83,27 @@ class AuditEvent(Base):
 
 
 def make_engine(database_url: str):
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    return create_engine(database_url, connect_args=connect_args, future=True)
+    # Render's Postgres URLs use postgresql://; some providers emit the
+    # legacy postgres:// scheme, which SQLAlchemy no longer accepts.
+    url = database_url
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("sqlite"):
+        return create_engine(url, connect_args={"check_same_thread": False}, future=True)
+    # pool_pre_ping drops stale pooled connections (killed while idle by
+    # the proxy/DB) instead of handing them to a request, where the first
+    # query would fail with OperationalError. pool_recycle bounds how long
+    # a pooled connection can live. This is the fix for intermittent
+    # "database write fails after idle" on the free tier.
+    return create_engine(url, pool_pre_ping=True, pool_recycle=300, future=True)
 
 
 def make_session_factory(database_url: str):
     engine = make_engine(database_url)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    # Keep attributes loaded after commit so a failed db.refresh() after a
+    # successful commit cannot turn a persisted change into a 500.
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
 
 
 _FACTORIES: dict[str, object] = {}

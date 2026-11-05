@@ -265,3 +265,56 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
 
     assert _sig(polling) == _sig(webhook)
     assert len([h for group in polling.handlers.values() for h in group]) == 5
+
+
+# ---------------- Production hardening (DB failures, webhook secret, health) ----------------
+
+def test_health_reports_database_ok():
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "db": "ok"}
+
+
+def test_health_db_down_returns_503(monkeypatch):
+    import app.main as main_module
+    from sqlalchemy.exc import SQLAlchemyError
+
+    def _boom(url):
+        raise SQLAlchemyError("db down")
+
+    monkeypatch.setattr(main_module, "get_session_factory", _boom)
+    r = client.get("/api/health")
+    assert r.status_code == 503
+    assert r.json()["db"] == "unavailable"
+
+
+def test_submission_db_failure_returns_503_not_500(monkeypatch):
+    import app.db as db_module
+    from sqlalchemy.exc import SQLAlchemyError
+
+    def _boom(url):
+        raise SQLAlchemyError("db down")
+
+    monkeypatch.setattr(db_module, "get_session_factory", _boom)
+    r = client.post("/api/submissions", headers=H(USER_ID),
+                    json={"registration_uid": "ABCDEF", "confirm_correct": True})
+    assert r.status_code == 503
+    assert "Database temporarily unavailable" in r.json()["detail"]
+
+
+def test_webhook_secret_unset_with_token_refuses_updates(monkeypatch):
+    _override_settings(monkeypatch, bot_token="test-token-123", telegram_webhook_secret="")
+    r = client.post("/telegram/webhook", json=_webhook_update())
+    assert r.status_code == 503
+
+
+def test_engine_pool_validates_stale_connections_and_normalizes_url():
+    from app.db import make_engine
+
+    eng = make_engine("postgres://user:pass@host:5432/dbname")
+    assert eng.url.drivername == "postgresql+psycopg"
+    assert eng.pool._pre_ping is True
+    eng2 = make_engine("postgresql://user:pass@host:5432/dbname")
+    assert eng2.pool._pre_ping is True
+    eng.dispose()
+    eng2.dispose()

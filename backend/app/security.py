@@ -58,8 +58,12 @@ def validate_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86
         raise InitDataError("initData user payload is invalid.") from None
     if not isinstance(user, dict) or "id" not in user:
         raise InitDataError("initData has no user id.")
+    try:
+        telegram_id = int(user["id"])
+    except (TypeError, ValueError):
+        raise InitDataError("initData user id is invalid.") from None
     return TelegramIdentity(
-        telegram_id=int(user["id"]),
+        telegram_id=telegram_id,
         username=user.get("username"),
         first_name=user.get("first_name"),
     )

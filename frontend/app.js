@@ -32,11 +32,30 @@
   // hosting) sets window.VERIFYHUB_API_BASE in config.js to the Render
   // API URL, e.g. 'https://verifyhub-api.onrender.com'.
   const API_BASE = (typeof window !== 'undefined' && window.VERIFYHUB_API_BASE ? String(window.VERIFYHUB_API_BASE) : '').replace(/\/$/, '');
-  async function api(path, opts) {
-    const res = await fetch(API_BASE + path, Object.assign({ headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData } }, opts || {}));
-    let data = null; try { data = await res.json(); } catch (e) { /* empty */ }
-    if (!res.ok) throw new Error((data && data.detail) || ('Request failed (' + res.status + ')'));
-    return data;
+  // Free-tier cold start: the API sleeps after ~15 min idle and the first
+  // request takes ~50s to wake it. Give every call a long timeout and one
+  // retry on timeout/network failure, and translate 500/503 into plain
+  // words instead of "Request failed (500)".
+  const API_TIMEOUT_MS = 70000;
+  function friendlyError(status, detail) {
+    if (status === 503 || status === 500) return 'Server is waking up or busy — please wait a moment and try again.';
+    return detail || ('Request failed (' + status + ')');
+  }
+  async function api(path, opts, _retried) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    try {
+      const res = await fetch(API_BASE + path, Object.assign({ headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData }, signal: controller.signal }, opts || {}));
+      let data = null; try { data = await res.json(); } catch (e) { /* empty */ }
+      if (!res.ok) throw new Error(friendlyError(res.status, data && data.detail));
+      return data;
+    } catch (err) {
+      if (!_retried && (err.name === 'AbortError' || err instanceof TypeError)) {
+        return api(path, opts, true);
+      }
+      if (err instanceof TypeError) throw new Error('Network error — please check your connection and try again.');
+      throw err;
+    } finally { clearTimeout(timer); }
   }
   function badge(status) { return '<span class="badge b-' + esc(status) + '">' + esc(LABELS[status] || status) + '</span>'; }
   // Verification windows: Window 01 Received, 02 Under review, 03 Decision.

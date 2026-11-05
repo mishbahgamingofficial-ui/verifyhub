@@ -6,6 +6,7 @@ the admin response still succeeds. No tokens are logged.
 """
 from __future__ import annotations
 
+import html
 import logging
 
 import httpx
@@ -26,7 +27,9 @@ async def notify_user(bot_token: str, telegram_id: int, status: str, message: st
         return False
     text = STATUS_COPY.get(status, f"Your submission status changed to {status}.")
     if message:
-        text += f"\n\nReview message:\n{message}"
+        # The payload uses parse_mode=HTML, so escape the admin's message:
+        # a raw "<" or "&" would make Telegram reject the whole notification.
+        text += f"\n\nReview message:\n{html.escape(message)}"
     text += (
         "\n\nVerification does not guarantee financial recovery. "
         "Open the verification panel to see the full status."

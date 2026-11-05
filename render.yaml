@@ -1,8 +1,14 @@
 # VerifyHub — Render Blueprint.
 # What this creates on Render:
 #   1. verifyhub-db   — one shared PostgreSQL database (bot + API both use it)
-#   2. verifyhub-bot  — Background Worker running the Telegram bot (polling)
-#   3. verifyhub-api  — Web Service running the FastAPI API
+#   2. verifyhub-api  — Web Service running the FastAPI API
+#
+# The Telegram bot runs INSIDE the API service via webhook
+# (POST /telegram/webhook) — there is intentionally NO polling worker
+# here. The user chose the free webhook route instead of the paid
+# Starter worker (~$7/mo). Never run a polling worker while the webhook
+# is registered — Telegram returns 409 conflicts and the bot goes silent.
+# If a worker is ever added back, delete the webhook first.
 #
 # This file is set up for PLAN B (Hostinger SHARED hosting): the website
 # files live on Hostinger (public_html) and the API runs here, because
@@ -10,52 +16,26 @@
 # points at this API with one line in frontend/config.js — see
 # deploy/DEPLOY-GUIDE.md § 6.
 #
-# If you are on Plan A (Hostinger VPS) instead, delete the verifyhub-api
-# web service below — on a VPS the API runs on Hostinger itself and this
-# file only needs the worker + database.
-#
 # How to use:
 #   1. Push this project to a GitHub repo.
 #   2. Render dashboard → New → Blueprint → connect the repo.
 #   3. Render asks for the sync:false values (BOT_TOKEN, REGISTRATION_URL,
-#      ADMIN_TELEGRAM_IDS). Fill them in — never commit real secrets to git.
+#      ADMIN_TELEGRAM_IDS, TELEGRAM_WEBHOOK_SECRET). Fill them in — never
+#      commit real secrets to git.
 #   4. Deploy. Check the service Logs for startup messages.
 #
-# NOTE: always-on hosting on Render needs a paid plan. A Background Worker
-# needs Starter (~$7/mo) to stay online 24x7, and a free Web Service
+# NOTE: always-on hosting on Render needs a paid plan. A free Web Service
 # sleeps after ~15 min idle — the first Mini App open after a sleep takes
-# ~50s to wake up, then works normally. The free tier has no always-on
-# worker. If the bot/API must answer instantly at all hours, use the
-# paid plans; check current prices on Render when you deploy.
-# NOTE 2: only ONE process may poll a bot token. Never run the bot locally
-# (python -m app.bot) while the Render worker is live — Telegram returns
-# a 409 conflict and the bot goes silent.
+# ~50s to wake up, then works normally. Keep it warm with a free uptime
+# monitor pinging /api/health every ~10 minutes, or upgrade to Starter.
+# NOTE 2: the free database plan expires — Render deletes free databases
+# unless upgraded. The live verifyhub-db is flagged to expire 5 Dec 2026;
+# upgrade it (or migrate the data) before then.
+# NOTE 3: the live services were created individually (not via this
+# Blueprint), so this file is the reference topology — keep it in sync
+# with what is actually live.
 
 services:
-  - type: worker
-    name: verifyhub-bot
-    runtime: python
-    rootDir: backend
-    buildCommand: pip install -r requirements-bot.txt
-    startCommand: python -m app.bot
-    envVars:
-      - key: BOT_TOKEN
-        sync: false
-      - key: BOT_USERNAME
-        value: Testing_joinbot
-      - key: MINI_APP_URL
-        # Your Hostinger URL, e.g. https://glaxfy.in/frontend/
-        # The bot's "Open Verification Panel" button opens this URL.
-        value: https://glaxfy.in/frontend/
-      - key: REGISTRATION_URL
-        value: https://www.dmfirst0.com/#/register?invitationCode=497991806708
-      - key: DATABASE_URL
-        fromDatabase:
-          name: verifyhub-db
-          property: connectionString
-      - key: PYTHON_VERSION
-        value: 3.12.0
-
   - type: web
     name: verifyhub-api
     runtime: python

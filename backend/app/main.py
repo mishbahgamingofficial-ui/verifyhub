@@ -24,6 +24,7 @@ frontend behind HTTPS (see README) and set MINI_APP_URL to that URL.
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -36,14 +37,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import desc
+from sqlalchemy import desc, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from telegram import Update as TelegramUpdate
 from telegram.ext import Application as TelegramApplication
 
 from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
-from .db import AuditEvent, ReviewHistory, Submission, User, mask_uid
+from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
 from .notifications import notify_user
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
@@ -94,6 +96,17 @@ async def _initialize_telegram_app(ptb: TelegramApplication) -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # Ensure the tables exist before serving traffic, with a short retry
+    # so a briefly-unreachable DB right after a deploy does not 500 the
+    # first real user. Failure here never crashes startup — the first
+    # request retries table creation via get_db_session.
+    for attempt in range(5):
+        try:
+            get_session_factory(settings.database_url)
+            break
+        except Exception:
+            logger.exception("Database init failed (attempt %s/5).", attempt + 1)
+            await asyncio.sleep(2 * (attempt + 1))
     try:
         ptb = get_telegram_app()
     except Exception:
@@ -104,22 +117,27 @@ async def lifespan(app: FastAPI):
     if ptb is not None:
         if await _initialize_telegram_app(ptb):
             if settings.public_base_url:
-                url = settings.public_base_url.rstrip("/") + "/telegram/webhook"
-                try:
-                    kwargs: dict = {}
-                    if settings.telegram_webhook_secret:
-                        kwargs["secret_token"] = settings.telegram_webhook_secret
-                    await ptb.bot.set_webhook(url=url, **kwargs)
-                    info = await ptb.bot.get_webhook_info()
-                    logger.info(
-                        "Telegram webhook set: url=%s pending_update_count=%s",
-                        info.url,
-                        info.pending_update_count,
+                if not settings.telegram_webhook_secret:
+                    # Fail closed: registering a webhook with no secret
+                    # would let anyone inject fake updates, so skip it
+                    # until a secret is configured.
+                    logger.warning(
+                        "TELEGRAM_WEBHOOK_SECRET is not set; skipping webhook registration."
                     )
-                except Exception:
-                    # Startup must never crash because the webhook could
-                    # not be registered — the API keeps serving.
-                    logger.exception("Failed to set Telegram webhook; API continues without it.")
+                else:
+                    url = settings.public_base_url.rstrip("/") + "/telegram/webhook"
+                    try:
+                        await ptb.bot.set_webhook(url=url, secret_token=settings.telegram_webhook_secret)
+                        info = await ptb.bot.get_webhook_info()
+                        logger.info(
+                            "Telegram webhook set: url=%s pending_update_count=%s",
+                            info.url,
+                            info.pending_update_count,
+                        )
+                    except Exception:
+                        # Startup must never crash because the webhook could
+                        # not be registered — the API keeps serving.
+                        logger.exception("Failed to set Telegram webhook; API continues without it.")
     yield
     if ptb is not None:
         try:
@@ -136,6 +154,18 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["X-Telegram-Init-Data", "Content-Type"],
 )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+    # Any database failure (stale connection, DB down, pool timeout) is a
+    # 503 with a retryable message — never a bare 500. The request's
+    # session is discarded by get_db_session, so no partial write persists.
+    logger.exception("Database error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Database temporarily unavailable. Please try again in a moment."},
+    )
 
 
 def _iso(dt) -> str | None:
@@ -193,8 +223,21 @@ def public_config(settings: Settings = Depends(get_settings)):
 
 
 @app.get("/api/health")
-def health():
-    return {"ok": True}
+def health(settings: Settings = Depends(get_settings)):
+    """Liveness + database reachability. A dead database is a 503 here so
+    monitoring (and the cron pinger) can see it instead of the Mini App
+    failing silently on the first real request."""
+    try:
+        factory = get_session_factory(settings.database_url)
+        db = factory()
+        try:
+            db.execute(text("SELECT 1"))
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Health check: database unavailable.")
+        return JSONResponse(status_code=503, content={"ok": False, "db": "unavailable"})
+    return {"ok": True, "db": "ok"}
 
 
 # ---------------- Telegram webhook ----------------
@@ -213,6 +256,12 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if not token or not hmac.compare_digest(token, secret):
             raise HTTPException(status_code=403, detail="Invalid webhook secret.")
+    elif settings.bot_token:
+        # A live bot with no secret would accept forged updates — fail
+        # closed instead. (No token configured at all keeps the old
+        # ignore-with-200 behaviour for local dev.)
+        logger.warning("TELEGRAM_WEBHOOK_SECRET is not set; refusing webhook update.")
+        raise HTTPException(status_code=503, detail="Webhook secret is not configured.")
     else:
         logger.warning(
             "TELEGRAM_WEBHOOK_SECRET is not set; accepting webhook update without secret check (local dev only)."
@@ -327,7 +376,12 @@ def create_submission(
     db.flush()
     _audit(db, identity.telegram_id, "submission_created", "submission", row.id, {"status": "pending_review"})
     db.commit()
-    db.refresh(row)
+    try:
+        db.refresh(row)
+    except Exception:
+        # The row is already committed; with expire_on_commit=False the
+        # in-memory values stay usable, so a failed refresh must not 500.
+        logger.exception("Failed to refresh submission after create (id=%s).", row.id)
     return _public_submission(row)
 
 
@@ -454,7 +508,12 @@ async def admin_change_status(
         {"previous_status": previous, "new_status": payload.to_status},
     )
     db.commit()
-    db.refresh(row)
+    try:
+        db.refresh(row)
+    except Exception:
+        # The status change is already committed; with
+        # expire_on_commit=False the in-memory row stays usable.
+        logger.exception("Failed to refresh submission after status change (id=%s).", row.id)
     # Notify ONLY after commit (spec §5).
     owner = db.query(User).filter(User.id == row.user_id).first()
     if owner is not None:
