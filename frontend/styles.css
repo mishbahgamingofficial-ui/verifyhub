@@ -28,6 +28,7 @@
   --safe-top:env(safe-area-inset-top,0px); --safe-bottom:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 html{color-scheme:dark}
 body{
   margin:0; color:var(--text);
