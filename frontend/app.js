@@ -32,6 +32,51 @@
     el.hidden = false;
     clearTimeout(toast._t); toast._t = setTimeout(() => { el.hidden = true; }, 4200);
   }
+  // Telegram haptics — best-effort, guarded: plain browsers have no
+  // tg.HapticFeedback and must never crash on these calls.
+  function haptic(kind) {
+    try {
+      const hf = tg && tg.HapticFeedback;
+      if (!hf) return;
+      if (kind === 'success' || kind === 'error' || kind === 'warning') hf.notificationOccurred(kind);
+      else hf.impactOccurred(kind || 'light');
+    } catch (e) { /* haptics are best-effort */ }
+  }
+  // Set a countdown's text, popping the digits (scale 1.15 -> 1) when it changes.
+  function setCountdownText(el, text) {
+    if (!el || el.textContent === text) return;
+    el.textContent = text;
+    el.classList.remove('pop');
+    void el.offsetWidth; // restart the animation
+    el.classList.add('pop');
+  }
+  function fmtCountdown(totalSeconds) {
+    const s = Math.max(0, Math.ceil(totalSeconds));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  // One-shot gold/red particle burst centred on el. Creates ~14 dots that
+  // fly outward and fade; the host is removed after the animation.
+  function burst(el, count) {
+    if (!el || !document.body) return;
+    const r = el.getBoundingClientRect();
+    const host = document.createElement('span');
+    host.className = 'burst';
+    host.setAttribute('aria-hidden', 'true');
+    host.style.left = (r.left + r.width / 2) + 'px';
+    host.style.top = (r.top + r.height / 2) + 'px';
+    const n = count || 14;
+    for (let i = 0; i < n; i++) {
+      const p = document.createElement('i');
+      const ang = (Math.PI * 2 * i) / n + Math.random() * 0.5;
+      const dist = 46 + Math.random() * 54;
+      p.style.setProperty('--tx', (Math.cos(ang) * dist).toFixed(1) + 'px');
+      p.style.setProperty('--ty', (Math.sin(ang) * dist).toFixed(1) + 'px');
+      p.style.setProperty('--s', (3 + Math.random() * 4).toFixed(1) + 'px');
+      host.appendChild(p);
+    }
+    document.body.appendChild(host);
+    setTimeout(() => host.remove(), 950);
+  }
   // API base: '' = same domain (Plan A, Hostinger VPS). Plan B (shared
   // hosting) sets window.VERIFYHUB_API_BASE in config.js to the Render
   // API URL, e.g. 'https://verifyhub-api.onrender.com'.
@@ -129,6 +174,7 @@
     if (tg && tg.MainButton && has) tg.MainButton.hide();
   }
   function showTab(name) {
+    haptic('light');
     document.querySelectorAll('[role="tab"]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
     if (tg && tg.BackButton) { if (name !== 'home') tg.BackButton.show(); else tg.BackButton.hide(); }
@@ -142,6 +188,9 @@
   // first submit is already on file, and the server carries it over.
   if (resubmitBtn) resubmitBtn.addEventListener('click', () => { isResubmit = true; setPhase(null); showStep('uid'); });
 
+  // Celebration + dock: fired once per load, only when the latest
+  // submission is verified (never on every refresh).
+  let verifiedBurstDone = false;
   async function loadStatus() {
     if (isPreview) { setPhase(null); $('#sample-windows').hidden = false; $('#status-body').innerHTML = '<p>Open this panel from Telegram to see your status.</p>'; $('#current-body').innerHTML = '<p>Open this panel from Telegram to see your status.</p>'; return; }
     try {
@@ -150,6 +199,16 @@
       const html = latest.submission ? statusBlock(latest.submission) : '<div class="empty"><b>Not submitted yet.</b>Send your UID once above.</div>';
       $('#verify-windows').innerHTML = html;
       $('#current-body').innerHTML = latest.submission ? badge(latest.submission.status) + '<p style="margin-top:10px">UID <span class="mono">' + esc(latest.submission.uid_masked) + '</span> · submitted ' + esc(fmt(latest.submission.submitted_at)) + '</p>' : html;
+      const dockStatus = $('#dock-status');
+      if (dockStatus) dockStatus.innerHTML = badge(latest.submission ? latest.submission.status : 'not_submitted');
+      if (latest.submission && latest.submission.status === 'verified' && !verifiedBurstDone) {
+        verifiedBurstDone = true;
+        setTimeout(() => {
+          burst($('#current-card'), 14);
+          const stamp = document.querySelector('#current-card .stamp');
+          if (stamp) stamp.classList.add('pop');
+        }, 250);
+      }
       const rows = await api('/api/me/submissions');
       $('#activity-list').innerHTML = rows.length ? rows.slice(0, 5).map((r) =>
         '<li><span><strong>' + esc(r.uid_masked) + '</strong><small>' + esc(fmt(r.submitted_at)) + (r.review_message ? ' · ' + esc(r.review_message) : '') + '</small></span>' + badge(r.status) + '</li>').join('')
@@ -186,18 +245,19 @@
     // resubmission reuses the one already on file (isResubmit).
     if (!depositDataUrl && !isResubmit) { toast('Upload your deposit screenshot first.'); showStep('deposit'); return; }
     const btn = $('#submit-btn'); btn.disabled = true; btn.classList.add('is-loading'); btn.textContent = 'Submitting…';
+    haptic('medium');
     try {
       await api('/api/submissions', { method: 'POST', body: JSON.stringify({ registration_uid: $('#uid').value.trim(), reference: $('#reference').value.trim() || null, confirm_correct: true, deposit_screenshot: depositDataUrl }) });
       // One-time send: the form locks and the verification windows open.
-      toast('UID sent — windows open.', 'success'); isResubmit = false; loadStatus(); showTab('home');
+      toast('UID sent — windows open.', 'success'); haptic('success'); isResubmit = false; loadStatus(); showTab('home');
     } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; btn.classList.remove('is-loading'); btn.textContent = 'Send UID once'; }
   });
 
   // Step navigation + deposit screenshot (step 2).
-  $('#id-created-btn').addEventListener('click', () => showStep('deposit'));
-  $('#deposit-continue-btn').addEventListener('click', () => showStep('uid'));
-  $('#deposit-back-btn').addEventListener('click', () => showStep('register'));
-  $('#uid-back-btn').addEventListener('click', () => showStep('deposit'));
+  $('#id-created-btn').addEventListener('click', () => { haptic('medium'); showStep('deposit'); });
+  $('#deposit-continue-btn').addEventListener('click', () => { haptic('medium'); showStep('uid'); });
+  $('#deposit-back-btn').addEventListener('click', () => { haptic('light'); showStep('register'); });
+  $('#uid-back-btn').addEventListener('click', () => { haptic('light'); showStep('deposit'); });
   // Downscale the screenshot to a small JPEG data URL before it is ever
   // sent, so one upload cannot bloat the database.
   function compressImage(file) {
@@ -222,7 +282,7 @@
     });
   }
   const depositFile = $('#deposit-file');
-  $('#deposit-pick-btn').addEventListener('click', () => depositFile.click());
+  $('#deposit-pick-btn').addEventListener('click', () => { haptic('light'); depositFile.click(); });
   depositFile.addEventListener('change', async () => {
     const file = depositFile.files && depositFile.files[0];
     $('#deposit-err').textContent = '';
@@ -235,6 +295,7 @@
       $('#deposit-ok').hidden = false;
       $('#deposit-continue-btn').disabled = false;
       $('#deposit-pick-btn').textContent = 'Change screenshot';
+      haptic('success');
     } catch (err) { $('#deposit-err').textContent = 'Could not read that image. Try another.'; }
   });
 
@@ -243,7 +304,7 @@
   // Signal only, never a guarantee: the page says so, and the signal's
   // confidence is never "high".
   let predTimer = '1m', predRefreshId = null, predCountdownId = null;
-  let predRemainingMs = 0, predFetchedAt = 0, predLoading = false;
+  let predRemainingMs = 0, predFetchedAt = 0, predLoading = false, lastPredPeriod = null;
   function stopPredTimers() {
     if (predRefreshId) { clearInterval(predRefreshId); predRefreshId = null; }
     if (predCountdownId) { clearInterval(predCountdownId); predCountdownId = null; }
@@ -262,8 +323,7 @@
   function tickPredCountdown() {
     const left = Math.max(0, predRemainingMs - (Date.now() - predFetchedAt));
     const s = Math.ceil(left / 1000);
-    const el = $('#pred-countdown');
-    if (el) el.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+    setCountdownText($('#pred-countdown'), String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'));
     if (left <= 0) { clearInterval(predCountdownId); predCountdownId = null; loadPrediction(); }
   }
   function renderPrediction(d) {
@@ -272,6 +332,8 @@
     const ball = $('#pred-ball');
     ball.className = 'pred-ball ball ' + ballClass(d.signal.number);
     ball.innerHTML = '<span>' + esc(d.signal.number) + '</span>';
+    // One-shot burst behind the ball when a NEW signal period arrives.
+    if (d.period !== lastPredPeriod) { lastPredPeriod = d.period; burst(document.querySelector('.pred-signal'), 10); }
     $('#pred-reason').textContent = d.signal.reason + ' · Confidence: ' + d.signal.confidence;
     $('#pred-history').innerHTML = '<span class="pred-history-label">LAST 10</span>' + (d.results || []).map((r) =>
       '<span class="mini-ball ' + ballClass(r.number) + '" title="' + esc(r.period) + '"><span>' + esc(r.number) + '</span></span>').join('');
@@ -321,12 +383,13 @@
   }
   document.querySelectorAll('.pred-timer').forEach((b) => b.addEventListener('click', () => {
     if (predTimer === b.dataset.timer) return;
+    haptic('light');
     predTimer = b.dataset.timer;
     document.querySelectorAll('.pred-timer').forEach((x) => x.classList.toggle('active', x === b));
     loadPrediction();
   }));
-  $('#pred-refresh-btn').addEventListener('click', loadPrediction);
-  $('#pred-error-refresh').addEventListener('click', loadPrediction);
+  $('#pred-refresh-btn').addEventListener('click', () => { haptic('medium'); loadPrediction(); });
+  $('#pred-error-refresh').addEventListener('click', () => { haptic('medium'); loadPrediction(); });
   $('#pred-back-btn').addEventListener('click', () => showTab('home'));
 
   // Admin
@@ -401,8 +464,9 @@
       toast('Updated. User notified.', 'success'); closeDetail(); loadAdmin(); loadStatus();
     } catch (e) { toast(e.message, 'error'); }
   });
-  $('#register-link').addEventListener('click', (e) => { if (!config || !config.registration_url) { e.preventDefault(); toast('Registration link not set yet.'); } });
+  $('#register-link').addEventListener('click', (e) => { haptic('medium'); if (!config || !config.registration_url) { e.preventDefault(); toast('Registration link not set yet.'); } });
   $('#copy-link-btn').addEventListener('click', async () => {
+    haptic('light');
     if (!config || !config.registration_url) { toast('Registration link not set yet.'); return; }
     try { await navigator.clipboard.writeText(config.registration_url); toast('Link copied.'); } catch (e) { toast('Copy failed. Long-press the link.'); }
   });
@@ -414,12 +478,65 @@
   }
   setInterval(tickPing, 2000); tickPing();
 
+  // Live ticker: real WinGo 1-min results from the public /api/live
+  // endpoint — never hardcoded, never invented. Polls every 5s; the
+  // countdown ticks every second from the server-provided ends_in_seconds.
+  let tickerRemaining = 0, tickerFetchedAt = 0, tickerTimerId = null, tickerTickId = null, tickerInFlight = false;
+  function tickTicker() {
+    const left = tickerRemaining - (Date.now() - tickerFetchedAt) / 1000;
+    setCountdownText($('#ticker-countdown'), fmtCountdown(left));
+    if (left <= 0) fetchLive();
+  }
+  async function fetchLive() {
+    if (tickerInFlight) return;
+    tickerInFlight = true;
+    try {
+      const controller = new AbortController();
+      const to = setTimeout(() => controller.abort(), 8000);
+      let res;
+      try { res = await fetch(API_BASE + '/api/live', { signal: controller.signal }); } finally { clearTimeout(to); }
+      if (!res.ok) throw new Error('live failed');
+      renderTicker(await res.json());
+    } catch (e) {
+      // Keep the last good data, show that we are reconnecting.
+      const live = $('#ticker-live');
+      if (live) { live.textContent = 'RECONNECTING'; live.classList.add('reconnecting'); }
+    } finally { tickerInFlight = false; }
+  }
+  function renderTicker(d) {
+    const live = $('#ticker-live');
+    if (live) { live.textContent = 'LIVE'; live.classList.remove('reconnecting'); }
+    const periodEl = $('#ticker-period');
+    if (periodEl) periodEl.textContent = '#' + d.period;
+    const last = (d.last && d.last[0]) || null;
+    if (last) {
+      const ball = $('#ticker-ball');
+      if (ball) { ball.className = 'mini-ball ' + ballClass(last.number); ball.innerHTML = '<span>' + esc(last.number) + '</span>'; }
+      const lastEl = $('#ticker-last');
+      if (lastEl) lastEl.textContent = last.number + ' ' + String(last.colour).replace(',', '+').toUpperCase();
+    }
+    const dock = $('#dock-period');
+    if (dock) dock.textContent = 'WinGo 1M · #' + String(d.period).slice(-6);
+    tickerRemaining = d.ends_in_seconds || 0;
+    tickerFetchedAt = Date.now();
+    setCountdownText($('#ticker-countdown'), fmtCountdown(tickerRemaining));
+  }
+  function startTicker() {
+    fetchLive();
+    if (tickerTimerId) clearInterval(tickerTimerId);
+    tickerTimerId = setInterval(fetchLive, 5000);
+    if (tickerTickId) clearInterval(tickerTickId);
+    tickerTickId = setInterval(tickTicker, 1000);
+  }
+
   // Init
   async function init() {
     if (tg) {
       try { tg.ready(); tg.expand(); tg.setHeaderColor('#150303'); tg.setBackgroundColor('#150303'); } catch (e) { /* older clients */ }
       tg.onEvent('backButtonClicked', () => { if ($('#detail-modal').classList.contains('show')) closeDetail(); else showTab('home'); });
     }
+    // The ticker is public data — it runs for everyone, preview included.
+    startTicker();
     if (isPreview) $('#preview-banner').classList.add('show');
     try {
       config = await api('/api/config');
@@ -451,6 +568,10 @@
       $('#current-body').innerHTML = '<p>' + esc(e.message) + ' Reopen the panel from the bot.</p>';
       toast(e.message);
     }
+    // Deep link from the bot's /predict command: open straight on the
+    // Prediction tab. Guarded — plain browsers have no start_param.
+    const startParam = tg && tg.initDataUnsafe ? tg.initDataUnsafe.start_param : '';
+    if (startParam === 'prediction') showTab('prediction');
   }
   // The public config call in init() goes through api(), which always sends
   // the header — but the server's /api/config does not read it, so preview works.

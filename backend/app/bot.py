@@ -16,7 +16,7 @@ Polling is the mode the paid Render Background Worker uses. On the free
 tier the bot instead runs via webhook inside the API service — same
 handlers, no worker needed.
 
-Commands: /start /help /status /cancel
+Commands: /start /help /status /predict /cancel
 """
 from __future__ import annotations
 

@@ -23,31 +23,29 @@ from .db import Submission, User, get_session_factory, mask_uid
 logger = logging.getLogger("verifyhub.bot")
 settings = get_settings()
 
-WELCOME = """<b>Welcome to {name}</b>
+WELCOME = """<b>🔥 VerifyHub — one pass, one verdict.</b>
 
-Submit your registration UID and track its verification status securely.
+Send your UID once. An admin reviews it. Verified users unlock WinGo predictions.
 
-Complete your registration using the official link, then submit your UID through the verification panel.
+Tap below to open the panel."""
 
-Your submission will be reviewed by an administrator. Verification does not guarantee financial recovery.
+HELP_TEXT = """<b>VerifyHub — how it works</b>
 
-Use the buttons below to continue."""
+<b>1.</b> Register on the official site, copy your UID.
+<b>2.</b> Open the panel and send the UID once.
+<b>3.</b> An admin reviews it — watch the three windows.
 
-HELP_TEXT = """<b>How verification works</b>
+<b>Verified</b> = admin-approved. No guarantee of recovery, and not provider-confirmed.
+Verified users unlock the Prediction tab (WinGo 30s + 1 min) — a signal, never a guarantee.
 
-<b>1.</b> Register using the official registration link.
-<b>2.</b> Copy your account UID from that registration.
-<b>3.</b> Open the verification panel and submit the UID.
-<b>4.</b> An administrator reviews it. You will see the outcome here and in the panel.
+No passwords, OTPs or recovery phrases are ever asked for.
 
 <b>Commands</b>
-/start — open the panel and registration link
+/start — open the panel
 /status — check your latest submission
+/predict — open predictions (verified users)
 /help — this guide
-/cancel — cancel any pending operation
-
-Submitting a UID does not automatically mean it has been verified.
-No passwords, OTPs, or recovery phrases are ever requested."""
+/cancel — cancel any pending operation"""
 
 STATUS_LABELS = {
     "not_submitted": "Not submitted",
@@ -63,13 +61,43 @@ def _keyboard() -> InlineKeyboardMarkup:
     rows = []
     if settings.mini_app_url:
         rows.append([InlineKeyboardButton("Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url))])
-    if settings.registration_url:
-        rows.append([InlineKeyboardButton("Register Account", url=settings.registration_url)])
     rows.append([
-        InlineKeyboardButton("Check Status", callback_data="__status__"),
-        InlineKeyboardButton("Help & Support", callback_data="__help__"),
+        InlineKeyboardButton("Check my status", callback_data="__status__"),
+        InlineKeyboardButton("Help", callback_data="__help__"),
     ])
     return InlineKeyboardMarkup(rows)
+
+
+def _window_lines(status: str) -> list[str]:
+    """The three verification windows as text lines (✓ done, … in progress, ○ waiting)."""
+    w2 = "…" if status in ("pending_review", "under_review") else "✓"
+    if status in ("verified", "rejected", "info_required"):
+        w3 = "✓"
+    elif status == "under_review":
+        w3 = "…"
+    else:
+        w3 = "○"
+    return [f"01 Received ✓", f"02 Under review {w2}", f"03 Decision {w3}"]
+
+
+def _status_card(status: str, row: Submission | None) -> str:
+    """Compact status card: badge word, masked UID, sent time, three windows."""
+    import html as _html
+
+    label = STATUS_LABELS.get(status, status)
+    if row is None:
+        return "<b>◆ Your status</b>\n\nYou have not submitted a UID yet.\n\nOpen the panel to send one."
+    lines = [
+        "<b>◆ Your status</b>",
+        "",
+        f"Status: <b>{label}</b>",
+        f"UID: <code>{mask_uid(row.registration_uid)}</code>",
+        f"Sent: {row.submitted_at.strftime('%Y-%m-%d %H:%M UTC') if row.submitted_at else '—'}",
+        "",
+    ] + _window_lines(status)
+    if row.review_message:
+        lines += ["", f"Review message:\n{_html.escape(row.review_message)}"]
+    return "\n".join(lines)
 
 
 def _latest_status(telegram_id: int) -> tuple[str, Submission | None, User | None]:
@@ -104,20 +132,33 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status, row, _ = _latest_status(update.effective_user.id)
-    label = STATUS_LABELS.get(status, status)
-    if row is None:
-        text = "<b>Verification status</b>\n\nYou have not submitted a UID yet.\n\nOpen the verification panel to submit one."
-    else:
-        text = (
-            f"<b>Verification status</b>\n\n"
-            f"Status: <b>{label}</b>\n"
-            f"UID: <code>{mask_uid(row.registration_uid)}</code>\n"
-            f"Submitted: {row.submitted_at.strftime('%Y-%m-%d %H:%M UTC') if row.submitted_at else '—'}\n"
-            f"Last updated: {row.updated_at.strftime('%Y-%m-%d %H:%M UTC') if row.updated_at else '—'}"
+    await update.message.reply_text(_status_card(status, row), parse_mode="HTML", reply_markup=_keyboard())
+
+
+def _predict_url() -> str | None:
+    """Mini App URL that opens straight on the Prediction tab."""
+    if not settings.mini_app_url:
+        return None
+    sep = "&" if "?" in settings.mini_app_url else "?"
+    return settings.mini_app_url + sep + "startapp=prediction"
+
+
+async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    url = _predict_url()
+    if url is None:
+        await update.message.reply_text(
+            "The verification panel is not configured yet — ask the administrator to set MINI_APP_URL."
         )
-        if row.review_message:
-            text += f"\n\nReview message:\n{row.review_message}"
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=_keyboard())
+        return
+    text = (
+        "<b>🔥 WinGo predictions</b>\n\n"
+        "Live results, history and the next-period signal — for verified users only.\n\n"
+        "Tap below to open the predictions."
+    )
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Open Predictions", web_app=WebAppInfo(url=url))]]
+    )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -136,14 +177,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=_keyboard())
     elif query.data == "__status__":
         status, row, _ = _latest_status(query.from_user.id)
-        label = STATUS_LABELS.get(status, status)
-        if row is None:
-            text = "You have not submitted a UID yet. Open the verification panel to submit one."
-        else:
-            text = f"Latest status: {label}\nUID: {mask_uid(row.registration_uid)}"
-            if row.review_message:
-                text += f"\n\n{row.review_message}"
-        await query.message.reply_text(text, reply_markup=_keyboard())
+        await query.message.reply_text(_status_card(status, row), parse_mode="HTML", reply_markup=_keyboard())
 
 
 def register_handlers(app: Application) -> None:
@@ -151,6 +185,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("predict", predict_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CallbackQueryHandler(_button))
 

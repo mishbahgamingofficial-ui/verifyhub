@@ -433,3 +433,52 @@ def get_prediction(timer: str, provider=None) -> dict:
         "signal": signal,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ---------------- live ticker (public, real data only) ----------------
+
+_LIVE_CACHE_TTL_SECONDS = 3.0
+# provider identity -> (monotonic timestamp, payload). Many users poll
+# the ticker every few seconds; this keeps them from hammering the
+# provider on top of its own 5s cache.
+_live_cache: dict[int, tuple[float, dict]] = {}
+
+
+def clear_live_cache() -> None:
+    """Drop the live-ticker cache (tests use this between cases)."""
+    _live_cache.clear()
+
+
+def get_live(provider=None) -> dict:
+    """Live ticker payload for WinGo 1-min: current period + last 5 results.
+
+    Public data only — no user, no auth, no invented activity. The
+    countdown comes from the SERVER clock (endTime - serviceTime), so a
+    wrong phone clock cannot skew it. Returns {"timer", "period",
+    "ends_in_seconds", "last": [{period, number, colour, size}]}.
+    """
+    p = provider or get_provider()
+    entry = _live_cache.get(id(p))
+    if entry and time.monotonic() - entry[0] < _LIVE_CACHE_TTL_SECONDS:
+        return entry[1]
+    current = p.fetch_current("1m")
+    history = p.fetch_results("1m", limit=5)
+    if not history:
+        raise ProviderError("No results returned by the provider.")
+    ends = (current["end_time"] - current["server_time"]).total_seconds()
+    out = {
+        "timer": "1m",
+        "period": current["period"],
+        "ends_in_seconds": max(0, int(ends)),
+        "last": [
+            {
+                "period": r["period"],
+                "number": r["number"],
+                "colour": r["colour"],
+                "size": r["size"],
+            }
+            for r in history[:5]
+        ],
+    }
+    _live_cache[id(p)] = (time.monotonic(), out)
+    return out

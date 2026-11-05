@@ -241,9 +241,9 @@ def test_telegram_application_builds_with_all_handlers():
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
     handlers = [h for group in app.handlers.values() for h in group]
-    assert len(handlers) == 5
+    assert len(handlers) == 6
     commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
-    assert commands == ["cancel", "help", "start", "status"]
+    assert commands == ["cancel", "help", "predict", "start", "status"]
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
 
 
@@ -264,7 +264,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
         )
 
     assert _sig(polling) == _sig(webhook)
-    assert len([h for group in polling.handlers.values() for h in group]) == 5
+    assert len([h for group in polling.handlers.values() for h in group]) == 6
 
 
 # ---------------- Production hardening (DB failures, webhook secret, health) ----------------

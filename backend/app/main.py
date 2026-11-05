@@ -5,6 +5,8 @@ Routes:
   GET  /api/me                authenticated user + is_admin (derived server-side)
   GET  /api/me/submissions    own submissions only (IDOR-safe: filtered by user_id)
   GET  /api/me/latest         own latest submission, or not_submitted
+  GET  /api/prediction        verified users only (server-gated)
+  GET  /api/live              public WinGo 1-min ticker (no auth, real data only)
   POST /api/submissions       create, with duplicate + rate-limit protection
   GET  /api/admin/stats       admin only, derived from real DB rows
   GET  /api/admin/submissions admin only, search / filter / sort
@@ -47,7 +49,7 @@ from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
 from .notifications import notify_user
-from .prediction import TIMER_TYPE_IDS, ProviderError, get_prediction
+from .prediction import TIMER_TYPE_IDS, ProviderError, get_live, get_prediction
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
 from .services import ACTIVE_STATUSES, STATUSES, can_transition
@@ -349,6 +351,20 @@ def prediction(
         raise HTTPException(status_code=403, detail="Prediction unlocks after verification.")
     try:
         return get_prediction(timer)
+    except ProviderError:
+        raise HTTPException(status_code=503, detail="Results temporarily unavailable.") from None
+
+
+@app.get("/api/live")
+def live():
+    """Public live ticker: current WinGo 1-min period + last 5 results.
+
+    No auth — it serves public results only, never any user data and
+    never anything invented. The frontend polls it for the ticker bar
+    and the bottom dock.
+    """
+    try:
+        return get_live()
     except ProviderError:
         raise HTTPException(status_code=503, detail="Results temporarily unavailable.") from None
 

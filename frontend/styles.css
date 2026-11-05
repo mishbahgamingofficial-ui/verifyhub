@@ -182,8 +182,52 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 }
 .status-bar .st-left,.status-bar .st-right{display:flex; align-items:center; gap:6px}
 .status-bar .live b{color:#ff4040}
-.live-dot{width:8px; height:8px; border-radius:50%; background:#22ff88; box-shadow:0 0 8px #22ff88; animation:pulseDot 1.2s ease-in-out infinite}
+.live-dot{width:8px; height:8px; border-radius:50%; background:#22ff88; box-shadow:0 0 8px #22ff88; animation:livePulse 1.6s ease-in-out infinite}
+@keyframes livePulse{
+  0%,100%{box-shadow:0 0 6px rgba(34,255,136,.9), 0 0 0 0 rgba(34,255,136,.45); opacity:1}
+  50%{box-shadow:0 0 14px rgba(34,255,136,1), 0 0 0 6px rgba(34,255,136,0); opacity:.8}
+}
 @keyframes pulseDot{50%{opacity:.3}}
+
+/* ---- Live ticker: real WinGo 1-min data from /api/live, never invented ---- */
+.ticker{display:flex; align-items:center; gap:7px; margin-top:12px; padding:8px 12px; background:rgba(25,0,0,.55); border:1px solid var(--hairline); border-radius:20px; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--text); overflow:hidden}
+.ticker-dot{flex:none; width:8px; height:8px; border-radius:50%; background:#22ff88; box-shadow:0 0 8px #22ff88; animation:livePulse 1.6s ease-in-out infinite}
+.ticker-live{color:#ff4040}
+.ticker-live.reconnecting{color:#ffb300}
+.ticker-mid{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:6px}
+.ticker-mid .mini-ball{width:20px; height:20px; flex:none}
+.ticker-mid .mini-ball span{font-size:11px; line-height:20px}
+.ticker-right{flex:none; color:var(--muted)}
+.ticker-right b{color:var(--text); display:inline-block}
+.ticker-count{display:inline-block}
+.ticker-count.pop,.pred-countdown.pop{animation:digitPop .25s ease}
+@keyframes digitPop{0%{transform:scale(1.15)}100%{transform:scale(1)}}
+
+/* ---- Embers: faint gold/red motes drifting up inside the lattice panels ---- */
+.embers{position:absolute; inset:0; z-index:1; pointer-events:none; overflow:hidden}
+.embers i{position:absolute; bottom:-8px; width:4px; height:4px; border-radius:50%; background:radial-gradient(circle,#fff3b0,#ffb300 55%,#ff5e00); opacity:0; animation:emberRise 7s linear infinite}
+.embers i:nth-child(1){left:8%; animation-delay:0s; animation-duration:6s}
+.embers i:nth-child(2){left:20%; animation-delay:1.2s; animation-duration:7.5s; width:3px; height:3px}
+.embers i:nth-child(3){left:34%; animation-delay:2.4s; animation-duration:6.5s; background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000)}
+.embers i:nth-child(4){left:47%; animation-delay:.6s; animation-duration:8s; width:5px; height:5px}
+.embers i:nth-child(5){left:60%; animation-delay:3s; animation-duration:6s; width:3px; height:3px}
+.embers i:nth-child(6){left:71%; animation-delay:1.8s; animation-duration:7s; background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000)}
+.embers i:nth-child(7){left:84%; animation-delay:4s; animation-duration:6.5s}
+.embers i:nth-child(8){left:93%; animation-delay:2.8s; animation-duration:8.5s; width:3px; height:3px}
+@keyframes emberRise{
+  0%{transform:translate(0,0) scale(.6); opacity:0}
+  12%{opacity:.75}
+  55%{transform:translate(6px,-70px) scale(1); opacity:.5}
+  100%{transform:translate(-5px,-150px) scale(.35); opacity:0}
+}
+
+/* ---- Celebration burst: one-shot gold/red particles, JS-created, removed after ---- */
+.burst{position:fixed; z-index:60; width:0; height:0; pointer-events:none}
+.burst i{position:absolute; left:0; top:0; width:var(--s,4px); height:var(--s,4px); margin:calc(var(--s,4px) / -2) 0 0 calc(var(--s,4px) / -2); border-radius:50%; background:radial-gradient(circle,#fff3b0,#ffb300 55%,#ff5e00); box-shadow:0 0 8px rgba(255,179,0,.8); animation:burstFly .9s cubic-bezier(.1,.7,.3,1) forwards}
+.burst i:nth-child(even){background:radial-gradient(circle,#ffb3ab,#ff2d2d 60%,#a80000); box-shadow:0 0 8px rgba(255,45,45,.8)}
+@keyframes burstFly{0%{transform:translate(0,0) scale(1); opacity:1}100%{transform:translate(var(--tx,0px),var(--ty,0px)) scale(.3); opacity:0}}
+.stamp.pop{animation:stampPop .45s cubic-bezier(.2,.9,.3,1.2) both}
+@keyframes stampPop{0%{transform:rotate(-4deg) scale(.6); opacity:0}100%{transform:rotate(-4deg) scale(1); opacity:1}}
 
 /* Dark screen inside the panel: headline + content. */
 .screen{
@@ -432,10 +476,18 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   box-shadow:0 0 40px rgba(255,30,30,.35);
 }
 .modal h3{margin-top:0; font-size:18px}
-.foot{
-  color:var(--muted-2); font-size:12.5px; text-align:center; margin-top:24px; padding-top:16px;
-  border-top:1px solid var(--hairline); line-height:1.6;
-}
+/* ---- Bottom dock (static, at the end of the home view — never fixed) ---- */
+.dock{margin-top:24px; padding:16px 14px 14px; background:var(--surface); border:1px solid var(--hairline); border-radius:var(--r); box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.dock-row{display:flex; align-items:center; justify-content:space-between; gap:10px}
+.dock-cell{display:flex; align-items:center; gap:7px; min-width:0}
+.dock-left{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700; letter-spacing:.06em; color:var(--text); white-space:nowrap; overflow:hidden}
+.dock-live{color:#ff4040}
+.dock-period{color:var(--muted); overflow:hidden; text-overflow:ellipsis}
+.dock-centre{flex:none}
+.dock-v{font-size:19px}
+.dock-name{font-weight:900; font-style:italic; font-size:14px; letter-spacing:1.5px; background:linear-gradient(180deg,#fff3b0,#ffb300 55%,#ff5e00); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
+.dock-right{flex:none}
+.dock-honest{margin:12px 0 0; padding-top:12px; border-top:1px solid var(--hairline); color:var(--muted-2); font-size:12px; text-align:center; line-height:1.6}
 
 /* ---------- Prediction (verified users only) ---------- */
 .pred-timers{display:flex; gap:8px; margin:0 0 14px}
@@ -515,6 +567,8 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   .screen{padding:18px 12px}
   .uid-stub{flex-wrap:wrap}
   .window-bar{flex-wrap:wrap}
+  .dock-name{display:none}
+  .dock-period{max-width:110px}
 }
 @media (min-width:900px){
   .modal-backdrop{align-items:center}

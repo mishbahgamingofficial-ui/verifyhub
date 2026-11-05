@@ -9,7 +9,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=6">
+<link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
 <div class="wrap">
@@ -17,6 +17,13 @@
     <div class="brand"><div class="logo" aria-hidden="true"><span class="logo-v">V</span></div><div><b id="brand-name">VerifyHub</b><span>One pass · Admin-reviewed</span></div></div>
     <span class="pill" id="who-pill">Connecting…</span>
   </header>
+
+  <div class="ticker" id="ticker">
+    <span class="ticker-dot" id="ticker-dot" aria-hidden="true"></span>
+    <span class="ticker-live" id="ticker-live">LIVE</span>
+    <span class="ticker-mid">WinGo 1M · <span class="mono" id="ticker-period">#—</span> · last: <span class="mini-ball red" id="ticker-ball"><span>–</span></span> <b id="ticker-last">—</b></span>
+    <span class="ticker-right">next in <b class="ticker-count" id="ticker-countdown">0:00</b></span>
+  </div>
 
   <div class="progress" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
   <div class="phase-line"><span id="phase-label">Step 1 of 2 — Send UID</span><span id="phase-count">01 / 02</span></div>
@@ -44,6 +51,7 @@
 
       <div id="step-register">
       <section class="panel" aria-label="Register">
+        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="wordmark">VerifyHub</div>
@@ -65,6 +73,7 @@
 
       <div id="step-deposit" hidden>
         <section class="panel" aria-label="Deposit proof">
+          <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
           <div class="panel-inner">
             <div class="panel-head">
               <div class="wordmark">VerifyHub</div>
@@ -91,6 +100,7 @@
 
       <div id="step-uid" hidden>
       <section class="panel" aria-label="Send UID">
+        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="wordmark">VerifyHub</div>
@@ -167,6 +177,15 @@
       <p>If Window 03 asks for more info, read its message, then send one corrected UID. Anything else — use Help in the bot.</p>
       <p class="hint review-message">Verified = admin-approved. No guarantee of recovery, and not provider-confirmed.</p>
     </div>
+
+    <footer class="dock" id="bottom-dock">
+      <div class="dock-row">
+        <div class="dock-cell dock-left"><span class="live-dot" aria-hidden="true"></span><span class="dock-live">LIVE</span><span class="dock-period mono" id="dock-period">WinGo 1M · #—</span></div>
+        <div class="dock-cell dock-centre"><span class="logo-v dock-v" aria-hidden="true">V</span><span class="dock-name">VERIFYHUB</span></div>
+        <div class="dock-cell dock-right"><span id="dock-status"><span class="badge b-not_submitted">Not verified</span></span></div>
+      </div>
+      <p class="dock-honest">Verified = admin-approved. No guarantee of recovery, and not provider-confirmed.</p>
+    </footer>
   </section>
 
   <!-- PREDICTION (verified users only — the server gates it, not the tab) -->
@@ -182,6 +201,7 @@
 
     <div id="pred-locked" hidden>
       <section class="panel" aria-label="Prediction locked">
+        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="wordmark">VerifyHub</div>
@@ -207,6 +227,7 @@
 
     <div id="pred-open" hidden>
       <section class="panel" aria-label="Prediction">
+        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="wordmark">VerifyHub</div>
@@ -248,8 +269,6 @@
       <div class="empty" id="admin-empty" hidden><b>No submissions match.</b>Try a different search or filter.</div>
     </div>
   </section>
-
-  <p class="foot">VerifyHub · Admin-reviewed only.<br>Identity checked server-side on every request.</p>
 </div>
 
 <div class="modal-backdrop" id="detail-modal" role="dialog" aria-modal="true" aria-label="Submission details">
@@ -266,6 +285,6 @@
      the Mini App aggressively. Bump the ?v= number on every JS change
      so users get the new files instead of the cached old ones. -->
 <script src="config.js?v=2"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
