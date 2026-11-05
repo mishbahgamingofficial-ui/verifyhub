@@ -67,11 +67,11 @@ def _keyboard() -> InlineKeyboardMarkup:
     """
     rows = []
     if settings.mini_app_url:
-        rows.append([InlineKeyboardButton("🚀 Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url), style="primary")])
+        rows.append([InlineKeyboardButton("👑 Open Verification Panel", web_app=WebAppInfo(url=settings.mini_app_url), style="primary")])
     rows.append([InlineKeyboardButton("📊 Check My Status", callback_data="__status__", style="success")])
     predict_url = _predict_url()
     if predict_url:
-        rows.append([InlineKeyboardButton("🎯 Open Predictions", web_app=WebAppInfo(url=predict_url))])
+        rows.append([InlineKeyboardButton("💎 Open Predictions", web_app=WebAppInfo(url=predict_url))])
     rows.append([InlineKeyboardButton("❓ Help", callback_data="__help__")])
     return InlineKeyboardMarkup(rows)
 
@@ -159,12 +159,12 @@ async def predict_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     text = (
-        "<b>🎯 WinGo predictions</b>\n\n"
+        "<b>💎 WinGo predictions</b>\n\n"
         "📈 Live results, history and the next-period signal — for verified users only.\n\n"
         "Tap below to open the predictions."
     )
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🎯 Open Predictions", web_app=WebAppInfo(url=url), style="success")]]
+        [[InlineKeyboardButton("💎 Open Predictions", web_app=WebAppInfo(url=url), style="success")]]
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 

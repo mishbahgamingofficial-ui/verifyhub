@@ -257,13 +257,13 @@ def test_main_keyboard_is_colourful_and_complete():
 
     buttons = [b for row in _keyboard().inline_keyboard for b in row]
     by_text = {b.text: b for b in buttons}
-    assert by_text["🚀 Open Verification Panel"].style == "primary"
+    assert by_text["👑 Open Verification Panel"].style == "primary"
     assert by_text["📊 Check My Status"].style == "success"
-    assert "🎯 Open Predictions" in by_text
+    assert "💎 Open Predictions" in by_text
     assert "❓ Help" in by_text
     assert sum(1 for b in buttons if b.style is not None) <= 2
     # The style field serialises into the Bot API payload.
-    assert by_text["🚀 Open Verification Panel"].to_dict()["style"] == "primary"
+    assert by_text["👑 Open Verification Panel"].to_dict()["style"] == "primary"
 
 
 def test_polling_bot_builds_with_updater_and_same_handlers():
