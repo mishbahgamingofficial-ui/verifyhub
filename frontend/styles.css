@@ -154,7 +154,9 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .intro::after{
   content:""; position:absolute; right:-46px; top:-46px; width:150px; height:150px; border-radius:50%;
   background:radial-gradient(circle, rgba(0,200,150,.35), transparent 70%); pointer-events:none;
+  animation:blobDrift 9s ease-in-out infinite alternate;
 }
+@keyframes blobDrift{from{transform:translate(0,0) scale(1)}to{transform:translate(-18px,16px) scale(1.15)}}
 .intro .eyebrow{display:inline-flex; align-items:center; gap:8px; color:var(--green-bright)}
 .intro .eyebrow::before{content:""; width:18px; height:2px; flex:none; background:var(--green); border-radius:2px}
 .intro h1{
@@ -163,6 +165,14 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 }
 .intro h1 em{font-style:normal; font-weight:900; color:var(--green-bright)}
 .intro p{position:relative; z-index:2; color:#b8cdd8; margin:0; max-width:52ch; font-size:15px}
+
+/* ---- Load-in: the page rises in top-to-bottom on first paint ---- */
+@keyframes cardRise{from{opacity:0; transform:translateY(14px)}to{opacity:1; transform:translateY(0)}}
+.ticker{animation:cardRise .55s cubic-bezier(.2,.9,.3,1) both}
+.tabs{animation:cardRise .55s .06s cubic-bezier(.2,.9,.3,1) both}
+.intro{animation:cardRise .55s .12s cubic-bezier(.2,.9,.3,1) both}
+.step-rail{animation:cardRise .55s .18s cubic-bezier(.2,.9,.3,1) both}
+.dock{animation:cardRise .55s .26s cubic-bezier(.2,.9,.3,1) both}
 
 /* ---------- The white product card (the anchor panel) ----------
    Reference screens 2/4: white card, radius ~26px, soft shadow, a teal
@@ -402,6 +412,10 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);
   transform:skewX(-20deg); transition:left .5s ease; pointer-events:none;
 }
+/* Primary CTA shine: a slow auto-sweep every few seconds (the press
+   still sweeps it via left, as before). Variants/loading are excluded. */
+.btn:not(.secondary):not(.ghost):not(.danger):not(.is-loading):not(:disabled)::after{animation:btnShine 4.5s ease-in-out 1.2s infinite}
+@keyframes btnShine{0%{transform:translateX(0) skewX(-20deg)}45%,100%{transform:translateX(460%) skewX(-20deg)}}
 .btn:active{
   transform:translateY(2px) scale(.97);
   box-shadow:0 2px 6px rgba(0,122,85,.35), inset 0 3px 8px rgba(0,0,0,.25), inset 0 -1px 0 rgba(255,255,255,.25);
