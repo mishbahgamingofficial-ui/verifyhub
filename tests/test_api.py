@@ -318,3 +318,30 @@ def test_engine_pool_validates_stale_connections_and_normalizes_url():
     assert eng2.pool._pre_ping is True
     eng.dispose()
     eng2.dispose()
+
+
+# ---------------- Telegram ids must fit in the column (BIGINT regression) ----------------
+
+def test_telegram_id_columns_are_bigint():
+    """Telegram ids exceed the 32-bit range (e.g. 8455891912). An Integer
+    column made every /api/me and /api/submissions call for such a user
+    fail on Postgres with 'integer out of range' while SQLite tests
+    passed silently — this assertion stops that regressing."""
+    from sqlalchemy import BigInteger
+
+    from app.db import AuditEvent, ReviewHistory, User
+
+    assert isinstance(User.__table__.c.telegram_id.type, BigInteger)
+    assert isinstance(ReviewHistory.__table__.c.admin_telegram_id.type, BigInteger)
+    assert isinstance(AuditEvent.__table__.c.actor_telegram_id.type, BigInteger)
+
+
+def test_large_telegram_id_can_submit():
+    large_id = 8455891912  # a real Telegram id above the 32-bit range
+    r = client.get("/api/me", headers=H(large_id))
+    assert r.status_code == 200
+    assert r.json()["telegram_id"] == large_id
+    r = client.post("/api/submissions", headers=H(large_id),
+                    json={"registration_uid": "ABCDEF123", "confirm_correct": True})
+    assert r.status_code == 201
+    assert r.json()["status"] == "pending_review"

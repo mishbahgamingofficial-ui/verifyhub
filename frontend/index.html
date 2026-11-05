@@ -148,7 +148,10 @@
   </div>
 </div>
 <div class="toast" id="toast" hidden role="status"></div>
-<script src="config.js"></script>
-<script src="app.js"></script>
+<!-- Cache-bust: Hostinger serves .js with max-age=7d, and Telegram caches
+     the Mini App aggressively. Bump the ?v= number on every JS change
+     so users get the new files instead of the cached old ones. -->
+<script src="config.js?v=2"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
