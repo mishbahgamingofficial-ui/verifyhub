@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .db import AuditEvent, ReviewHistory, Submission
+from .db import Admin, AuditEvent, ReviewHistory, Submission
 
 # Statuses a submission can be in. "not_submitted" is a virtual UI state
 # (no submission row exists), never stored.
@@ -33,6 +33,42 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 
 def can_transition(previous: str, new: str) -> bool:
     return new in ALLOWED_TRANSITIONS.get(previous, set())
+
+
+def is_admin(db, telegram_id: int, settings) -> bool:
+    """Admin = env allowlist OR the bot-added admins table.
+
+    The one admin check for the whole system: the API gate (auth), /api/me
+    and the bot all call this, so an admin added with /addadmin gets the
+    same access as one set in ADMIN_TELEGRAM_IDS.
+    """
+    if settings.is_admin(telegram_id):
+        return True
+    return db.query(Admin).filter(Admin.telegram_id == telegram_id).first() is not None
+
+
+def add_admin(db, *, telegram_id: int, added_by: int):
+    """Add a bot admin. Returns (True, None) or (False, human-readable reason)."""
+    if db.query(Admin).filter(Admin.telegram_id == telegram_id).first() is not None:
+        return False, "That user is already an admin."
+    db.add(Admin(telegram_id=telegram_id, added_by_telegram_id=added_by))
+    db.commit()
+    return True, None
+
+
+def remove_admin(db, *, telegram_id: int):
+    """Remove a bot-added admin. Returns (True, None) or (False, reason)."""
+    row = db.query(Admin).filter(Admin.telegram_id == telegram_id).first()
+    if row is None:
+        return False, "That user is not an admin in the bot-added list."
+    db.delete(row)
+    db.commit()
+    return True, None
+
+
+def list_db_admins(db):
+    """Bot-added admins, oldest first."""
+    return db.query(Admin).order_by(Admin.created_at).all()
 
 
 def change_submission_status(db, *, submission_id: int, to_status: str, message: str | None,

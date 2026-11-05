@@ -98,6 +98,22 @@ class AuditEvent(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
 
 
+class Admin(Base):
+    """Bot-added admins: Telegram ids an admin added from the bot itself.
+
+    The env allowlist (ADMIN_TELEGRAM_IDS) is the root: those admins can
+    never be removed from the bot, and at least one always exists. Rows
+    here are additional admins, added/removed with /addadmin and
+    /removeadmin. Both lists grant the same access (bot commands and the
+    Mini App admin tab, via services.is_admin). Created by create_all at
+    startup, so no manual migration is needed.
+    """
+    __tablename__ = "admins"
+    telegram_id = Column(BigInteger, primary_key=True)
+    added_by_telegram_id = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
 class SignalRecord(Base):
     """One recorded prediction signal, settled against the real result.
 

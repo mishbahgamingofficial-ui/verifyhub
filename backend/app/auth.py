@@ -1,8 +1,9 @@
 """FastAPI dependencies: authenticated Telegram identity + admin gate.
 
 Admin status is NEVER taken from the client. It is derived on every
-request from the validated initData user id against the server-side
-ADMIN_TELEGRAM_IDS allowlist in config.
+request from the validated initData user id: the server-side
+ADMIN_TELEGRAM_IDS allowlist in config, or the bot-added admins table
+(see services.is_admin).
 """
 from __future__ import annotations
 
@@ -90,9 +91,12 @@ def get_current_user(
 
 def require_admin(
     identity: TelegramIdentity = Depends(get_identity),
+    db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> TelegramIdentity:
-    if not settings.is_admin(identity.telegram_id):
+    from .services import is_admin
+
+    if not is_admin(db, identity.telegram_id, settings):
         # Deliberately generic: do not leak whether the id exists or is admin.
         raise HTTPException(status_code=403, detail="Administrator access required.")
     return identity

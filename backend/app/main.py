@@ -52,7 +52,7 @@ from .notifications import notify_admins, notify_user
 from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
-from .services import ACTIVE_STATUSES, STATUSES, change_submission_status
+from .services import ACTIVE_STATUSES, STATUSES, change_submission_status, is_admin
 
 logger = logging.getLogger("verifyhub.api")
 
@@ -303,12 +303,12 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
 # ---------------- user routes ----------------
 
 @app.get("/api/me")
-def me(identity: TelegramIdentity = Depends(get_identity), user: User = Depends(get_current_user), settings: Settings = Depends(get_settings)):
+def me(identity: TelegramIdentity = Depends(get_identity), user: User = Depends(get_current_user), db: Session = Depends(get_db_session), settings: Settings = Depends(get_settings)):
     return {
         "telegram_id": identity.telegram_id,
         "username": identity.username,
         "first_name": identity.first_name,
-        "is_admin": settings.is_admin(identity.telegram_id),
+        "is_admin": is_admin(db, identity.telegram_id, settings),
     }
 
 

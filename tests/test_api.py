@@ -241,9 +241,9 @@ def test_telegram_application_builds_with_all_handlers():
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
     handlers = [h for group in app.handlers.values() for h in group]
-    assert len(handlers) == 11
+    assert len(handlers) == 15
     commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
-    assert commands == ["admin", "approve", "cancel", "help", "needinfo", "pending", "predict", "reject", "start", "status"]
+    assert commands == ["addadmin", "admin", "admins", "approve", "cancel", "help", "needinfo", "pending", "predict", "reject", "removeadmin", "start", "stats", "status"]
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
 
 
@@ -306,8 +306,8 @@ def test_welcome_and_help_texts_use_premium_emojis():
     )
 
     text, entities = _welcome_text()
-    assert "VerifyHub — one pass, one verdict." in text
-    assert "Send your UID once." in text
+    assert "VerifyHub — ek baar, ek faisla." in text
+    assert "Apna UID ek baar bhejo" in text
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert customs == {EMOJI_CHECK, EMOJI_TARGET}
 
@@ -359,7 +359,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
         )
 
     assert _sig(polling) == _sig(webhook)
-    assert len([h for group in polling.handlers.values() for h in group]) == 11
+    assert len([h for group in polling.handlers.values() for h in group]) == 15
 
 
 # ---------------- Production hardening (DB failures, webhook secret, health) ----------------
@@ -652,8 +652,12 @@ def test_help_lists_admin_commands_only_for_admin():
 
     text, _ = _help_text(admin=True)
     assert "/approve <id>" in text and "/pending" in text
+    assert "/addadmin" in text and "/admins" in text
+    assert "/stats" in text
     text, _ = _help_text()
     assert "/approve" not in text and "/pending" not in text
+    assert "/addadmin" not in text
+    assert "/stats" in text
 
 
 # ---------------- Admin panel + instant admin alerts ----------------
@@ -800,3 +804,168 @@ def test_admin_keyboard_has_panel_button_only_for_admin():
     assert any(b.text == "🛡 Admin Panel" and b.callback_data == "__admin__" for b in admin_buttons)
     user_buttons = [b for row in _keyboard().inline_keyboard for b in row]
     assert all(b.text != "🛡 Admin Panel" for b in user_buttons)
+
+
+# ---------------- Live stats, badges, admin management ----------------
+
+def test_stats_command_shows_live_numbers(monkeypatch):
+    import asyncio
+
+    from app.bot_handlers import stats_cmd
+    from app.db import SignalRecord, get_session_factory
+
+    # Seed honest accuracy data: 3 settled 1m signals, 2 right.
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        for i, correct in enumerate([True, True, False]):
+            db.add(SignalRecord(timer="1m", period=f"STAT{i}", signal="BIG", correct=correct))
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(
+        "app.bot_handlers.get_live",
+        lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
+    )
+    update, context, message = _fake_update(USER_ID)
+    asyncio.run(stats_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert "VerifyHub — live stats" in text
+    assert "Users:" in text and "Verified:" in text
+    assert "Signals (1m): 3 settled, 2 right — 66.7%" in text
+    assert "Live WinGo 1m: period …0952 ends in 42s" in text
+
+
+def test_stats_command_without_live_period(monkeypatch):
+    import asyncio
+
+    from app.bot_handlers import stats_cmd
+    from app.prediction import ProviderError
+
+    def _boom():
+        raise ProviderError("down")
+
+    monkeypatch.setattr("app.bot_handlers.get_live", _boom)
+    update, context, message = _fake_update(USER_ID)
+    asyncio.run(stats_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert "VerifyHub — live stats" in text
+    assert "Live WinGo" not in text
+
+
+def test_badges_come_from_real_data():
+    from datetime import datetime, timedelta, timezone
+
+    from app.bot_handlers import _badges_for
+    from app.db import User, get_session_factory
+
+    # Verified + comeback: two submissions, one verified.
+    _make_submission(580, "BADGE1")
+    _make_submission(580, "BADGE2", status="verified")
+    badges = _badges_for(580)
+    assert "✅ Verified" in badges
+    assert "🔁 Comeback" in badges
+
+    # Early Bird: the very first user in this test DB.
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        first = db.query(User).order_by(User.id).first()
+        first_tid = first.telegram_id
+    finally:
+        db.close()
+    assert "⭐ Early Bird" in _badges_for(first_tid)
+
+    # Veteran: push first_seen_at 40 days back.
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        user = db.query(User).filter(User.telegram_id == 580).first()
+        user.first_seen_at = datetime.now(timezone.utc) - timedelta(days=40)
+        db.commit()
+    finally:
+        db.close()
+    assert "📅 Veteran" in _badges_for(580)
+
+    # Unknown user: no badges at all.
+    assert _badges_for(999999) == []
+
+
+def test_status_card_shows_badges():
+    import asyncio
+
+    from app.bot_handlers import status_cmd
+
+    _make_submission(581, "BADGE3", status="verified")
+    update, context, message = _fake_update(581)
+    asyncio.run(status_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert "Badges:" in text and "✅ Verified" in text
+
+
+def test_admin_add_remove_admins():
+    import asyncio
+
+    from app.bot_handlers import addadmin_cmd, admins_cmd, pending_cmd, removeadmin_cmd
+
+    # Non-admin cannot add.
+    update, context, message = _fake_update(USER_ID, ["777"])
+    asyncio.run(addadmin_cmd(update, context))
+    assert "for admins only" in message.reply_text.await_args.args[0]
+
+    # Bad id + env admin.
+    update, context, message = _fake_update(ADMIN_ID, ["abc"])
+    asyncio.run(addadmin_cmd(update, context))
+    assert "Usage: /addadmin" in message.reply_text.await_args.args[0]
+    update, context, message = _fake_update(ADMIN_ID, [str(ADMIN_ID)])
+    asyncio.run(addadmin_cmd(update, context))
+    assert "already an admin" in message.reply_text.await_args.args[0]
+
+    # Add 777, then 777 can run /pending.
+    update, context, message = _fake_update(ADMIN_ID, ["777"])
+    asyncio.run(addadmin_cmd(update, context))
+    assert "777 is now an admin" in message.reply_text.await_args.args[0]
+    update, context, message = _fake_update(ADMIN_ID, ["777"])
+    asyncio.run(addadmin_cmd(update, context))
+    assert "already an admin" in message.reply_text.await_args.args[0]
+    update, context, message = _fake_update(777)
+    asyncio.run(pending_cmd(update, context))
+    assert "for admins only" not in message.reply_text.await_args.args[0]
+
+    # A bot-added admin cannot remove the server-config admin.
+    update, context, message = _fake_update(777, [str(ADMIN_ID)])
+    asyncio.run(removeadmin_cmd(update, context))
+    assert "server config" in message.reply_text.await_args.args[0]
+
+    # /admins lists both.
+    update, context, message = _fake_update(ADMIN_ID)
+    asyncio.run(admins_cmd(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert str(ADMIN_ID) in text and "(server config)" in text
+    assert "777" in text and "added by 111" in text
+
+    # Cannot remove yourself; can remove 777.
+    update, context, message = _fake_update(ADMIN_ID, [str(ADMIN_ID)])
+    asyncio.run(removeadmin_cmd(update, context))
+    assert "cannot remove yourself" in message.reply_text.await_args.args[0].lower()
+    update, context, message = _fake_update(ADMIN_ID, ["777"])
+    asyncio.run(removeadmin_cmd(update, context))
+    assert "777 is no longer an admin" in message.reply_text.await_args.args[0]
+    update, context, message = _fake_update(777)
+    asyncio.run(pending_cmd(update, context))
+    assert "for admins only" in message.reply_text.await_args.args[0]
+    update, context, message = _fake_update(ADMIN_ID, ["777"])
+    asyncio.run(removeadmin_cmd(update, context))
+    assert "not an admin" in message.reply_text.await_args.args[0]
+
+
+def test_db_admin_can_use_api_admin_routes():
+    import asyncio
+
+    from app.bot_handlers import addadmin_cmd
+
+    # Add 778 through the bot command, then the API must accept them.
+    update, context, message = _fake_update(ADMIN_ID, ["778"])
+    asyncio.run(addadmin_cmd(update, context))
+    assert "778 is now an admin" in message.reply_text.await_args.args[0]
+    assert client.get("/api/admin/stats", headers=H(778)).status_code == 200
+    assert client.get("/api/me", headers=H(778)).json()["is_admin"] is True
+    assert client.get("/api/me", headers=H(666)).json()["is_admin"] is False
+    assert client.get("/api/admin/stats", headers=H(666)).status_code == 403
