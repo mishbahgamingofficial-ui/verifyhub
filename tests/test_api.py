@@ -345,3 +345,58 @@ def test_large_telegram_id_can_submit():
                     json={"registration_uid": "ABCDEF123", "confirm_correct": True})
     assert r.status_code == 201
     assert r.json()["status"] == "pending_review"
+
+
+# ---------------- Deposit screenshot (step 2 of the flow) ----------------
+
+def _shot():
+    return "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD"
+
+
+def test_submit_with_deposit_screenshot():
+    uid = 555
+    r = client.post("/api/submissions", headers=H(uid),
+                    json={"registration_uid": "DEPO12345", "confirm_correct": True,
+                          "deposit_screenshot": _shot()})
+    assert r.status_code == 201, r.text
+    assert r.json()["has_deposit_screenshot"] is True
+    latest = client.get("/api/me/latest", headers=H(uid)).json()
+    assert latest["submission"]["has_deposit_screenshot"] is True
+    # Owner responses never carry the image itself, only the flag.
+    assert "deposit_screenshot" not in latest["submission"]
+    # Admin detail does carry it (for the later admin review work).
+    sid = r.json()["id"]
+    detail = client.get(f"/api/admin/submissions/{sid}", headers=H(ADMIN_ID)).json()
+    assert detail["submission"]["deposit_screenshot"] == _shot()
+
+
+def test_submit_with_invalid_deposit_screenshot_rejected():
+    r = client.post("/api/submissions", headers=H(556),
+                    json={"registration_uid": "DEPO12346", "confirm_correct": True,
+                          "deposit_screenshot": "not-an-image"})
+    assert r.status_code == 422
+
+
+def test_submit_with_oversized_deposit_screenshot_rejected():
+    big = "data:image/png;base64," + "A" * 3_000_001
+    r = client.post("/api/submissions", headers=H(557),
+                    json={"registration_uid": "DEPO12347", "confirm_correct": True,
+                          "deposit_screenshot": big})
+    assert r.status_code == 422
+
+
+def test_resubmit_carries_deposit_screenshot():
+    uid = 558
+    r = client.post("/api/submissions", headers=H(uid),
+                    json={"registration_uid": "DEPO12348", "confirm_correct": True,
+                          "deposit_screenshot": _shot()})
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    # Admin asks for more info -> corrected resubmission without a fresh upload.
+    r = client.post(f"/api/admin/submissions/{sid}/status", headers=H(ADMIN_ID),
+                    json={"to_status": "info_required", "message": "UID unclear, send a corrected one."})
+    assert r.status_code == 200
+    r = client.post("/api/submissions", headers=H(uid),
+                    json={"registration_uid": "DEPO12349", "confirm_correct": True})
+    assert r.status_code == 201
+    assert r.json()["has_deposit_screenshot"] is True

@@ -21,6 +21,10 @@
   };
 
   let config = null, me = null, uidPattern = null, pendingAdminAction = null;
+  // Three-step flow: register -> deposit proof -> send UID.
+  // The deposit screenshot is compressed client-side and sent with the
+  // UID submit; nothing is uploaded before the user taps Continue.
+  let flowStep = 'register', depositDataUrl = null, isResubmit = false;
 
   function toast(msg, type) {
     const el = $('#toast'); el.textContent = msg;
@@ -85,10 +89,24 @@
       + '<dl class="meta"><div><dt>UID</dt><dd class="mono">' + esc(s.uid_masked) + '</dd></div>'
       + '<div><dt>Submitted</dt><dd>' + esc(fmt(s.submitted_at)) + '</dd></div>'
       + '<div><dt>Last updated</dt><dd>' + esc(fmt(s.updated_at)) + '</dd></div>'
-      + '<div><dt>Reference</dt><dd>' + esc(s.reference || '—') + '</dd></div></dl>'
+      + '<div><dt>Deposit proof</dt><dd>' + (s.has_deposit_screenshot ? 'Received' : '—') + '</dd></div></dl>'
       + (s.review_message ? '<p class="review-message"><strong>Review message:</strong><br>' + esc(s.review_message) + '</p>' : '');
   }
-  // Phase switch: Phase 1 = send once, Phase 2 = verification windows.
+  // Step switch inside Phase 1: register -> deposit -> uid.
+  function showStep(name) {
+    flowStep = name;
+    ['register', 'deposit', 'uid'].forEach((s) => { const el = $('#step-' + s); if (el) el.hidden = s !== name; });
+    const labels = { register: 'Step 1 of 3 — Register', deposit: 'Step 2 of 3 — Deposit proof', uid: 'Step 3 of 3 — Send UID' };
+    const counts = { register: '01 / 03', deposit: '02 / 03', uid: '03 / 03' };
+    const fills = { register: '33%', deposit: '66%', uid: '100%' };
+    const label = $('#phase-label'), count = $('#phase-count'), fill = $('#progress-fill');
+    if (label) label.textContent = labels[name];
+    if (count) count.textContent = counts[name];
+    if (fill) fill.style.width = fills[name];
+    syncMainButton();
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+  // Phase switch: Phase 1 = three steps, Phase 2 = verification windows.
   // The form locks for pending_review / under_review / verified / rejected.
   // Only info_required shows the one corrected resubmission.
   function setPhase(submission) {
@@ -97,9 +115,13 @@
     if (send) send.hidden = has;
     if (verify) verify.hidden = !has;
     const label = $('#phase-label'), count = $('#phase-count'), fill = $('#progress-fill');
-    if (label) label.textContent = has ? 'Step 2 of 2 — Verification' : 'Step 1 of 2 — Send UID';
-    if (count) count.textContent = has ? '02 / 02' : '01 / 02';
-    if (fill) fill.style.width = has ? '100%' : '50%';
+    if (has) {
+      if (label) label.textContent = 'Verification';
+      if (count) count.textContent = '03 / 03';
+      if (fill) fill.style.width = '100%';
+    } else {
+      showStep('register');
+    }
     const allowResubmit = has && submission.status === 'info_required';
     const rb = $('#resubmit-btn'), rh = $('#resubmit-hint');
     if (rb) rb.hidden = !allowResubmit;
@@ -114,7 +136,9 @@
   }
   document.querySelectorAll('[role="tab"]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
   const resubmitBtn = $('#resubmit-btn');
-  if (resubmitBtn) resubmitBtn.addEventListener('click', () => { setPhase(null); window.scrollTo({ top: 0, behavior: 'auto' }); });
+  // A corrected UID goes straight to step 3: the deposit proof from the
+  // first submit is already on file, and the server carries it over.
+  if (resubmitBtn) resubmitBtn.addEventListener('click', () => { isResubmit = true; setPhase(null); showStep('uid'); });
 
   async function loadStatus() {
     if (isPreview) { setPhase(null); $('#sample-windows').hidden = false; $('#status-body').innerHTML = '<p>Open this panel from Telegram to see your status.</p>'; $('#current-body').innerHTML = '<p>Open this panel from Telegram to see your status.</p>'; return; }
@@ -142,7 +166,8 @@
   $('#uid').addEventListener('input', validateUid);
   function syncMainButton() {
     if (!tg || !tg.MainButton) return;
-    const ok = validateUid() && $('#confirm').checked && !isPreview;
+    // The Telegram button only offers the UID submit, on step 3.
+    const ok = flowStep === 'uid' && validateUid() && $('#confirm').checked && !isPreview;
     if (ok) { tg.MainButton.setText('Submit UID for review'); tg.MainButton.show(); tg.MainButton.enable(); }
     else { tg.MainButton.hide(); }
   }
@@ -155,12 +180,60 @@
     if (!$('#confirm').checked) { $('#confirm-err').textContent = 'Confirm the UID is correct.'; return; }
     $('#confirm-err').textContent = '';
     if (!okUid) return;
+    // Fresh submissions need the deposit proof from step 2; a corrected
+    // resubmission reuses the one already on file (isResubmit).
+    if (!depositDataUrl && !isResubmit) { toast('Upload your deposit screenshot first.'); showStep('deposit'); return; }
     const btn = $('#submit-btn'); btn.disabled = true; btn.classList.add('is-loading'); btn.textContent = 'Submitting…';
     try {
-      await api('/api/submissions', { method: 'POST', body: JSON.stringify({ registration_uid: $('#uid').value.trim(), reference: $('#reference').value.trim() || null, confirm_correct: true }) });
+      await api('/api/submissions', { method: 'POST', body: JSON.stringify({ registration_uid: $('#uid').value.trim(), reference: $('#reference').value.trim() || null, confirm_correct: true, deposit_screenshot: depositDataUrl }) });
       // One-time send: the form locks and the verification windows open.
-      toast('UID sent — windows open.', 'success'); loadStatus(); showTab('home');
+      toast('UID sent — windows open.', 'success'); isResubmit = false; loadStatus(); showTab('home');
     } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; btn.classList.remove('is-loading'); btn.textContent = 'Send UID once'; }
+  });
+
+  // Step navigation + deposit screenshot (step 2).
+  $('#id-created-btn').addEventListener('click', () => showStep('deposit'));
+  $('#deposit-continue-btn').addEventListener('click', () => showStep('uid'));
+  $('#deposit-back-btn').addEventListener('click', () => showStep('register'));
+  $('#uid-back-btn').addEventListener('click', () => showStep('deposit'));
+  // Downscale the screenshot to a small JPEG data URL before it is ever
+  // sent, so one upload cannot bloat the database.
+  function compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const maxSide = 1200;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        let out = canvas.toDataURL('image/jpeg', 0.8);
+        if (out.length > 3000000) out = canvas.toDataURL('image/jpeg', 0.6);
+        if (out.length > 3000000) { reject(new Error('too large')); return; }
+        resolve(out);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
+      img.src = url;
+    });
+  }
+  const depositFile = $('#deposit-file');
+  $('#deposit-pick-btn').addEventListener('click', () => depositFile.click());
+  depositFile.addEventListener('change', async () => {
+    const file = depositFile.files && depositFile.files[0];
+    $('#deposit-err').textContent = '';
+    if (!file) return;
+    if (!file.type || file.type.indexOf('image/') !== 0) { $('#deposit-err').textContent = 'Choose an image file.'; return; }
+    if (file.size > 8 * 1024 * 1024) { $('#deposit-err').textContent = 'Screenshot is too large (max 8 MB).'; return; }
+    try {
+      depositDataUrl = await compressImage(file);
+      const prev = $('#deposit-preview'); prev.src = depositDataUrl; prev.hidden = false;
+      $('#deposit-ok').hidden = false;
+      $('#deposit-continue-btn').disabled = false;
+      $('#deposit-pick-btn').textContent = 'Change screenshot';
+    } catch (err) { $('#deposit-err').textContent = 'Could not read that image. Try another.'; }
   });
 
   // Admin

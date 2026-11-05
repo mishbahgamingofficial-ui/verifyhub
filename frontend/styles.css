@@ -125,6 +125,9 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .register-strip{padding:0 0 18px; border-bottom:1px solid var(--hairline); margin-bottom:18px}
 .register-strip b{display:block; font-size:15px; font-weight:750}
 .register-strip p{color:var(--muted); margin:4px 0 0; font-size:14px}
+.deposit-box{border:1px solid var(--hairline-strong); padding:18px; margin-top:14px}
+.deposit-box img{display:block; max-width:100%; max-height:260px; margin:14px auto 0; border:1px solid var(--hairline)}
+.deposit-ok{color:var(--pine); font-weight:700; margin-top:12px}
 
 /* ---------- The ticket: UID form with a perforated stub ---------- */
 .ticket{

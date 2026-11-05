@@ -179,6 +179,7 @@ def _public_submission(s: Submission) -> dict:
         "reference": s.reference,
         "status": s.status,
         "review_message": s.review_message,
+        "has_deposit_screenshot": bool(s.deposit_screenshot),
         "submitted_at": _iso(s.submitted_at),
         "updated_at": _iso(s.updated_at),
     }
@@ -189,6 +190,7 @@ def _admin_submission(s: Submission) -> dict:
     d.update(
         {
             "registration_uid": s.registration_uid,
+            "deposit_screenshot": s.deposit_screenshot,
             "user_telegram_id": s.user.telegram_id if s.user else None,
             "user_username": s.user.username if s.user else None,
             "user_first_name": s.user.first_name if s.user else None,
@@ -325,11 +327,24 @@ class SubmissionIn(BaseModel):
     registration_uid: str = Field(..., min_length=1, max_length=128)
     reference: str | None = Field(default=None, max_length=128)
     confirm_correct: bool = False
+    # Deposit proof screenshot from step 2 of the flow: a data URL
+    # (client-side compressed JPEG). Capped so one upload cannot bloat
+    # the free database; the client compresses to well under this.
+    deposit_screenshot: str | None = Field(default=None, max_length=3_000_000)
 
     @field_validator("registration_uid")
     @classmethod
     def strip_uid(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("deposit_screenshot")
+    @classmethod
+    def check_screenshot(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("data:image/"):
+            raise ValueError("deposit_screenshot must be an image data URL.")
+        return v
 
 
 @app.post("/api/submissions", status_code=201)
@@ -366,15 +381,27 @@ def create_submission(
             status_code=409,
             detail="You already have a submission under review. Wait for its outcome before submitting another.",
         )
+    screenshot = payload.deposit_screenshot
+    if screenshot is None:
+        # Resubmission (e.g. after info_required) without a fresh upload
+        # keeps the deposit proof already on file.
+        previous = (
+            db.query(Submission.deposit_screenshot)
+            .filter(Submission.user_id == user.id, Submission.deposit_screenshot.isnot(None))
+            .order_by(desc(Submission.submitted_at))
+            .first()
+        )
+        screenshot = previous[0] if previous else None
     row = Submission(
         user_id=user.id,
         registration_uid=uid,
         reference=(payload.reference.strip() if payload.reference else None),
+        deposit_screenshot=screenshot,
         status="pending_review",
     )
     db.add(row)
     db.flush()
-    _audit(db, identity.telegram_id, "submission_created", "submission", row.id, {"status": "pending_review"})
+    _audit(db, identity.telegram_id, "submission_created", "submission", row.id, {"status": "pending_review", "has_deposit_screenshot": bool(screenshot)})
     db.commit()
     try:
         db.refresh(row)

@@ -37,26 +37,49 @@
     <div id="phase-send">
       <div class="intro">
         <span class="eyebrow">One-time submission</span>
-        <h1>Send your UID <em>once.</em></h1>
-        <p>Send it — the form locks. Then watch the windows.</p>
+        <h1>Register, deposit, <em>send.</em></h1>
+        <p>Three steps — then watch the windows.</p>
       </div>
 
+      <div id="step-register">
       <div class="register-strip" id="register-card">
         <div>
           <b>1 · Register first</b>
           <p id="register-text">Register on the official site, then return with your UID.</p>
         </div>
         <div class="row">
-          <a class="btn" id="register-link" href="#" target="_blank" rel="noopener">Register Account <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg></a>
+          <a class="btn" id="register-link" href="#" target="_blank" rel="noopener">Register Now <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg></a>
           <button class="btn secondary" id="copy-link-btn" type="button">Copy link</button>
         </div>
         <p class="hint">Never share passwords or OTPs. We never ask for them.</p>
+        <div class="row"><button class="btn secondary full" id="id-created-btn" type="button">ID Created</button></div>
+      </div>
       </div>
 
+      <div id="step-deposit" hidden>
+        <div class="register-strip">
+          <div>
+            <b>2 · Deposit proof</b>
+            <p>Send your deposit screenshot. It is checked with your UID.</p>
+          </div>
+          <div class="deposit-box">
+            <input id="deposit-file" type="file" accept="image/*" hidden>
+            <button class="btn secondary" id="deposit-pick-btn" type="button">Choose screenshot</button>
+            <p class="hint">A clear photo of your deposit receipt works.</p>
+            <img id="deposit-preview" alt="Deposit screenshot preview" hidden>
+            <p class="deposit-ok" id="deposit-ok" hidden>Deposit Successful</p>
+            <p class="err" id="deposit-err" role="alert"></p>
+          </div>
+          <div class="row"><button class="btn full" id="deposit-continue-btn" type="button" disabled>Continue</button></div>
+          <div class="row"><button class="btn ghost full" id="deposit-back-btn" type="button">← Back</button></div>
+        </div>
+      </div>
+
+      <div id="step-uid" hidden>
       <div class="ticket" id="submit-card">
         <div class="ticket-stub" aria-hidden="true"><span>One<br>time</span></div>
         <div class="ticket-body">
-          <span class="eyebrow">2 · Your UID — send once</span>
+          <span class="eyebrow">3 · Your UID — send once</span>
           <form id="submit-form" novalidate>
             <label for="uid">Registration UID</label>
             <input id="uid" name="uid" type="text" autocomplete="off" inputmode="text" placeholder="e.g. ABC12345" aria-describedby="uid-err uid-hint">
@@ -69,7 +92,9 @@
             <div class="row"><button class="btn full" id="submit-btn" type="submit">Send UID once</button></div>
           </form>
           <p class="one-time-note">One send only. Check twice — then the form locks.</p>
+          <div class="row"><button class="btn ghost full" id="uid-back-btn" type="button">← Back to deposit</button></div>
         </div>
+      </div>
       </div>
 
       <!-- Sample windows, preview only: shows what Phase 2 looks like without a login. -->
@@ -84,7 +109,7 @@
     <!-- PHASE 2 — VERIFICATION WINDOWS -->
     <div id="phase-verify" hidden>
       <div class="intro">
-        <span class="eyebrow">Step 2 of 2 — Verification</span>
+        <span class="eyebrow">Verification</span>
         <h1>Your UID is <em>in.</em></h1>
         <p>Sent once, now locked. The windows update as an administrator works.</p>
       </div>
@@ -152,6 +177,6 @@
      the Mini App aggressively. Bump the ?v= number on every JS change
      so users get the new files instead of the cached old ones. -->
 <script src="config.js?v=2"></script>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

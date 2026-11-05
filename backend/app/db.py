@@ -59,6 +59,11 @@ class Submission(Base):
     # pending_review | under_review | verified | rejected | info_required
     status = Column(String(32), nullable=False, default="pending_review", index=True)
     review_message = Column(Text, nullable=True)  # user-visible admin message
+    # Deposit proof screenshot, uploaded in step 2 of the flow and sent with
+    # the UID submit as a data URL (client-side compressed JPEG). Stored as
+    # TEXT so no external file storage is needed; only the admin detail
+    # endpoint returns it, owner responses carry has_deposit_screenshot.
+    deposit_screenshot = Column(Text, nullable=True)
     submitted_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
     user = relationship("User", back_populates="submissions")
@@ -142,14 +147,32 @@ def ensure_bigint_telegram_ids(engine):
                 logger.info("Widened %s.%s to BIGINT.", table, column)
 
 
+def ensure_deposit_screenshot_column(engine):
+    """Add submissions.deposit_screenshot if it does not exist yet
+    (Postgres only). Idempotent; never raises."""
+    with engine.begin() as conn:
+        exists = conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'submissions' "
+                "AND column_name = 'deposit_screenshot'"
+            )
+        ).scalar()
+        if not exists:
+            logger.warning("Adding submissions.deposit_screenshot column.")
+            conn.execute(text("ALTER TABLE submissions ADD COLUMN deposit_screenshot TEXT"))
+            logger.info("Added submissions.deposit_screenshot column.")
+
+
 def make_session_factory(database_url: str):
     engine = make_engine(database_url)
     Base.metadata.create_all(engine)
     if not database_url.startswith("sqlite"):
         try:
             ensure_bigint_telegram_ids(engine)
+            ensure_deposit_screenshot_column(engine)
         except Exception:
-            logger.exception("Failed to widen telegram-id columns to BIGINT; submissions may 503.")
+            logger.exception("Failed to run startup schema migration; submissions may 503.")
     # Keep attributes loaded after commit so a failed db.refresh() after a
     # successful commit cannot turn a persisted change into a 500.
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
