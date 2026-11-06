@@ -919,7 +919,7 @@ def test_start_shows_dashboard_to_admin():
     user_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
     assert isinstance(user_kb, ReplyKeyboardMarkup)
     assert [b.text for row in user_kb.keyboard for b in row] == [
-        "👤 Profile", "📈 Stats",
+        "👤 Profile",
         "Help",
     ]
 
@@ -942,10 +942,10 @@ def test_admin_keyboard_has_panel_button_only_for_admin():
     user_kb = _user_reply_keyboard()
     user_labels = [b.text for row in user_kb.keyboard for b in row]
     assert user_labels == [
-        "👤 Profile", "📈 Stats",
+        "👤 Profile",
         "Help",
     ]
-    assert all(b.text not in ("👤 Profile", "📈 Stats")
+    assert all(b.text not in ("👤 Profile",)
                 for row in rows for b in row)
 
 
@@ -976,7 +976,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     help_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in help_kb.inline_keyboard] == [
-        ["Live Stats", "Admin se Sampark"],
+        ["Admin se Sampark"],
         ["Main Menu"],
     ]
 
@@ -1034,8 +1034,8 @@ def test_admin_keyboard_buttons_open_the_right_views():
 
 def test_user_keyboard_labels_open_their_views(monkeypatch):
     """The user's reply-keyboard buttons arrive as plain text and open
-    their views. (Signal Hub and Submit UID were removed from users;
-    only Profile, Stats and Help remain in the keyboard.)"""
+    their views. (Signal Hub, Submit UID and Stats were removed from
+    users; only Profile and Help remain in the keyboard.)"""
     import asyncio
 
     from app.bot import _handle_text
@@ -1045,10 +1045,9 @@ def test_user_keyboard_labels_open_their_views(monkeypatch):
         lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
     )
 
-    # Profile, Stats and Help.
+    # Profile and Help.
     for label, needle in [
         ("👤 Profile", "Member Profile"),
-        ("📈 Stats", "Live Stats"),
         ("Help", "Kaise Kaam Karta Hai"),
     ]:
         update, context, message = _fake_update(USER_ID)
@@ -1059,6 +1058,10 @@ def test_user_keyboard_labels_open_their_views(monkeypatch):
     # A removed label is just stray text now — the nudge, not a view.
     update, context, message = _fake_update(USER_ID)
     message.text = "🎯 Signal Hub"
+    asyncio.run(_handle_text(update, context))
+    assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
+    update, context, message = _fake_update(USER_ID)
+    message.text = "📈 Stats"
     asyncio.run(_handle_text(update, context))
     assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
 

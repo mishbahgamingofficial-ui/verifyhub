@@ -820,7 +820,8 @@ def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
 
 def _user_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
     """The user's everyday tools, in the keyboard area next to the message
-    box — Profile, Stats and Help. The top actions (Panel, Status,
+    box — Profile and Help. (Stats was removed from users; it lives only
+    in the admin panel as Live Stats.) The top actions (Panel, Status,
     Predictions) stay as inline buttons under the welcome message.
 
     NOTE: reply-keyboard buttons are plain text — Telegram does not let
@@ -829,7 +830,7 @@ def _user_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
     emoji next to a custom icon)."""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("👤 Profile"), KeyboardButton("📈 Stats")],
+            [KeyboardButton("👤 Profile")],
             [KeyboardButton("Help")],
         ],
         resize_keyboard=True,
@@ -1897,7 +1898,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ntext, nentities = _render([
         ("Neeche wale buttons ", None),
         ("👇", ("custom", EMOJI_POINT_DOWN)),
-        (" — Profile, Stats, Help.", None),
+        (" — Profile, Help.", None),
     ])
     await update.message.reply_text(
         ntext,
@@ -2135,17 +2136,11 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update.message.reply_text(prof_text, entities=prof_entities, reply_markup=prof_kb)
         return
-    if text == "📈 Stats":
-        context.user_data.pop("awaiting", None)
-        stext, sentities = _stats_text(user_id)
-        await update.message.reply_text(stext, entities=sentities)
-        return
     if text == "Help":
         context.user_data.pop("awaiting", None)
         htext, hentities = _help_text(admin=admin)
         help_rows = [
             [
-                InlineKeyboardButton("Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
                 InlineKeyboardButton("Admin se Sampark", callback_data="__support__", icon_custom_emoji_id=EMOJI_CHAT),
             ],
             [_back_button(admin)],
@@ -2464,7 +2459,6 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # buttons down and made every screen look different.
         help_rows = [
             [
-                InlineKeyboardButton("Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
                 InlineKeyboardButton("Admin se Sampark", callback_data="__support__", icon_custom_emoji_id=EMOJI_CHAT),
             ],
             [_back_button(admin)],
