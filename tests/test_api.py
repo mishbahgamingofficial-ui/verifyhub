@@ -605,6 +605,7 @@ def _fake_update(user_id, args=None):
     import app.bot as _handlers
 
     _handlers._last_action.clear()
+    _handlers._clear_admin_cache()
     # Real PTB Message/User objects always carry these attributes; the bot
     # reads first_name (welcome) and message.entities (broadcast preview).
     message = SimpleNamespace(reply_text=AsyncMock(), entities=(), text="")
@@ -767,6 +768,7 @@ def _fake_query(user_id, data):
     import app.bot as _handlers
 
     _handlers._last_action.clear()
+    _handlers._clear_admin_cache()
     message = SimpleNamespace(reply_text=AsyncMock())
     query = SimpleNamespace(
         data=data, from_user=SimpleNamespace(id=user_id, first_name="Test"), message=message,
@@ -802,6 +804,9 @@ def test_notify_admins_posts_alert_with_action_buttons(monkeypatch):
             return _Resp()
 
     monkeypatch.setattr(notif_module.httpx, "AsyncClient", _Client)
+    # The shared client is cached module-globally (speed batch): clear it
+    # so the fake above is actually used, and restore it afterwards.
+    monkeypatch.setattr(notif_module, "_telegram_client", None)
     sent = asyncio.run(notif_module.notify_admins(
         "tok", [111, 222],
         submission_id=7, registration_uid="UID123456", user_telegram_id=999,
@@ -1121,7 +1126,7 @@ def test_stats_button_shows_live_numbers(monkeypatch):
     assert "Users " in text and "Verified " in text
     assert "Signals (1m): 66.7% (2/3)" in text
     assert "Tape: ✅✅❌" in text
-    assert "Live 1m: period …0952 42s me khatam" in text
+    assert "Live 1m: #…0952 · 42s bache hain" in text
 
 
 def test_stats_button_without_live_period(monkeypatch):
@@ -1330,11 +1335,12 @@ def test_error_handler_alerts_admin_once_per_window():
     bot = SimpleNamespace(send_message=AsyncMock())
     ctx = SimpleNamespace(bot=bot, error=ValueError("boom"))
     asyncio.run(handlers._on_error(None, ctx))
-    assert bot.send_message.await_count == 1
-    assert bot.send_message.await_args.args[0] == ADMIN_ID
+    # One alert per admin (env allowlist + bot-added admins), not one total.
+    assert bot.send_message.await_count == len(handlers._all_admin_ids())
+    assert bot.send_message.await_args.args[0] in handlers._all_admin_ids()
     assert "ValueError" in bot.send_message.await_args.args[1]
     asyncio.run(handlers._on_error(None, ctx))
-    assert bot.send_message.await_count == 1  # throttled: no second alert
+    assert bot.send_message.await_count == len(handlers._all_admin_ids())  # throttled: no second alert
 
 
 def test_help_and_status_edit_in_place():
@@ -1541,7 +1547,11 @@ def test_submission_stays_pending_when_deposit_too_low(monkeypatch):
     assert r.status_code == 201
     sid = r.json()["id"]
     assert _submission_status(sid)[0] == "pending_review"
-    notified_user.assert_not_awaited()
+    # The user is told once that the UID was found but the deposit is
+    # short — no longer left waiting in silence (feature quick win).
+    notified_user.assert_awaited_once()
+    assert notified_user.await_args.args[2] == "pending_review"
+    assert "deposit abhi ₹0 hai" in notified_user.await_args.args[3]
     notified_admins.assert_awaited_once()
     assert not notified_admins.await_args.kwargs.get("auto_verified")
     note = notified_admins.await_args.kwargs.get("auto_check_note") or ""
@@ -1831,3 +1841,142 @@ def test_rename_reply_uses_premium_check_entity():
     entities = message.reply_text.await_args.kwargs["entities"]
     customs = [e.custom_emoji_id for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
     assert customs == [EMOJI_CHECK]
+
+
+# ---------------- Full bot upgrade (speed / look / features) ----------------
+
+def test_app_builds_with_concurrent_updates():
+    from app.bot import build_telegram_application
+
+    app = build_telegram_application("test-token-123", with_updater=False)
+    assert app.concurrent_updates == 8
+
+
+def test_fmt_ist_converts_utc_to_ist():
+    from datetime import datetime, timezone
+
+    from app.bot import _fmt_ist
+
+    assert _fmt_ist(datetime(2026, 11, 5, 23, 0, tzinfo=timezone.utc)) == "06 Nov, 04:30 AM IST"
+    assert _fmt_ist(None) == "—"
+
+
+def test_pending_view_buttons_are_labelled_and_have_sort_filter():
+    from app.bot import _pending_view
+
+    _make_submission(9001, "LBLVIEW1")
+    text, entities, kb = _pending_view()
+    assert "LBLVIEW1" in text
+    row0 = [b.text for b in kb.inline_keyboard[0]]
+    assert row0 == ["Approve", "Reject", "Info", "View"]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert "Purani pehle" in labels
+    assert any("Sab" in label for label in labels)
+    assert "Pending" in labels and "Review me" in labels
+
+
+def test_inspector_shows_auto_check_review_history_and_duplicate_flag():
+    import json
+    from datetime import datetime, timezone
+
+    from app.bot import _submission_detail_view
+    from app.db import ReviewHistory, Submission, get_session_factory
+
+    sid = _make_submission(9002, "INSPVIEW1")
+    dup = _make_submission(9003, "INSPVIEW1")  # same UID, different user
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        row = db.query(Submission).filter(Submission.id == sid).first()
+        row.auto_check_result = json.dumps({
+            "uid": "INSPVIEW1", "found": True, "deposit_total": 0,
+            "days_checked": 2, "per_day": {}, "passed": False,
+            "reason": "deposit_below_minimum",
+        })
+        row.auto_checked_at = datetime(2026, 11, 6, 10, 0, tzinfo=timezone.utc)
+        db.add(ReviewHistory(
+            submission_id=sid, admin_telegram_id=ADMIN_ID,
+            previous_status="pending_review", new_status="under_review",
+            reason="checking", internal_note="pehli baar",
+        ))
+        db.commit()
+    finally:
+        db.close()
+    text, entities, kb = _submission_detail_view(sid)
+    assert "Auto-check:" in text and "deposit" in text
+    assert "Review history:" in text and "pending_review → under_review" in text
+    assert "aur user ne bhi bheja hai" in text and f"#{dup}" in text
+
+
+def test_proof_button_only_when_screenshot_exists():
+    from app.bot import _submission_detail_view
+    from app.db import Submission, get_session_factory
+
+    sid = _make_submission(9004, "PROOFVIEW1")
+    _, _, kb = _submission_detail_view(sid)
+    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert f"admin:proof:{sid}" not in callbacks
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        row = db.query(Submission).filter(Submission.id == sid).first()
+        row.deposit_screenshot = "data:image/png;base64,iVBORw0KGgo="
+        db.commit()
+    finally:
+        db.close()
+    _, _, kb = _submission_detail_view(sid)
+    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert f"admin:proof:{sid}" in callbacks
+
+
+def test_support_rate_limit_blocks_sixth_message():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.bot import _handle_text, limiter
+
+    user_id = 9005
+    limiter._buckets.pop(f"support:{user_id}", None)
+    update, context, message = _fake_update(user_id)
+    context.bot = AsyncMock()
+    for i in range(6):
+        context.user_data["awaiting"] = "support_msg"
+        message.text = "meri submission kab hogi, please batao"
+        asyncio.run(_handle_text(update, context))
+    assert "thoda wait karo" in message.reply_text.await_args.args[0]
+    # The first five went to the admins; the sixth never alerted them.
+    assert context.bot.send_message.await_count == 5 * len(__import__("app.bot", fromlist=["_all_admin_ids"])._all_admin_ids())
+
+
+def test_broadcast_test_to_self_keeps_draft_and_send_writes_audit():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.bot import _button
+    from app.db import AuditEvent, get_session_factory
+
+    update, query, message = _fake_query(ADMIN_ID, "admin:broadcast:test")
+    context = SimpleNamespace(
+        user_data={"broadcast_text": "Test broadcast", "broadcast_entities": []},
+        bot=AsyncMock(),
+    )
+    asyncio.run(_button(update, context))
+    context.bot.send_message.assert_awaited_once()
+    assert context.bot.send_message.await_args.args[1] == "Test broadcast"
+    assert context.user_data.get("broadcast_text") == "Test broadcast"  # draft kept
+
+    update, query, message = _fake_query(ADMIN_ID, "admin:broadcast:all")
+    asyncio.run(_button(update, context))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        audit = (
+            db.query(AuditEvent)
+            .filter(AuditEvent.action == "broadcast")
+            .order_by(AuditEvent.created_at.desc())
+            .first()
+        )
+    finally:
+        db.close()
+    assert audit is not None
+    assert audit.actor_telegram_id == ADMIN_ID
+    assert "Test broadcast" in (audit.meta or "")

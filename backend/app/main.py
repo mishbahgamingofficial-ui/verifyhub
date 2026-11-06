@@ -49,11 +49,11 @@ from .auth import get_current_user, get_db_session, get_identity, require_admin
 from . import autoverify
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
-from .bot import notify_admins, notify_user
+from .bot import close_telegram_client, notify_admins, notify_user
 from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
-from .services import ACTIVE_STATUSES, STATUSES, change_submission_status, is_admin
+from .services import ACTIVE_STATUSES, STATUSES, change_submission_status, is_admin, list_db_admins
 
 logger = logging.getLogger("verifyhub.api")
 
@@ -155,6 +155,10 @@ async def lifespan(app: FastAPI):
         await auto_verify_task
     except asyncio.CancelledError:
         pass
+    try:
+        await close_telegram_client()
+    except Exception:
+        logger.exception("Error closing Telegram client.")
     if ptb is not None:
         try:
             await ptb.shutdown()
@@ -295,6 +299,11 @@ async def _process_new_submission(
     except Exception:
         logger.exception("Auto-check background task failed for submission %s.", submission_id)
     note = autoverify.auto_check_summary(outcome)
+    admin_ids = _all_admin_ids(settings)
+    # Resubmission flag: the admin triaging the alert cannot otherwise
+    # tell this user was already decided once without opening the
+    # inspector. One line in the alert fixes that.
+    prior_note = _prior_submission_note(settings, user_telegram_id, submission_id)
     if outcome and outcome.get("passed"):
         if settings.bot_token:
             try:
@@ -304,11 +313,11 @@ async def _process_new_submission(
                 )
             except Exception:
                 logger.exception("Auto-verify user notify failed (submission %s).", submission_id)
-        if settings.bot_token and settings.admin_telegram_ids:
+        if settings.bot_token and admin_ids:
             try:
                 await notify_admins(
                     settings.bot_token,
-                    list(settings.admin_telegram_ids),
+                    admin_ids,
                     submission_id=submission_id,
                     registration_uid=registration_uid,
                     user_telegram_id=user_telegram_id,
@@ -318,15 +327,34 @@ async def _process_new_submission(
                     mini_app_url=settings.mini_app_url,
                     auto_verified=True,
                     auto_check_note=note,
+                    resubmission_note=prior_note,
                 )
             except Exception:
                 logger.exception("Auto-verify admin notify failed (submission %s).", submission_id)
         return
-    if settings.bot_token and settings.admin_telegram_ids:
+    if outcome and outcome.get("reason") == "deposit_below_minimum":
+        # The UID was found but the deposit is short: tell the user once,
+        # so they are not left waiting in silence. Information only —
+        # never a verification promise; the daily re-check retries.
+        deposit = outcome.get("deposit_total") or 0
+        if settings.bot_token:
+            try:
+                await notify_user(
+                    settings.bot_token,
+                    user_telegram_id,
+                    "pending_review",
+                    f"Aapki UID mil gayi hai, deposit abhi ₹{deposit:g} hai. "
+                    "₹300 se zyada hone par daily re-check me dobara verify hoga — "
+                    "tab tak wait karo, dobara submit karne ki zaroorat nahi.",
+                    settings.mini_app_url,
+                )
+            except Exception:
+                logger.exception("Deposit-short user notify failed (submission %s).", submission_id)
+    if settings.bot_token and admin_ids:
         try:
             await notify_admins(
                 settings.bot_token,
-                list(settings.admin_telegram_ids),
+                admin_ids,
                 submission_id=submission_id,
                 registration_uid=registration_uid,
                 user_telegram_id=user_telegram_id,
@@ -335,9 +363,59 @@ async def _process_new_submission(
                 submitted_at=submitted_at,
                 mini_app_url=settings.mini_app_url,
                 auto_check_note=note,
+                resubmission_note=prior_note,
             )
         except Exception:
             logger.exception("Admin notify failed (submission %s).", submission_id)
+
+
+def _all_admin_ids(settings: Settings) -> list[int]:
+    """Env allowlist + bot-added admins.
+
+    The old code alerted only the env allowlist, so a bot-added admin
+    could decide in the panel but never heard about new submissions.
+    Support tickets already used the combined list; submissions now do
+    too. A DB failure falls back to the env list only.
+    """
+    ids = list(settings.admin_telegram_ids)
+    try:
+        with get_session_factory(settings.database_url)() as db:
+            ids += [r.telegram_id for r in list_db_admins(db)]
+    except Exception:
+        logger.exception("Could not load bot-added admins; alerting env admins only.")
+    return list(dict.fromkeys(ids))
+
+
+_PRIOR_STATUS_WORDS = {
+    "verified": "verify ho gayi thi",
+    "rejected": "reject ho gayi thi",
+    "info_required": "info mangi gayi thi",
+    "under_review": "review me thi",
+    "pending_review": "pending thi",
+}
+
+
+def _prior_submission_note(settings: Settings, user_telegram_id: int, submission_id: int) -> str | None:
+    """One alert line when this is a resubmission, else None."""
+    try:
+        with get_session_factory(settings.database_url)() as db:
+            user = db.query(User).filter(User.telegram_id == user_telegram_id).first()
+            if user is None:
+                return None
+            prior = (
+                db.query(Submission.id, Submission.status)
+                .filter(Submission.user_id == user.id, Submission.id != submission_id)
+                .order_by(desc(Submission.submitted_at))
+                .first()
+            )
+    except Exception:
+        logger.exception("Prior-submission lookup failed (submission %s).", submission_id)
+        return None
+    if prior is None:
+        return None
+    prior_id, prior_status = prior
+    words = _PRIOR_STATUS_WORDS.get(prior_status, prior_status)
+    return f"⚠️ Dobara submission — pehle #{prior_id} {words}."
 
 
 def _audit(db: Session, actor: int, action: str, record_type: str, record_id: int | None, meta: dict | None = None):

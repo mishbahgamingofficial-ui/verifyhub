@@ -23,13 +23,17 @@ import asyncio
 from contextlib import contextmanager
 import csv
 from datetime import datetime, timedelta, timezone
+import base64
 import io
+import json
 import logging
 import math
 import time
+from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import desc, func
+from sqlalchemy import asc, desc, func, select, text
+from sqlalchemy.orm import load_only
 from telegram import (
     BotCommandScopeChat,
     BotCommandScopeDefault,
@@ -52,10 +56,12 @@ from telegram.ext import (
     filters,
 )
 
+from .autoverify import auto_check_summary
 from .clean_users import clean as _clean_users
 from .config import get_settings
-from .db import Admin, SignalRecord, Submission, User, get_session_factory, mask_uid
+from .db import Admin, AuditEvent, ReviewHistory, SignalRecord, Submission, User, get_session_factory, mask_uid
 from .prediction import get_live
+from .rate_limit import RateLimitExceeded, limiter
 from .services import (
     ACTIVE_STATUSES,
     STATUSES,
@@ -251,6 +257,33 @@ async def _post_telegram_json(client: httpx.AsyncClient, url: str, payload: dict
     return False
 
 
+_telegram_client: httpx.AsyncClient | None = None
+
+
+def _get_telegram_client() -> httpx.AsyncClient:
+    """One shared Bot API client for all out-of-band notifications.
+
+    notify_user used to open a fresh TLS connection per notification, so
+    a bulk approve paid 6 handshakes in a row. The client lives for the
+    process lifetime (httpx clients are safe for concurrent use); the
+    API lifespan teardown closes it via close_telegram_client()."""
+    global _telegram_client
+    if _telegram_client is None:
+        _telegram_client = httpx.AsyncClient(timeout=8)
+    return _telegram_client
+
+
+async def close_telegram_client() -> None:
+    """Shut the shared Bot API client down (API lifespan teardown)."""
+    global _telegram_client
+    if _telegram_client is not None:
+        try:
+            await _telegram_client.aclose()
+        except Exception:
+            pass
+        _telegram_client = None
+
+
 async def notify_user(
     bot_token: str,
     telegram_id: int,
@@ -270,8 +303,8 @@ async def notify_user(
     segments.append((headline, "bold"))
     if message:
         segments.append(("\n\n", None))
-        segments.append(("Review message:", "bold"))
-        segments.append((f"\n{message}", "italic"))
+        segments.append(("Admin ka note:", "bold"))
+        segments.append((f"\n{message}", "blockquote"))
     segments.append(("\n\n", None))
     segments.append((
         "Verification se financial recovery ki guarantee nahi milti. "
@@ -285,7 +318,7 @@ async def notify_user(
         if status == "verified":
             sep = "&" if "?" in mini_app_url else "?"
             predict_url = f"{mini_app_url}{sep}startapp=prediction"
-            buttons.append([{"text": "Predictions Kholo", "web_app": {"url": predict_url}, "icon_custom_emoji_id": EMOJI_TARGET}])
+            buttons.append([{"text": "Predictions Kholo", "web_app": {"url": predict_url}, "icon_custom_emoji_id": EMOJI_DIAMOND}])
     buttons.append([
         {"text": "Meri Status Dekho", "callback_data": "__status__", "style": "success", "icon_custom_emoji_id": EMOJI_CHART},
     ])
@@ -300,12 +333,11 @@ async def notify_user(
         "reply_markup": {"inline_keyboard": buttons},
     }
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            return await _post_telegram_json(
-                client,
-                f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                payload,
-            )
+        return await _post_telegram_json(
+            _get_telegram_client(),
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            payload,
+        )
     except Exception:
         _notif_logger.exception("Telegram notify error (telegram_id redacted from payload)")
         return False
@@ -324,6 +356,7 @@ async def notify_admins(
     mini_app_url: str | None,
     auto_verified: bool = False,
     auto_check_note: str | None = None,
+    resubmission_note: str | None = None,
 ) -> int:
     """Alert every admin the moment a user submits a UID, with one-tap actions.
 
@@ -341,7 +374,8 @@ async def notify_admins(
     if not bot_token or not admin_ids:
         return 0
     who = f"@{username}" if username else (first_name or str(user_telegram_id))
-    when = submitted_at.strftime("%Y-%m-%d %H:%M UTC") if submitted_at else "—"
+    when = _fmt_ist(submitted_at)
+    resubmit = f"\n{resubmission_note}" if resubmission_note else ""
     if auto_verified:
         text, text_entities = _render([
             ("✅", ("custom", EMOJI_CHECK)),
@@ -352,7 +386,8 @@ async def notify_admins(
             (
                 f"\nUser: {who} ({user_telegram_id})\n"
                 f"Bheji gayi: {when}\n\n"
-                f"{auto_check_note or 'UID mili aur deposit ₹300 se zyada confirm hua.'}\n\n"
+                f"{auto_check_note or 'UID mili aur deposit ₹300 se zyada confirm hua.'}"
+                f"{resubmit}\n\n"
                 "Kuch karne ki zaroorat nahi — user ko verify hone ki khabar mil gayi.",
                 None,
             ),
@@ -370,7 +405,7 @@ async def notify_admins(
                 f"\nUser: {who} ({user_telegram_id})\n"
                 f"Bheji gayi: {when}\n\n"
                 "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho."
-                f"{note}",
+                f"{note}{resubmit}",
                 None,
             ),
         ])
@@ -382,9 +417,9 @@ async def notify_admins(
                     {"text": "Info Chahiye", "callback_data": f"admin:info:{submission_id}:n", "icon_custom_emoji_id": EMOJI_INFO},
                 ],
                 [
-                    {"text": "Review Me", "callback_data": f"admin:review:{submission_id}:n", "icon_custom_emoji_id": EMOJI_SEARCH},
-                    {"text": "Presets / Note", "callback_data": f"admin:view:{submission_id}", "icon_custom_emoji_id": EMOJI_LIGHTNING},
-                    {"text": "↩️ User ko Message", "callback_data": f"admin:reply:{user_telegram_id}"},
+                    {"text": "Under Review Karo", "callback_data": f"admin:review:{submission_id}:n", "icon_custom_emoji_id": EMOJI_SEARCH},
+                    {"text": "Presets / Note", "callback_data": f"admin:view:{submission_id}", "icon_custom_emoji_id": EMOJI_WRITE},
+                    {"text": "User ko Message", "callback_data": f"admin:reply:{user_telegram_id}", "icon_custom_emoji_id": EMOJI_CHAT},
                 ],
             ]
         }
@@ -395,17 +430,59 @@ async def notify_admins(
     sent = 0
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            for admin_id in dict.fromkeys(admin_ids):
-                payload: dict = {"chat_id": admin_id, "text": text, "entities": [e.to_dict() for e in text_entities], "reply_markup": keyboard}
-                try:
-                    if await _post_telegram_json(client, url, payload):
-                        sent += 1
-                except Exception:
-                    _notif_logger.exception("Telegram admin notify error (admin id redacted)")
+        client = _get_telegram_client()
+        for admin_id in dict.fromkeys(admin_ids):
+            payload: dict = {"chat_id": admin_id, "text": text, "entities": [e.to_dict() for e in text_entities], "reply_markup": keyboard}
+            try:
+                if await _post_telegram_json(client, url, payload):
+                    sent += 1
+            except Exception:
+                _notif_logger.exception("Telegram admin notify error (admin id redacted)")
     except Exception:
         _notif_logger.exception("Telegram admin notify client error")
     return sent
+
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _ist(dt):
+    """A stored timestamp as IST: Postgres keeps UTC (naive in SQLite),
+    the admin and the users read the clock in IST (UTC+5:30)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST)
+
+
+def _fmt_ist(dt) -> str:
+    """One timestamp format for the whole bot, e.g. '06 Nov, 08:00 PM IST'."""
+    d = _ist(dt)
+    return d.strftime("%d %b, %I:%M %p IST") if d else "—"
+
+
+def _today_start_ist() -> datetime:
+    """Today's midnight in IST, as an aware UTC datetime for DB filters."""
+    return (
+        datetime.now(IST)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
+
+
+def _wait_text(since) -> str:
+    """How long a submission has waited, e.g. '26h se wait' / '5m se wait'."""
+    start = _ist(since)
+    if start is None:
+        return ""
+    mins = max(0, int((datetime.now(IST) - start).total_seconds() // 60))
+    if mins < 60:
+        return f"{mins}m se wait"
+    hours = mins // 60
+    if hours < 48:
+        return f"{hours}h se wait"
+    return f"{hours // 24}d se wait"
 
 
 # Per-user last-action timestamps for the rate limit (see _too_fast).
@@ -430,6 +507,36 @@ def _too_fast(user_id: int, window: float = 0.7) -> bool:
         _last_action.clear()
     _last_action[user_id] = now
     return False
+
+
+async def _admin_reply(update, context, text: str, entities=None, reply_markup=None):
+    """Send an admin view, replacing the previous one.
+
+    Every admin label tap used to send a brand-new message, so the chat
+    filled with stale queues, each with live action buttons. Now only
+    one admin view stays on screen: the previous bot-sent view message
+    is deleted first (best-effort — it may already be gone). The admin's
+    own messages and alert messages are never touched.
+    """
+    prev_id = None
+    try:
+        prev_id = context.user_data.pop("_last_admin_view_id", None)
+    except Exception:
+        prev_id = None
+    if prev_id:
+        try:
+            bot = getattr(context, "bot", None)
+            chat_id = getattr(update.effective_chat, "id", None)
+            if bot is not None and chat_id is not None:
+                await bot.delete_message(chat_id, prev_id)
+        except Exception:
+            pass
+    msg = await update.message.reply_text(text, entities=entities, reply_markup=reply_markup)
+    try:
+        context.user_data["_last_admin_view_id"] = msg.message_id
+    except Exception:
+        pass
+    return msg
 
 
 async def _edit_or_reply(query, text: str, entities=None, reply_markup=None) -> None:
@@ -461,7 +568,7 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     _last_error_alert = now
     try:
-        for admin_id in settings.admin_telegram_ids:
+        for admin_id in _all_admin_ids():
             err_text, err_entities = _render([
                 ("⚠️", ("custom", EMOJI_WARNING)),
                 (f" VerifyHub bot error: {type(context.error).__name__}: {context.error}", None),
@@ -608,6 +715,9 @@ def _help_text(admin: bool = False):
         ("\n• ", None),
         ("Profile", "bold"),
         (" — VIP tier, badges aur admin support", None),
+        ("\n• ", None),
+        ("Predictions", "bold"),
+        (" — WinGo signals, verify hone ke baad khulta hai", None),
     ]
     if admin:
         segments += [
@@ -633,18 +743,45 @@ def _help_text(admin: bool = False):
 
 
 def _is_admin(telegram_id: int) -> bool:
-    """Server-side admin check: env allowlist OR the bot-added admins table."""
+    """Server-side admin check: env allowlist OR the bot-added admins table.
+
+    The admins table is tiny and rarely changes, so its ids are cached
+    for 60s — otherwise every tap from every ordinary user pays a DB
+    round-trip just to learn they are not an admin. The cache is
+    cleared whenever an admin is added or removed, so a removal takes
+    effect at once; the 60s staleness only covers a removal made
+    outside this process (there is no such path today)."""
     if settings.is_admin(telegram_id):
         return True
+    return telegram_id in _db_admin_ids()
+
+
+_admin_ids_cache: dict = {"ids": None, "at": 0.0}
+_ADMIN_CACHE_TTL = 60.0
+
+
+def _db_admin_ids() -> list[int]:
+    """Bot-added admin ids, cached for _ADMIN_CACHE_TTL seconds."""
+    now = time.monotonic()
+    if _admin_ids_cache["ids"] is not None and now - _admin_ids_cache["at"] < _ADMIN_CACHE_TTL:
+        return _admin_ids_cache["ids"]
     with _db_session() as db:
-        return is_admin(db, telegram_id, settings)
+        ids = [r.telegram_id for r in list_db_admins(db)]
+    _admin_ids_cache["ids"] = ids
+    _admin_ids_cache["at"] = now
+    return ids
+
+
+def _clear_admin_cache() -> None:
+    """Drop the cached admin ids (call after add/remove, and in tests)."""
+    _admin_ids_cache["ids"] = None
+    _admin_ids_cache["at"] = 0.0
 
 
 def _all_admin_ids() -> list[int]:
     """Combined list of config admin IDs and DB admin IDs."""
     ids = list(settings.admin_telegram_ids)
-    with _db_session() as db:
-        ids += [r.telegram_id for r in list_db_admins(db)]
+    ids += _db_admin_ids()
     return list(dict.fromkeys(ids))
 
 
@@ -655,14 +792,14 @@ def _is_user_verified(telegram_id: int) -> bool:
         if user is None:
             return False
         return (
-            db.query(Submission)
+            db.query(Submission.id)
             .filter(Submission.user_id == user.id, Submission.status == "verified")
             .first()
             is not None
         )
 
 
-def _badges_for(telegram_id: int) -> list[str]:
+def _badges_for(telegram_id: int, admin: bool | None = None) -> list[str]:
     """Badges earned from real data only — nothing invented or bought.
 
     👑 Admin — platform administrator.
@@ -672,9 +809,14 @@ def _badges_for(telegram_id: int) -> list[str]:
     🏆 OG Member — among the first 50 users ever.
     📅 Veteran — account older than 30 days.
     🔁 Comeback — submitted more than once.
+
+    Pass ``admin`` when the caller already ran the admin check, so this
+    does not pay for a second one.
     """
     badges: list[str] = []
-    if _is_admin(telegram_id):
+    if admin is None:
+        admin = _is_admin(telegram_id)
+    if admin:
         badges.append("👑 Admin")
     with _db_session() as db:
         user = db.query(User).filter(User.telegram_id == telegram_id).first()
@@ -682,6 +824,7 @@ def _badges_for(telegram_id: int) -> list[str]:
             return badges
         submissions = (
             db.query(Submission)
+            .options(load_only(Submission.status, Submission.submitted_at))
             .filter(Submission.user_id == user.id)
             .order_by(Submission.submitted_at.asc())
             .all()
@@ -901,11 +1044,35 @@ def _broadcast_targets(mode: str | bool) -> list[int]:
         return [r[0] for r in rows]
 
 
+def _broadcast_audience_counts() -> dict[str, int]:
+    """All four broadcast audience sizes in ONE aggregate query.
+
+    The preview used to call _broadcast_counts() (2 scans) plus
+    _broadcast_targets("pending") and ("rejected") — 4 full-table scans
+    per preview and per pin toggle. Pending is derived: users with no
+    verified submission."""
+    with _db_session() as db:
+        row = db.execute(
+            text(
+                "SELECT "
+                "(SELECT COUNT(*) FROM users) AS all_n, "
+                "(SELECT COUNT(DISTINCT user_id) FROM submissions WHERE status = 'verified') AS verified_n, "
+                "(SELECT COUNT(DISTINCT user_id) FROM submissions WHERE status IN ('rejected', 'info_required')) AS rejected_n"
+            )
+        ).first()
+    total, verified_n, rejected_n = (row[0], row[1], row[2]) if row else (0, 0, 0)
+    return {
+        "all": total,
+        "verified": verified_n,
+        "pending": total - verified_n,
+        "rejected": rejected_n,
+    }
+
+
 def _broadcast_counts() -> tuple[int, int]:
     """(all users, verified users) for backward-compatible broadcast preview."""
-    all_ids = _broadcast_targets("all")
-    verified_ids = _broadcast_targets("verified")
-    return len(all_ids), len(verified_ids)
+    counts = _broadcast_audience_counts()
+    return counts["all"], counts["verified"]
 
 
 async def _send_broadcast(
@@ -919,40 +1086,62 @@ async def _send_broadcast(
     """Send one message to every id; returns (delivered, blocked, failed).
 
     Supports entity preservation and optional auto-pinning in user chats.
+    Sends run with bounded concurrency (10 at a time) instead of one by
+    one: the old sequential loop paid N×50ms of sleep plus one RTT per
+    user, which is minutes at mass volume — and, before concurrent
+    updates, froze the whole bot while it ran. Flood control still
+    applies per send (RetryAfter is honoured with one retry).
     """
-    delivered = blocked = failed = 0
     total = len(target_ids)
-    for idx, chat_id in enumerate(target_ids, 1):
-        try:
-            sent_msg = await bot.send_message(chat_id, text, entities=entities)
-            delivered += 1
-            if pin_message and sent_msg:
-                try:
-                    await bot.pin_chat_message(chat_id, sent_msg.message_id, disable_notification=True)
-                except Exception:
-                    pass
-        except Forbidden:
-            blocked += 1
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
+    semaphore = asyncio.Semaphore(10)
+    done = 0
+    delivered = blocked = failed = 0
+
+    async def _send_one(chat_id: int) -> str:
+        async with semaphore:
             try:
                 sent_msg = await bot.send_message(chat_id, text, entities=entities)
-                delivered += 1
                 if pin_message and sent_msg:
                     try:
                         await bot.pin_chat_message(chat_id, sent_msg.message_id, disable_notification=True)
                     except Exception:
                         pass
+                return "delivered"
+            except Forbidden:
+                return "blocked"
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    sent_msg = await bot.send_message(chat_id, text, entities=entities)
+                    if pin_message and sent_msg:
+                        try:
+                            await bot.pin_chat_message(chat_id, sent_msg.message_id, disable_notification=True)
+                        except Exception:
+                            pass
+                    return "delivered"
+                except Exception:
+                    return "failed"
             except Exception:
-                failed += 1
-        except Exception:
+                return "failed"
+
+    async def _send_tracked(chat_id: int) -> str:
+        nonlocal done, delivered, blocked, failed
+        outcome = await _send_one(chat_id)
+        done += 1
+        if outcome == "delivered":
+            delivered += 1
+        elif outcome == "blocked":
+            blocked += 1
+        else:
             failed += 1
-        if progress_cb and idx % 20 == 0 and idx < total:
+        if progress_cb and done % 20 == 0 and done < total:
             try:
-                await progress_cb(idx, total, delivered, blocked, failed)
+                await progress_cb(done, total, delivered, blocked, failed)
             except Exception:
                 pass
-        await asyncio.sleep(0.05)
+        return outcome
+
+    await asyncio.gather(*[_send_tracked(cid) for cid in target_ids])
     return delivered, blocked, failed
 
 
@@ -985,7 +1174,7 @@ def _progress_bar(status: str) -> str:
         "under_review": "[████░░] 2/3",
         "info_required": "[████░░] 2/3 (Action Chahiye)",
         "verified": "[██████] 3/3",
-        "rejected": "[██████] 3/3",
+        "rejected": "[██████] 3/3 — Faisla: Reject",
     }
     return mapping.get(status, "[██░░░░] 1/3")
 
@@ -1065,13 +1254,13 @@ def _status_card(
         (mask_uid(row.registration_uid), "code"),
         ("\n", None),
         ("Bheja: ", "bold"),
-        (row.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if row.submitted_at else "—", None),
+        (_fmt_ist(row.submitted_at), None),
     ]
     if getattr(row, "updated_at", None) and row.updated_at != row.submitted_at:
         segments += [
             ("\n", None),
             ("Update hua: ", "bold"),
-            (row.updated_at.strftime("%Y-%m-%d %H:%M UTC"), None),
+            (_fmt_ist(row.updated_at), None),
         ]
     segments.append(("\n\n", None))
     segments += _window_segments(status)
@@ -1083,7 +1272,6 @@ def _status_card(
         segments.append(("\n\n", None))
         segments.append((f"Pichli submissions ({len(history)}):", "bold"))
         for h in history[:4]:
-            h_when = h.submitted_at.strftime("%m-%d %H:%M") if h.submitted_at else "—"
             segments.append(("\n", None))
             segments += _status_icon_segments(h.status)
             segments += [
@@ -1091,7 +1279,7 @@ def _status_card(
                 (f"#{h.id}", "code"),
                 (" · ", None),
                 (mask_uid(h.registration_uid), "code"),
-                (f" · {h_when}", None),
+                (f" · {_fmt_ist(h.submitted_at)}", None),
             ]
     if badges:
         segments += [("\n\n", None), ("Badges: ", "bold")] + _badge_segments(badges)
@@ -1100,7 +1288,7 @@ def _status_card(
 
 def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool = False) -> tuple[str, list, InlineKeyboardMarkup]:
     """Rich user profile card with VIP Tier, Join Rank, Account Age, Submission Summary & Support."""
-    badges = _badges_for(telegram_id)
+    badges = _badges_for(telegram_id, admin=admin)
     with _db_session() as db:
         user = db.query(User).filter(User.telegram_id == telegram_id).first()
         total_users = db.query(User).count()
@@ -1108,6 +1296,10 @@ def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool =
             rank = db.query(User).filter(User.id <= user.id).count()
             subs = (
                 db.query(Submission)
+                .options(load_only(
+                    Submission.id, Submission.registration_uid,
+                    Submission.status, Submission.submitted_at,
+                ))
                 .filter(Submission.user_id == user.id)
                 .order_by(desc(Submission.submitted_at))
                 .all()
@@ -1184,6 +1376,10 @@ def _latest_status(telegram_id: int) -> tuple[str, Submission | None, User | Non
             return "not_submitted", None, None
         row = (
             db.query(Submission)
+            .options(load_only(
+                Submission.id, Submission.registration_uid, Submission.status,
+                Submission.submitted_at, Submission.updated_at, Submission.review_message,
+            ))
             .filter(Submission.user_id == user.id)
             .order_by(desc(Submission.submitted_at))
             .first()
@@ -1198,6 +1394,10 @@ def _user_submissions(telegram_id: int, limit: int = 5) -> list[Submission]:
             return []
         return (
             db.query(Submission)
+            .options(load_only(
+                Submission.id, Submission.registration_uid, Submission.status,
+                Submission.submitted_at,
+            ))
             .filter(Submission.user_id == user.id)
             .order_by(desc(Submission.submitted_at))
             .limit(limit)
@@ -1205,13 +1405,20 @@ def _user_submissions(telegram_id: int, limit: int = 5) -> list[Submission]:
         )
 
 
-def _signal_stats_summary(rows: list[SignalRecord]) -> dict:
-    """Compute settled count, win rate, last-20 rolling rate, current streak, and last-10 tape."""
+def _signal_stats_summary(rows: list[SignalRecord], *, total: int | None = None, wins: int | None = None) -> dict:
+    """Compute settled count, win rate, last-20 rolling rate, current streak, and last-10 tape.
+
+    ``rows`` is the settled window (newest 200 is plenty — the streak
+    breaks quickly and the tape only needs 10). ``total``/``wins`` come
+    from SQL aggregates when given, so the all-time accuracy stays exact
+    without loading every row ever recorded."""
     settled = [r for r in rows if r.correct is not None]
     # Ensure chronological order (oldest -> newest) for streak & tape
     settled.sort(key=lambda r: getattr(r, "id", 0))
-    total = len(settled)
-    wins = sum(1 for r in settled if r.correct)
+    if total is None:
+        total = len(settled)
+    if wins is None:
+        wins = sum(1 for r in settled if r.correct)
     acc = round(wins / total * 100, 1) if total else 0.0
 
     recent_20 = settled[-20:]
@@ -1252,6 +1459,37 @@ def _signal_stats_summary(rows: list[SignalRecord]) -> dict:
     }
 
 
+def _signal_stats(timer: str) -> dict:
+    """Signal summary for one timer, with bounded loads.
+
+    signal_records grows by ~4,300 rows/day (1m + 30s), forever — the
+    old code loaded ALL of it into Python on every Stats/Analytics tap.
+    Totals come from SQL aggregates (exact, no row transfer); the
+    streak/tape/last-20 window comes from the newest 200 settled rows,
+    so the cost stays flat no matter how old the bot gets."""
+    with _db_session() as db:
+        total = (
+            db.query(func.count(SignalRecord.id))
+            .filter(SignalRecord.timer == timer, SignalRecord.correct.isnot(None))
+            .scalar()
+            or 0
+        )
+        wins = (
+            db.query(func.count(SignalRecord.id))
+            .filter(SignalRecord.timer == timer, SignalRecord.correct.is_(True))
+            .scalar()
+            or 0
+        )
+        recent = (
+            db.query(SignalRecord)
+            .filter(SignalRecord.timer == timer, SignalRecord.correct.isnot(None))
+            .order_by(desc(SignalRecord.id))
+            .limit(200)
+            .all()
+        )
+    return _signal_stats_summary(recent, total=total, wins=wins)
+
+
 def _tape_segments(tape: str) -> list:
     """Last-10 accuracy tape as _render segments — premium ✅/❌ per
     result, so the tape reads as icons instead of plain text."""
@@ -1268,11 +1506,6 @@ def _tape_segments(tape: str) -> list:
     return segments
 
 
-def _confidence_meter(pct: float) -> str:
-    filled = max(0, min(10, round(pct / 10)))
-    return "█" * filled + "░" * (10 - filled)
-
-
 def _admin_dashboard() -> tuple[str, list]:
     """The admin panel, as one clean message: queue, verdicts, today.
 
@@ -1282,14 +1515,13 @@ def _admin_dashboard() -> tuple[str, list]:
     in the keyboard area, so this returns text only.
     """
     with _db_session() as db:
-        total = db.query(Submission).count()
         total_users = db.query(User).count()
         counts = {s: 0 for s in STATUSES}
         for st, n in db.query(Submission.status, func.count()).group_by(Submission.status).all():
             counts[st] = n
-        now_utc = datetime.now(timezone.utc)
-        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = _today_start_ist()
         today = db.query(Submission).filter(Submission.submitted_at >= today_start).count()
+    total = sum(counts.values())  # the group-by already counted every row
 
     decided = counts.get("verified", 0) + counts.get("rejected", 0)
     approval_rate = f"{round(counts.get('verified', 0) / decided * 100, 1)}%" if decided else "—"
@@ -1328,9 +1560,12 @@ def _admin_dashboard() -> tuple[str, list]:
 
 def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
     """Deep analytics screen: 7-day intake sparkline, conversion funnel, turnaround speed & signal health."""
-    now_utc = datetime.now(timezone.utc)
-    today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-    seven_days_ago = today_start - timedelta(days=6)
+    today_ist = datetime.now(IST).date()
+    seven_days_ago_ist = today_ist - timedelta(days=6)
+    seven_days_ago = (
+        datetime.combine(seven_days_ago_ist, datetime.min.time(), tzinfo=IST)
+        .astimezone(timezone.utc)
+    )
 
     with _db_session() as db:
         total_users = db.query(User).count()
@@ -1341,29 +1576,32 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
             .scalar()
             or 0
         )
-        recent_subs = (
-            db.query(Submission)
+        # Only the timestamps are needed for the buckets — never load
+        # the rows (each carries a deposit screenshot up to 3 MB).
+        recent_times = (
+            db.query(Submission.submitted_at)
             .filter(Submission.submitted_at >= seven_days_ago)
             .all()
         )
         decided_subs = (
             db.query(Submission)
+            .options(load_only(Submission.submitted_at, Submission.updated_at))
             .filter(Submission.status.in_(("verified", "rejected", "info_required")))
             .order_by(desc(Submission.submitted_at))
             .limit(200)
             .all()
         )
-        sig_1m = db.query(SignalRecord).filter(SignalRecord.timer == "1m").all()
-        sig_30s = db.query(SignalRecord).filter(SignalRecord.timer == "30s").all()
+    s1 = _signal_stats("1m")
+    s30 = _signal_stats("30s")
 
-    # 7-day daily buckets
+    # 7-day daily buckets, by IST date.
     daily_counts = [0] * 7
     day_labels = []
     for i in range(7):
-        d = (seven_days_ago + timedelta(days=i)).date()
+        d = seven_days_ago_ist + timedelta(days=i)
         day_labels.append(d.strftime("%a"))
-        for s in recent_subs:
-            if s.submitted_at and s.submitted_at.date() == d:
+        for (ts,) in recent_times:
+            if ts is not None and _ist(ts).date() == d:
                 daily_counts[i] += 1
 
     spark = _sparkline(daily_counts)
@@ -1385,8 +1623,6 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
 
     sub_rate = round(users_with_subs / total_users * 100, 1) if total_users else 0.0
     ver_rate = round(verified_users / total_users * 100, 1) if total_users else 0.0
-    s1 = _signal_stats_summary(sig_1m)
-    s30 = _signal_stats_summary(sig_30s)
 
     segments = [
         ("📈", ("custom", EMOJI_CHART_UP)),
@@ -1461,26 +1697,90 @@ def _admins_view() -> tuple[str, list, InlineKeyboardMarkup]:
     return text, entities, InlineKeyboardMarkup(keyboard_rows)
 
 
-def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
-    """The review queue as text plus one-tap action buttons per row, pagination & bulk approve."""
+_QUEUE_FILTERS = {"all": ACTIVE_STATUSES, "pending": ["pending_review"], "review": ["under_review"]}
+_QUEUE_FILTER_LABELS = {"all": "Sab", "pending": "Pending", "review": "Review me"}
+
+
+def _queue_rows(db, page: int, sort: str, filter_mode: str):
+    """The queue's page of rows, shared by the view, the bulk-ask
+    warning and bulk approve — so bulk always approves exactly what
+    the admin is looking at."""
+    order = desc(Submission.submitted_at) if sort == "new" else asc(Submission.submitted_at)
+    return (
+        db.query(Submission)
+        .options(load_only(
+            Submission.id, Submission.user_id, Submission.registration_uid,
+            Submission.status, Submission.submitted_at, Submission.auto_check_result,
+        ))
+        .filter(Submission.status.in_(_QUEUE_FILTERS[filter_mode]))
+        .order_by(order)
+        .offset(page * PENDING_PAGE_SIZE)
+        .limit(PENDING_PAGE_SIZE)
+        .all()
+    )
+
+
+def _auto_marker(result_json: str | None) -> str | None:
+    """One compact auto-check marker for a queue row, e.g. '✓auto',
+    'UID nahi mili' or 'deposit ₹0' — the full sentence lives in the
+    inspector."""
+    if not result_json:
+        return None
+    try:
+        result = json.loads(result_json)
+    except (ValueError, TypeError):
+        return None
+    if result.get("passed"):
+        return "✓auto"
+    reason = result.get("reason")
+    if reason == "uid_not_found":
+        return "UID nahi mili"
+    if reason == "deposit_below_minimum":
+        return f"deposit ₹{(result.get('deposit_total') or 0):g}"
+    return None
+
+
+def _auto_failed(result_json: str | None) -> bool:
+    """True when the auto-check ran and did NOT pass (bulk-approve guard)."""
+    marker = _auto_marker(result_json)
+    return marker is not None and marker != "✓auto"
+
+
+def _parse_queue_callback(data: str) -> tuple[int, str, str]:
+    """Parse admin:pending:<page>[:<sort>][:<filter>] — old short forms
+    (no page, or page only) still parse to newest + Sab."""
+    parts = data.split(":")
+    try:
+        page = int(parts[2])
+    except (IndexError, ValueError):
+        page = 0
+    sort = parts[3] if len(parts) > 3 and parts[3] in ("new", "old") else "new"
+    filter_mode = parts[4] if len(parts) > 4 and parts[4] in _QUEUE_FILTERS else "all"
+    return page, sort, filter_mode
+
+
+def _pending_view(page: int = 0, sort: str = "new", filter_mode: str = "all") -> tuple[str, list, InlineKeyboardMarkup]:
+    """The review queue as text plus one-tap action buttons per row, pagination & bulk approve.
+
+    Sort toggles newest/oldest; filter chips narrow to Pending or
+    Review-me only. Old callback data (admin:pending, admin:pending:<page>,
+    admin:refresh:p) still parses — it just means newest + Sab.
+    """
     page = max(0, page)
+    if sort not in ("new", "old"):
+        sort = "new"
+    if filter_mode not in _QUEUE_FILTERS:
+        filter_mode = "all"
     with _db_session() as db:
         total_pending = (
             db.query(Submission)
-            .filter(Submission.status.in_(ACTIVE_STATUSES))
+            .filter(Submission.status.in_(_QUEUE_FILTERS[filter_mode]))
             .count()
         )
         total_pages = max(1, math.ceil(total_pending / PENDING_PAGE_SIZE))
         if page >= total_pages:
             page = total_pages - 1
-        rows = (
-            db.query(Submission)
-            .filter(Submission.status.in_(ACTIVE_STATUSES))
-            .order_by(desc(Submission.submitted_at))
-            .offset(page * PENDING_PAGE_SIZE)
-            .limit(PENDING_PAGE_SIZE)
-            .all()
-        )
+        rows = _queue_rows(db, page, sort, filter_mode)
         owners = {}
         if rows:
             owners = {
@@ -1489,7 +1789,7 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
             }
 
     nav = [[
-        InlineKeyboardButton("Refresh Karo", callback_data=f"admin:pending:{page}" if page else "admin:refresh:p", icon_custom_emoji_id=EMOJI_REFRESH),
+        InlineKeyboardButton("Refresh Karo", callback_data=f"admin:pending:{page}:{sort}:{filter_mode}", icon_custom_emoji_id=EMOJI_REFRESH),
     ]]
     if not rows:
         text, entities = _render([
@@ -1503,11 +1803,12 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
         ("📋", None),
         (" ", None),
         ("Pending submissions", "bold"),
-        (f" (kul {total_pending} · page {page + 1}/{total_pages}):", None),
+        (f" (kul {total_pending} · page {page + 1}/{total_pages}", None),
+        (" · Purani pehle" if sort == "old" else " · Nayi pehle", None),
+        (f" · {_QUEUE_FILTER_LABELS[filter_mode]}):", None),
     ]
     keyboard_rows = []
     for r in rows:
-        when = r.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if r.submitted_at else "—"
         segments.append(("\n", None))
         segments += _status_icon_segments(r.status)
         segments += [
@@ -1519,44 +1820,51 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
             (STATUS_LABELS.get(r.status, r.status), "bold"),
             (" · user ", None),
             (str(owners.get(r.user_id, "?")), "code"),
-            (f" · {when}", None),
+            (f" · {_fmt_ist(r.submitted_at)}", None),
+            (f" · {_wait_text(r.submitted_at)}", None),
         ]
+        marker = _auto_marker(r.auto_check_result)
+        if marker:
+            segments += [(" · ", None), (marker, "italic")]
         keyboard_rows.append([
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:approve:{r.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:reject:{r.id}:p", icon_custom_emoji_id=EMOJI_CROSS),
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:info:{r.id}:p", icon_custom_emoji_id=EMOJI_INFO),
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:view:{r.id}", icon_custom_emoji_id=EMOJI_SEARCH),
+            InlineKeyboardButton("Approve", callback_data=f"admin:approve:{r.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
+            InlineKeyboardButton("Reject", callback_data=f"admin:reject:{r.id}:p", icon_custom_emoji_id=EMOJI_CROSS),
+            InlineKeyboardButton("Info", callback_data=f"admin:info:{r.id}:p", icon_custom_emoji_id=EMOJI_INFO),
+            InlineKeyboardButton("View", callback_data=f"admin:view:{r.id}", icon_custom_emoji_id=EMOJI_SEARCH),
         ])
 
     if len(rows) > 1:
         keyboard_rows.append([
             InlineKeyboardButton(
                 f"Page ki Sab Approve Karo ({len(rows)} items)",
-                callback_data=f"admin:bulk_ask:{page}",
+                callback_data=f"admin:bulk_ask:{page}:{sort}:{filter_mode}",
                 icon_custom_emoji_id=EMOJI_LIGHTNING,
             )
         ])
 
+    sort_label = "Purani pehle" if sort == "new" else "Nayi pehle"
+    sort_target = "old" if sort == "new" else "new"
+    keyboard_rows.append([
+        InlineKeyboardButton(sort_label, callback_data=f"admin:pending:0:{sort_target}:{filter_mode}", icon_custom_emoji_id=EMOJI_REFRESH),
+    ])
+    chips = [
+        InlineKeyboardButton(
+            ("• " if key == filter_mode else "") + label,
+            callback_data=f"admin:pending:0:{sort}:{key}",
+        )
+        for key, label in _QUEUE_FILTER_LABELS.items()
+    ]
+    keyboard_rows.append(chips)
+
     if total_pages > 1:
         pager = []
         if page > 0:
-            pager.append(InlineKeyboardButton("Peeche", callback_data=f"admin:pending:{page - 1}", icon_custom_emoji_id=EMOJI_LEFT))
-        pager.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="admin:pending", icon_custom_emoji_id=EMOJI_PAGE))
+            pager.append(InlineKeyboardButton("Peeche", callback_data=f"admin:pending:{page - 1}:{sort}:{filter_mode}", icon_custom_emoji_id=EMOJI_LEFT))
+        pager.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data=f"admin:pending:{page}:{sort}:{filter_mode}", icon_custom_emoji_id=EMOJI_PAGE))
         if page + 1 < total_pages:
-            pager.append(InlineKeyboardButton("Aage", callback_data=f"admin:pending:{page + 1}", icon_custom_emoji_id=EMOJI_RIGHT))
+            pager.append(InlineKeyboardButton("Aage", callback_data=f"admin:pending:{page + 1}:{sort}:{filter_mode}", icon_custom_emoji_id=EMOJI_RIGHT))
         keyboard_rows.append(pager)
 
-    segments += [
-        ("\n\n", None),
-        ("✅", ("custom", EMOJI_CHECK)),
-        (" dabao approve ke liye, ", "italic"),
-        ("❌", ("custom", EMOJI_CROSS)),
-        (" reject ke liye, ", "italic"),
-        ("ℹ️", ("custom", EMOJI_INFO)),
-        (" info ke liye, ya ", "italic"),
-        ("🔎", ("custom", EMOJI_SEARCH)),
-        (" preset reasons aur custom notes ke liye.", "italic"),
-    ]
     text, entities = _render(segments)
     return text, entities, InlineKeyboardMarkup(keyboard_rows + nav)
 
@@ -1564,7 +1872,17 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
 def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboardMarkup]:
     """Detailed inspector for a single submission with 1-tap presets, custom note & direct user reply."""
     with _db_session() as db:
-        row = db.query(Submission).filter(Submission.id == submission_id).first()
+        row = (
+            db.query(Submission)
+            .options(load_only(
+                Submission.id, Submission.user_id, Submission.registration_uid,
+                Submission.status, Submission.submitted_at, Submission.updated_at,
+                Submission.review_message, Submission.auto_check_result,
+                Submission.auto_checked_at,
+            ))
+            .filter(Submission.id == submission_id)
+            .first()
+        )
         if row is None:
             text, entities = _render([
                 (f"Submission #{submission_id} nahi mili.", "bold"),
@@ -1578,18 +1896,65 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
         owner_tid = owner.telegram_id if owner else "?"
         user_subs = (
             db.query(Submission)
+            .options(load_only(
+                Submission.id, Submission.registration_uid,
+                Submission.status, Submission.submitted_at,
+            ))
             .filter(Submission.user_id == row.user_id)
             .order_by(desc(Submission.submitted_at))
             .limit(5)
             .all()
         )
+        # Auto-check outcome (already stored on the row), the last
+        # review decisions, other users who sent the same UID, and
+        # whether a deposit screenshot exists — the four facts the
+        # admin decides on. The screenshot itself stays unloaded
+        # (up to 3 MB); the proof button fetches it on demand.
+        auto_result = None
+        if row.auto_check_result:
+            try:
+                auto_result = json.loads(row.auto_check_result)
+            except (ValueError, TypeError):
+                auto_result = None
+        history = (
+            db.query(ReviewHistory)
+            .filter(ReviewHistory.submission_id == submission_id)
+            .order_by(desc(ReviewHistory.created_at))
+            .limit(3)
+            .all()
+        )
+        dup_ids = [
+            r[0]
+            for r in db.query(Submission.id)
+            .filter(
+                Submission.registration_uid == row.registration_uid,
+                Submission.user_id != row.user_id,
+            )
+            .order_by(desc(Submission.submitted_at))
+            .limit(3)
+            .all()
+        ]
+        dup_total = (
+            db.query(func.count(Submission.id))
+            .filter(
+                Submission.registration_uid == row.registration_uid,
+                Submission.user_id != row.user_id,
+            )
+            .scalar()
+            or 0
+        )
+        has_proof = (
+            db.query(Submission.id)
+            .filter(
+                Submission.id == submission_id,
+                Submission.deposit_screenshot.isnot(None),
+            )
+            .first()
+            is not None
+        )
 
-    when = row.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if row.submitted_at else "—"
-    updated = (
-        row.updated_at.strftime("%Y-%m-%d %H:%M UTC")
-        if getattr(row, "updated_at", None)
-        else "—"
-    )
+    when = _fmt_ist(row.submitted_at)
+    updated = _fmt_ist(getattr(row, "updated_at", None))
     segments = [
         ("🔎", ("custom", EMOJI_SEARCH)),
         (" ", None),
@@ -1621,13 +1986,56 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
             ("Review Note:", "bold"),
             (f"\n{row.review_message}", "blockquote"),
         ]
+    if auto_result is not None:
+        auto_note = auto_check_summary(auto_result) or f"Check hua — {auto_result.get('reason', 'pata nahi')}"
+        segments += [
+            ("\n\n", None),
+            ("Auto-check: ", "bold"),
+            (auto_note, None),
+        ]
+        if row.auto_checked_at:
+            segments += [
+                (" (", None),
+                (_fmt_ist(row.auto_checked_at), None),
+                (")", None),
+            ]
+    if dup_total:
+        others = ", ".join(f"#{i}" for i in dup_ids)
+        if dup_total > len(dup_ids):
+            others += ", …"
+        segments += [
+            ("\n\n", None),
+            ("⚠️", ("custom", EMOJI_WARNING)),
+            (" ", None),
+            (
+                f"Ye UID {dup_total} aur {'users' if dup_total > 1 else 'user'} "
+                f"ne bhi bheja hai ({others}) — duplicate ho sakta hai.",
+                "bold",
+            ),
+        ]
+    if history:
+        segments += [
+            ("\n\n", None),
+            ("Review history:", "bold"),
+        ]
+        for h in history:
+            segments += [
+                ("\n", None),
+                (f"{h.previous_status} → {h.new_status}", "bold"),
+                (" · admin ", None),
+                (str(h.admin_telegram_id), "code"),
+                (f" · {_fmt_ist(h.created_at)}", None),
+            ]
+            if h.reason:
+                segments += [(" — ", None), (h.reason, None)]
+            if h.internal_note:
+                segments += [(" (note: ", None), (h.internal_note, None), (")", None)]
     if len(user_subs) > 1:
         segments += [
             ("\n\n", None),
             ("User ki Submission History:", "bold"),
         ]
         for s in user_subs:
-            s_when = s.submitted_at.strftime("%m-%d %H:%M") if s.submitted_at else "—"
             segments.append(("\n", None))
             segments += _status_icon_segments(s.status)
             segments += [
@@ -1635,13 +2043,13 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
                 (f"#{s.id}", "code"),
                 (" · ", None),
                 (s.registration_uid, "code"),
-                (f" · {s_when}", None),
+                (f" · {_fmt_ist(s.submitted_at)}", None),
             ]
 
     kb_rows = [
         [
             InlineKeyboardButton("Approve", callback_data=f"admin:approve:{row.id}:p", style="success", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton("Review Me Mark Karo", callback_data=f"admin:review:{row.id}:p", icon_custom_emoji_id=EMOJI_SEARCH),
+            InlineKeyboardButton("Under Review Karo", callback_data=f"admin:review:{row.id}:p", icon_custom_emoji_id=EMOJI_SEARCH),
         ],
         [
             InlineKeyboardButton(
@@ -1684,9 +2092,13 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
             InlineKeyboardButton("Info + Custom Note", callback_data=f"admin:note:info:{row.id}:p", icon_custom_emoji_id=EMOJI_WRITE),
         ],
     ]
+    if has_proof:
+        kb_rows.append([
+            InlineKeyboardButton("Deposit Proof Dekho", callback_data=f"admin:proof:{row.id}", icon_custom_emoji_id=EMOJI_PAGE),
+        ])
     if isinstance(owner_tid, int):
         kb_rows.append([
-            InlineKeyboardButton(f"↩️ {owner_tid} ko Direct Message Bhejo", callback_data=f"admin:reply:{owner_tid}"),
+            InlineKeyboardButton(f"{owner_tid} ko Direct Message Bhejo", callback_data=f"admin:reply:{owner_tid}", icon_custom_emoji_id=EMOJI_CHAT),
         ])
     text, entities = _render(segments)
     return text, entities, InlineKeyboardMarkup(kb_rows)
@@ -1704,13 +2116,25 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
             # one, otherwise Postgres raises NumericValueOutOfRange.
             sid = _safe_submission_id(num)
             if sid is not None:
-                by_id = db.query(Submission).filter(Submission.id == sid).first()
+                by_id = (
+                    db.query(Submission)
+                    .options(load_only(
+                        Submission.id, Submission.user_id, Submission.registration_uid,
+                        Submission.status, Submission.submitted_at,
+                    ))
+                    .filter(Submission.id == sid)
+                    .first()
+                )
                 if by_id:
                     matched_rows.append(by_id)
             user = db.query(User).filter(User.telegram_id == num).first()
             if user:
                 user_rows = (
                     db.query(Submission)
+                    .options(load_only(
+                        Submission.id, Submission.user_id, Submission.registration_uid,
+                        Submission.status, Submission.submitted_at,
+                    ))
                     .filter(Submission.user_id == user.id)
                     .order_by(desc(Submission.submitted_at))
                     .limit(8)
@@ -1721,6 +2145,10 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
                         matched_rows.append(r)
         uid_rows = (
             db.query(Submission)
+            .options(load_only(
+                Submission.id, Submission.user_id, Submission.registration_uid,
+                Submission.status, Submission.submitted_at,
+            ))
             .filter(Submission.registration_uid.ilike(f"%{query_str.strip()}%"))
             .order_by(desc(Submission.submitted_at))
             .limit(8)
@@ -1740,6 +2168,7 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
     if not matched_rows:
         text, entities = _render([
             (f"'{query_str}' se koi submission ya user nahi mila.", "bold"),
+            ("\n\nUID, Telegram ID ya #SubmissionID se search karo.", None),
         ])
         return (
             text,
@@ -1757,7 +2186,6 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
     ]
     kb_rows = []
     for r in matched_rows[:6]:
-        when = r.submitted_at.strftime("%Y-%m-%d %H:%M") if r.submitted_at else "—"
         segments.append(("\n", None))
         segments += _status_icon_segments(r.status)
         segments += [
@@ -1767,13 +2195,13 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
             (r.registration_uid, "code"),
             (" · user ", None),
             (str(owners.get(r.user_id, "?")), "code"),
-            (f" · {when}", None),
+            (f" · {_fmt_ist(r.submitted_at)}", None),
         ]
         kb_rows.append([
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:approve:{r.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:reject:{r.id}:p", icon_custom_emoji_id=EMOJI_CROSS),
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:info:{r.id}:p", icon_custom_emoji_id=EMOJI_INFO),
-            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:view:{r.id}", icon_custom_emoji_id=EMOJI_SEARCH),
+            InlineKeyboardButton("Approve", callback_data=f"admin:approve:{r.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
+            InlineKeyboardButton("Reject", callback_data=f"admin:reject:{r.id}:p", icon_custom_emoji_id=EMOJI_CROSS),
+            InlineKeyboardButton("Info", callback_data=f"admin:info:{r.id}:p", icon_custom_emoji_id=EMOJI_INFO),
+            InlineKeyboardButton("View", callback_data=f"admin:view:{r.id}", icon_custom_emoji_id=EMOJI_SEARCH),
         ])
     kb_rows.append([
         InlineKeyboardButton("Nayi Search", callback_data="admin:search", icon_custom_emoji_id=EMOJI_MAGNIFIER),
@@ -1785,7 +2213,15 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
 def _export_submissions_csv() -> tuple[bytes, int]:
     """Generate a UTF-8 CSV dump of up to 2,000 recent submissions for admin audit."""
     with _db_session() as db:
-        rows = db.query(Submission).order_by(desc(Submission.submitted_at)).limit(2000).all()
+        rows = (
+            db.query(Submission)
+            .options(load_only(
+                Submission.id, Submission.user_id, Submission.registration_uid,
+                Submission.status, Submission.submitted_at, Submission.updated_at,
+                Submission.review_message,
+            ))
+            .order_by(desc(Submission.submitted_at)).limit(2000).all()
+        )
         owners = {}
         if rows:
             owners = {
@@ -1819,13 +2255,49 @@ def _export_submissions_csv() -> tuple[bytes, int]:
 
 
 def _export_users_csv() -> tuple[bytes, int]:
-    """Generate a UTF-8 CSV dump of users and their submission counts/statuses."""
+    """Generate a UTF-8 CSV dump of users and their submission counts/statuses.
+
+    One aggregate query: the old code loaded EVERY submission ever
+    (``db.query(Submission).all()``) to count them per user in Python.
+    The latest UID/status come from correlated subqueries, so no rows
+    are ever materialised here.
+    """
+    latest_uid_sq = (
+        select(Submission.registration_uid)
+        .where(Submission.user_id == User.id)
+        .order_by(desc(Submission.submitted_at))
+        .limit(1)
+        .scalar_subquery()
+    )
+    latest_status_sq = (
+        select(Submission.status)
+        .where(Submission.user_id == User.id)
+        .order_by(desc(Submission.submitted_at))
+        .limit(1)
+        .scalar_subquery()
+    )
+    verified_sq = (
+        select(func.count(Submission.id))
+        .where(Submission.user_id == User.id, Submission.status == "verified")
+        .scalar_subquery()
+    )
     with _db_session() as db:
-        users = db.query(User).order_by(desc(User.id)).limit(2000).all()
-        subs = db.query(Submission).all()
-        subs_by_user: dict[int, list[Submission]] = {}
-        for s in subs:
-            subs_by_user.setdefault(s.user_id, []).append(s)
+        rows = (
+            db.query(
+                User.id,
+                User.telegram_id,
+                User.first_seen_at,
+                func.count(Submission.id),
+                verified_sq,
+                latest_uid_sq,
+                latest_status_sq,
+            )
+            .outerjoin(Submission, Submission.user_id == User.id)
+            .group_by(User.id, User.telegram_id, User.first_seen_at)
+            .order_by(desc(User.id))
+            .limit(2000)
+            .all()
+        )
 
         buf = io.StringIO()
         writer = csv.writer(buf)
@@ -1838,24 +2310,17 @@ def _export_users_csv() -> tuple[bytes, int]:
             "latest_uid",
             "latest_status",
         ])
-        for u in users:
-            u_subs = sorted(
-                subs_by_user.get(u.id, []),
-                key=lambda x: x.submitted_at or datetime.min.replace(tzinfo=timezone.utc),
-                reverse=True,
-            )
-            latest = u_subs[0] if u_subs else None
-            is_ver = any(x.status == "verified" for x in u_subs)
+        for user_id, telegram_id, first_seen_at, total_subs, verified_n, latest_uid, latest_status in rows:
             writer.writerow([
-                u.id,
-                u.telegram_id,
-                u.first_seen_at.strftime("%Y-%m-%d %H:%M:%S") if getattr(u, "first_seen_at", None) else "",
-                len(u_subs),
-                "yes" if is_ver else "no",
-                latest.registration_uid if latest else "",
-                latest.status if latest else "not_submitted",
+                user_id,
+                telegram_id,
+                first_seen_at.strftime("%Y-%m-%d %H:%M:%S") if first_seen_at else "",
+                total_subs,
+                "yes" if verified_n else "no",
+                latest_uid or "",
+                latest_status or "not_submitted",
             ])
-        return buf.getvalue().encode("utf-8"), len(users)
+        return buf.getvalue().encode("utf-8"), len(rows)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1871,9 +2336,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # the navigation lives in the keyboard area. No welcome text,
         # no user menu, nothing else.
         dtext, dentities = _admin_dashboard()
-        await update.message.reply_text(
-            dtext, entities=dentities, reply_markup=_admin_reply_keyboard()
-        )
+        await _admin_reply(update, context, dtext, entities=dentities, reply_markup=_admin_reply_keyboard())
         return
     verified = _is_user_verified(user_id)
     text, entities = _welcome_text(
@@ -1896,15 +2359,13 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         total_subs = db.query(Submission).count()
         verified = db.query(Submission).filter(Submission.status == "verified").count()
         pending = db.query(Submission).filter(Submission.status.in_(ACTIVE_STATUSES)).count()
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = _today_start_ist()
         verified_today = db.query(Submission).filter(
             Submission.status == "verified", Submission.updated_at >= today_start
         ).count()
-        acc_rows_1m = db.query(SignalRecord).filter(SignalRecord.timer == "1m").all()
-        acc_rows_30s = db.query(SignalRecord).filter(SignalRecord.timer == "30s").all()
 
-    s1 = _signal_stats_summary(acc_rows_1m)
-    s30 = _signal_stats_summary(acc_rows_30s)
+    s1 = _signal_stats("1m")
+    s30 = _signal_stats("30s")
     badges = _badges_for(telegram_id)
     tier = _vip_tier(badges, "✅ Verified" in badges, 1 if badges else 0)
 
@@ -1950,18 +2411,19 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
             (" Signals (30s): ", None),
             (f"{s30['acc']}%", "bold"),
             (
-                f" ({s30['wins']}/{s30['total']}) · Best streak {s30['best_win_streak']}W",
+                f" ({s30['wins']}/{s30['total']}) · Best streak {s30['best_win_streak']}W"
+                "\nTape: ",
                 None,
             ),
-        ]
+        ] + _tape_segments(s30['tape'])
     try:
         live = get_live()
         segments += [
-            ("\n\nLive 1m: period …", None),
+            ("\n\nLive 1m: #…", None),
             (live["period"][-4:], "code"),
-            (" ", None),
+            (" · ", None),
             (f"{live['ends_in_seconds']}s", "bold"),
-            (" me khatam", None),
+            (" bache hain", None),
         ]
     except Exception:
         logger.debug("Live period unavailable for stats.")
@@ -2000,7 +2462,7 @@ def _clean_users_preview(summary: dict) -> tuple[str, list, InlineKeyboardMarkup
         ),
     ])
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Haan, delete karo", callback_data="admin:clean:confirm", style="danger", icon_custom_emoji_id=EMOJI_CHECK),
+        InlineKeyboardButton("Haan, delete karo", callback_data="admin:clean:confirm", style="danger", icon_custom_emoji_id=EMOJI_CHECK),
         InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
     ]])
     return text, entities, keyboard
@@ -2010,8 +2472,9 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Plain-text replies to interactive bot prompts (support message,
     admin reply, search, custom note, broadcast, add admin).
 
-    The navigation buttons are reply-keyboard buttons, so tapping one
-    arrives here as plain text; stray text just gets the nudge below.
+    The admin panel's buttons are reply-keyboard buttons, so tapping one
+    arrives here as plain text; user tools are message buttons now, so
+    stray text just gets the nudge below.
     """
     if not update.effective_user or not update.message:
         return
@@ -2049,22 +2512,26 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if text == "🛡 Admin Panel":
             context.user_data.pop("awaiting", None)
             dtext, dentities = _admin_dashboard()
-            await update.message.reply_text(dtext, entities=dentities)
+            # Text only — the reply keyboard is already on screen from
+            # /start; re-attaching it here would be redundant.
+            await _admin_reply(update, context, dtext, entities=dentities)
             return
         if text == "📈 Analytics":
             context.user_data.pop("awaiting", None)
             atext, aentities, akeyboard = _admin_analytics_view()
-            await update.message.reply_text(atext, entities=aentities, reply_markup=akeyboard)
+            await _admin_reply(update, context, atext, entities=aentities, reply_markup=akeyboard)
             return
         if text == "📋 Pending":
             context.user_data.pop("awaiting", None)
             ptext, pentities, pkeyboard = _pending_view()
-            await update.message.reply_text(ptext, entities=pentities, reply_markup=pkeyboard)
+            await _admin_reply(update, context, ptext, entities=pentities, reply_markup=pkeyboard)
             return
         if text == "🔍 Search":
             context.user_data.pop("awaiting", None)
             context.user_data["awaiting"] = "search_uid"
-            await update.message.reply_text(
+            await _admin_reply(
+                update,
+                context,
                 "Search karne ke liye Registration UID, User Telegram ID, ya #SubmissionID bhejo:",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
@@ -2074,17 +2541,21 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if text == "👥 Admins":
             context.user_data.pop("awaiting", None)
             atext, aentities, akeyboard = _admins_view()
-            await update.message.reply_text(atext, entities=aentities, reply_markup=akeyboard)
+            await _admin_reply(update, context, atext, entities=aentities, reply_markup=akeyboard)
             return
         if text == "📊 Live Stats":
             context.user_data.pop("awaiting", None)
-            stext, sentities = _stats_text(user_id)
-            await update.message.reply_text(stext, entities=sentities)
+            # Sync DB work + a blocking provider call — off the event
+            # loop, so one stats tap never freezes the whole bot.
+            stext, sentities = await asyncio.to_thread(_stats_text, user_id)
+            await _admin_reply(update, context, stext, entities=sentities)
             return
         if text == "📣 Broadcast":
             context.user_data.pop("awaiting", None)
             context.user_data["awaiting"] = "broadcast"
-            await update.message.reply_text(
+            await _admin_reply(
+                update,
+                context,
                 "Broadcast message bhejo (bold, italic, code aur custom emoji chalenge).",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast"),
@@ -2094,10 +2565,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if text == "📥 Export CSV":
             context.user_data.pop("awaiting", None)
             csv_bytes, count = _export_submissions_csv()
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+            stamp = datetime.now(IST).strftime("%Y%m%d_%H%M")
             await update.message.reply_document(
                 document=InputFile(io.BytesIO(csv_bytes), filename=f"verifyhub_submissions_{stamp}.csv"),
-                caption=f"📥 Exported {count} submissions ({stamp} UTC).",
+                caption=f"📥 {count} submissions export kar di ({stamp} IST).",
                 caption_entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_INBOX)],
             )
             return
@@ -2105,7 +2576,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data.pop("awaiting", None)
             summary = _clean_users(get_session_factory(settings.database_url), settings, dry_run=True)
             ctext, centities, ckeyboard = _clean_users_preview(summary)
-            await update.message.reply_text(ctext, entities=centities, reply_markup=ckeyboard)
+            await _admin_reply(update, context, ctext, entities=centities, reply_markup=ckeyboard)
             return
 
     # Profile and Help are message buttons now (inline menu) — typing
@@ -2121,6 +2592,16 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reply_markup=None if admin else _keyboard(user_id=user_id),
             )
             return
+        # One user must not be able to flood every admin: 5 support
+        # messages per hour, then a polite wait instead of an alert.
+        try:
+            limiter.check(f"support:{user_id}", 5, 3600)
+        except RateLimitExceeded:
+            await update.message.reply_text(
+                "Aapne bahut saare messages bhej diye hain — thoda wait karo, admin jald reply karega.",
+                reply_markup=None if admin else _keyboard(user_id=user_id),
+            )
+            return
         status, latest_row, _ = _latest_status(user_id)
         who = f"@{update.effective_user.username}" if update.effective_user.username else (update.effective_user.first_name or str(user_id))
         uid_info = latest_row.registration_uid if latest_row else "None"
@@ -2133,7 +2614,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ])
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("↩️ User ko Reply Karo", callback_data=f"admin:reply:{user_id}"),
+                InlineKeyboardButton("User ko Reply Karo", callback_data=f"admin:reply:{user_id}", icon_custom_emoji_id=EMOJI_CHAT),
                 InlineKeyboardButton("User ko Inspect Karo", callback_data=f"admin:finduser:{user_id}", icon_custom_emoji_id=EMOJI_MAGNIFIER),
             ]
         ])
@@ -2176,7 +2657,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 entities=msg_entities,
                 reply_markup=InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("↩️ Admin ko Reply Karo", callback_data="__support__"),
+                        InlineKeyboardButton("Admin ko Reply Karo", callback_data="__support__", icon_custom_emoji_id=EMOJI_CHAT),
                         InlineKeyboardButton("Meri Status Dekho", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
                     ]
                 ]),
@@ -2228,9 +2709,9 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data["broadcast_text"] = text
         context.user_data["broadcast_entities"] = list(update.message.entities or [])
         context.user_data["broadcast_pin"] = False
-        total, verified = _broadcast_counts()
-        pending_cnt = len(_broadcast_targets("pending"))
-        rejected_cnt = len(_broadcast_targets("rejected"))
+        counts = _broadcast_audience_counts()
+        total, verified = counts["all"], counts["verified"]
+        pending_cnt, rejected_cnt = counts["pending"], counts["rejected"]
         preview, preview_entities = _broadcast_preview_text(text, total, verified, pending_cnt, rejected_cnt)
         await update.message.reply_text(
             preview,
@@ -2257,6 +2738,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not ok:
             await update.message.reply_text(error)
             return
+        _clear_admin_cache()  # the new admin must pass _is_admin at once
         context.user_data.pop("awaiting", None)
         reply_text, entities = _render([
             ("✅", ("custom", EMOJI_CHECK)),
@@ -2302,9 +2784,10 @@ def _broadcast_preview_keyboard(
         [InlineKeyboardButton(f"Sabko Bhejo ({total})", callback_data="admin:broadcast:all", icon_custom_emoji_id=EMOJI_MEGAPHONE)],
         [InlineKeyboardButton(f"Sirf Verified ko Bhejo ({verified})", callback_data="admin:broadcast:verified", icon_custom_emoji_id=EMOJI_CHECK)],
         [
-            InlineKeyboardButton(f"Unverified ({pending_cnt})", callback_data="admin:broadcast:pending", icon_custom_emoji_id=EMOJI_HOURGLASS),
+            InlineKeyboardButton(f"Pending ({pending_cnt})", callback_data="admin:broadcast:pending", icon_custom_emoji_id=EMOJI_HOURGLASS),
             InlineKeyboardButton(f"Rejected/Info ({rejected_cnt})", callback_data="admin:broadcast:rejected", icon_custom_emoji_id=EMOJI_CROSS),
         ],
+        [InlineKeyboardButton("Pehle khud ko test bhejo", callback_data="admin:broadcast:test", icon_custom_emoji_id=EMOJI_MAIL)],
         [InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast")],
     ])
 
@@ -2340,12 +2823,17 @@ async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, me
         "info_required": "aur jaankari mangi",
         "under_review": "review me daal diya",
     }.get(to_status, to_status)
-    text, entities = _render([
+    segments = [
         ("✅", ("custom", EMOJI_CHECK)),
         (f" Submission #{row.id} {verb}.", None),
-    ])
+    ]
     if row.review_message:
-        text += f"\nReview message: {row.review_message}"
+        segments += [
+            ("\n\n", None),
+            ("Admin ka note:", "bold"),
+            (f"\n{row.review_message}", "blockquote"),
+        ]
+    text, entities = _render(segments)
     text += (
         "\nUser ko notify kar diya gaya hai."
         if notified
@@ -2358,10 +2846,17 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.from_user:
         return
-    await query.answer()
     admin_id = query.from_user.id
     if _too_fast(admin_id):
+        # Answer the tap instead of dropping it silently — a double-tap
+        # on Refresh used to do nothing at all, which reads as a dead
+        # button. The toast is the answer; nothing else runs.
+        try:
+            await query.answer("Thoda ruk…")
+        except Exception:
+            pass
         return
+    await query.answer()
     admin = _is_admin(admin_id)
     data = query.data or ""
 
@@ -2429,7 +2924,8 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(help_rows))
 
     elif data == "__stats__":
-        text, entities = _stats_text(admin_id)
+        # Sync DB work + a blocking provider call — off the event loop.
+        text, entities = await asyncio.to_thread(_stats_text, admin_id)
         stats_rows = [
             [InlineKeyboardButton("Stats Refresh Karo", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)],
             [_back_button(admin)],
@@ -2456,7 +2952,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data == "__status__":
         status, row, _ = _latest_status(admin_id)
         history = _user_submissions(admin_id, limit=4)
-        text, entities = _status_card(status, row, badges=_badges_for(admin_id), history=history)
+        text, entities = _status_card(status, row, badges=_badges_for(admin_id, admin=admin), history=history)
         # Same leaf-screen rule as Help: own actions + Back, no repeated menu.
         status_kb_rows = [
             [
@@ -2488,30 +2984,30 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         if data == "admin:pending" or data.startswith("admin:pending:"):
-            page = 0
-            if ":" in data[len("admin:pending"):]:
-                try:
-                    page = int(data.split(":")[2])
-                except (IndexError, ValueError):
-                    page = 0
-            text, entities, keyboard = _pending_view(page=page)
+            page, sort, filter_mode = _parse_queue_callback(data)
+            text, entities, keyboard = _pending_view(page=page, sort=sort, filter_mode=filter_mode)
             await _edit_or_reply(query, text, entities=entities, reply_markup=keyboard)
             return
 
         if data.startswith("admin:bulk_ask:"):
-            try:
-                page = int(data.split(":")[2])
-            except (IndexError, ValueError):
-                page = 0
+            page, sort, filter_mode = _parse_queue_callback(data.replace("admin:bulk_ask:", "admin:pending:", 1))
+            with _db_session() as db:
+                rows = _queue_rows(db, page, sort, filter_mode)
+            failed = sum(1 for r in rows if _auto_failed(r.auto_check_result))
+            warn = (
+                f" Dhyaan: is page ki {failed} submissions me auto-check fail hua hai "
+                "(UID nahi mili ya deposit ₹300 se kam) — wo bhi approve ho jayengi."
+                if failed else ""
+            )
             kb = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("Haan, Page ki Sab Approve Karo", callback_data=f"admin:bulk_exec:{page}", style="success", icon_custom_emoji_id=EMOJI_CHECK),
-                    InlineKeyboardButton("✖️ Cancel", callback_data=f"admin:pending:{page}"),
+                    InlineKeyboardButton("Haan, Page ki Sab Approve Karo", callback_data=f"admin:bulk_exec:{page}:{sort}:{filter_mode}", style="success", icon_custom_emoji_id=EMOJI_CHECK),
+                    InlineKeyboardButton("✖️ Cancel", callback_data=f"admin:pending:{page}:{sort}:{filter_mode}"),
                 ]
             ])
             btext, bentities = _render([
                 ("⚡", ("custom", EMOJI_LIGHTNING)),
-                (f" Kya aap page {page + 1} ki saari pending submissions approve karna chahte hain aur har user ko notify karna chahte hain?", None),
+                (f" Kya aap page {page + 1} ki saari pending submissions approve karna chahte hain aur har user ko notify karna chahte hain?{warn}", None),
             ])
             await _edit_or_reply(
                 query,
@@ -2522,26 +3018,16 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         if data.startswith("admin:bulk_exec:"):
-            try:
-                page = int(data.split(":")[2])
-            except (IndexError, ValueError):
-                page = 0
+            page, sort, filter_mode = _parse_queue_callback(data.replace("admin:bulk_exec:", "admin:pending:", 1))
             with _db_session() as db:
-                rows = (
-                    db.query(Submission)
-                    .filter(Submission.status.in_(ACTIVE_STATUSES))
-                    .order_by(desc(Submission.submitted_at))
-                    .offset(page * PENDING_PAGE_SIZE)
-                    .limit(PENDING_PAGE_SIZE)
-                    .all()
-                )
+                rows = _queue_rows(db, page, sort, filter_mode)
                 sids = [r.id for r in rows]
             approved_cnt = 0
             for sid in sids:
                 _t, _e, err = await _do_admin_action(admin_id, sid, "verified", None)
                 if err is None:
                     approved_cnt += 1
-            ptext, pentities, pkeyboard = _pending_view(page=0)
+            ptext, pentities, pkeyboard = _pending_view(page=0, sort=sort, filter_mode=filter_mode)
             head, head_entities = _render([
                 ("✅", ("custom", EMOJI_CHECK)),
                 (f" {approved_cnt} submissions bulk-approve kar di aur users ko notify kar diya.", None),
@@ -2568,7 +3054,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data["awaiting"] = "search_uid"
             await _edit_or_reply(
                 query,
-                "Send a Registration UID, User Telegram ID, or #SubmissionID to search:",
+                "Search karne ke liye Registration UID, User Telegram ID, ya #SubmissionID bhejo:",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
                 ]]),
@@ -2584,9 +3070,14 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if data.startswith("admin:reply:"):
             target_tid = data.split(":", 2)[2]
             context.user_data["awaiting"] = f"reply_user:{target_tid}"
+            rtext, rentities = _render([
+                ("💬", ("custom", EMOJI_CHAT)),
+                (f" User {target_tid} ko seedha bhejne ke liye message likho:", None),
+            ])
             await _edit_or_reply(
                 query,
-                f"↩️ User {target_tid} ko seedha bhejne ke liye message likho:",
+                rtext,
+                entities=rentities,
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
                 ]]),
@@ -2623,22 +3114,22 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if data == "admin:export":
             csv_bytes, count = _export_submissions_csv()
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+            stamp = datetime.now(IST).strftime("%Y%m%d_%H%M")
             if query.message:
                 await query.message.reply_document(
                     document=InputFile(io.BytesIO(csv_bytes), filename=f"verifyhub_submissions_{stamp}.csv"),
-                    caption=f"📥 {count} submissions export kar di ({stamp} UTC).",
+                    caption=f"📥 {count} submissions export kar di ({stamp} IST).",
                     caption_entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_INBOX)],
                 )
             return
 
         if data == "admin:export_users":
             csv_bytes, count = _export_users_csv()
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+            stamp = datetime.now(IST).strftime("%Y%m%d_%H%M")
             if query.message:
                 await query.message.reply_document(
                     document=InputFile(io.BytesIO(csv_bytes), filename=f"verifyhub_users_{stamp}.csv"),
-                    caption=f"📥 {count} users export kar diye ({stamp} UTC).",
+                    caption=f"📥 {count} users export kar diye ({stamp} IST).",
                     caption_entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_INBOX)],
                 )
             return
@@ -2686,9 +3177,9 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             pin = not bool(context.user_data.get("broadcast_pin", False))
             context.user_data["broadcast_pin"] = pin
-            total, verified = _broadcast_counts()
-            pending_cnt = len(_broadcast_targets("pending"))
-            rejected_cnt = len(_broadcast_targets("rejected"))
+            counts = _broadcast_audience_counts()
+            total, verified = counts["all"], counts["verified"]
+            pending_cnt, rejected_cnt = counts["pending"], counts["rejected"]
             preview, preview_entities = _broadcast_preview_text(text, total, verified, pending_cnt, rejected_cnt)
             await _edit_or_reply(
                 query,
@@ -2705,6 +3196,40 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data.pop("broadcast_pin", None)
             text, entities = _admin_dashboard()
             await _edit_or_reply(query, text, entities=entities)
+            return
+
+        if data == "admin:broadcast:test":
+            text = context.user_data.get("broadcast_text")
+            entities = context.user_data.get("broadcast_entities")
+            if not text:
+                await _edit_or_reply(
+                    query,
+                    "Broadcast session khatam ho gaya — Admin Panel se dobara shuru karo.",
+                )
+                return
+            try:
+                await context.bot.send_message(admin_id, text, entities=entities)
+            except Exception:
+                await _edit_or_reply(query, "Test message bheja nahi ja saka — dobara try karo.")
+                return
+            # The draft stays in user_data: the admin checks the test
+            # copy as a user would see it, then picks the audience.
+            counts = _broadcast_audience_counts()
+            total, verified = counts["all"], counts["verified"]
+            pending_cnt, rejected_cnt = counts["pending"], counts["rejected"]
+            preview, preview_entities = _broadcast_preview_text(text, total, verified, pending_cnt, rejected_cnt)
+            pin = bool(context.user_data.get("broadcast_pin", False))
+            head, head_entities = _render([
+                ("✅", ("custom", EMOJI_CHECK)),
+                (" Test message aapko bhej diya — upar check karo, phir audience chuno.", None),
+            ])
+            combined, combined_entities = _combine_texts(head, head_entities, preview, preview_entities)
+            await _edit_or_reply(
+                query,
+                combined,
+                entities=combined_entities,
+                reply_markup=_broadcast_preview_keyboard(total, verified, pending_cnt, rejected_cnt, pin=pin),
+            )
             return
 
         if data in (
@@ -2727,13 +3252,24 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data.pop("broadcast_pin", None)
             mode = data.split(":")[-1]
             targets = _broadcast_targets(mode)
-            await _edit_or_reply(query, f"{len(targets)} users ko broadcast bhej rahe hain…")
+            start_text, start_entities = _render([
+                ("📣", ("custom", EMOJI_MEGAPHONE)),
+                (f" {len(targets)} users ko broadcast bhej rahe hain…", None),
+            ])
+            await _edit_or_reply(query, start_text, entities=start_entities)
 
             async def _progress(done: int, total: int, d: int, b: int, f: int) -> None:
-                await _edit_or_reply(
-                    query,
-                    f"Broadcast bhej rahe hain… {done}/{total}\nDelivered: {d} · Blocked: {b} · Failed: {f}",
-                )
+                ptext, pentities = _render([
+                    ("📣", ("custom", EMOJI_MEGAPHONE)),
+                    (f" Broadcast bhej rahe hain… {done}/{total}", "bold"),
+                    ("\nDelivered: ", None),
+                    (str(d), "bold"),
+                    (" · Blocked: ", None),
+                    (str(b), "bold"),
+                    (" · Failed: ", None),
+                    (str(f), "bold"),
+                ])
+                await _edit_or_reply(query, ptext, entities=pentities)
 
             delivered, blocked, failed = await _send_broadcast(
                 context.bot,
@@ -2743,13 +3279,70 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 pin_message=pin,
                 progress_cb=_progress,
             )
-            await _edit_or_reply(
-                query,
-                f"Broadcast poora ho gaya ({mode}).\nDelivered: {delivered}  ·  Blocked: {blocked}  ·  Failed: {failed}",
-            )
+            done_text, done_entities = _render([
+                ("✅", ("custom", EMOJI_CHECK)),
+                (f" Broadcast poora ho gaya ({mode}).", "bold"),
+                ("\nDelivered: ", None),
+                (str(delivered), "bold"),
+                (" · Blocked: ", None),
+                (str(blocked), "bold"),
+                (" · Failed: ", None),
+                (str(failed), "bold"),
+            ])
+            await _edit_or_reply(query, done_text, entities=done_entities)
+            # A broadcast is the highest-blast-radius admin action: write
+            # it to the audit log like a status change, so there is a
+            # paper trail of who sent what to whom.
+            try:
+                with _db_session() as db:
+                    db.add(AuditEvent(
+                        actor_telegram_id=admin_id,
+                        action="broadcast",
+                        record_type="broadcast",
+                        record_id=None,
+                        meta=json.dumps({
+                            "audience": mode,
+                            "delivered": delivered,
+                            "blocked": blocked,
+                            "failed": failed,
+                            "preview": (text or "")[:200],
+                        }),
+                    ))
+                    db.commit()
+            except Exception:
+                logger.exception("Broadcast audit write failed.")
             return
 
         parts = data.split(":")
+        if len(parts) == 3 and parts[1] == "proof":
+            sid = _safe_submission_id(parts[2])
+            if sid is None:
+                return
+            with _db_session() as db:
+                shot = (
+                    db.query(Submission.deposit_screenshot)
+                    .filter(Submission.id == sid)
+                    .scalar()
+                )
+            if not shot:
+                await _edit_or_reply(query, "Is submission ke saath koi deposit proof nahi hai.")
+                return
+            b64 = shot.split(",", 1)[1] if "," in shot else shot
+            try:
+                photo_bytes = base64.b64decode(b64)
+            except Exception:
+                await _edit_or_reply(query, "Deposit proof khul nahi paya — data corrupt hai.")
+                return
+            try:
+                await context.bot.send_photo(
+                    admin_id,
+                    photo=InputFile(io.BytesIO(photo_bytes), filename="deposit-proof.jpg"),
+                    caption=f"Submission #{sid} ka deposit proof.",
+                )
+            except Exception:
+                await _edit_or_reply(query, "Deposit proof bheja nahi ja saka — dobara try karo.")
+            return
+
         if len(parts) == 3 and parts[1] == "view":
             sid = _safe_submission_id(parts[2])
             if sid is None:
@@ -2828,6 +3421,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if query.message:
                     await query.message.reply_text(error)
                 return
+            _clear_admin_cache()  # the removed admin must fail _is_admin at once
             text, entities = _render([
                 ("✅", ("custom", EMOJI_CHECK)),
                 (f" {target} ab admin nahi raha.", None),
@@ -2916,6 +3510,13 @@ def build_telegram_application(bot_token: str, *, with_updater: bool) -> Applica
     """
     builder = Application.builder().token(bot_token)
     builder = builder.post_init(_post_init)
+    # PTB's default is 1 update at a time: one slow handler (a broadcast,
+    # a CSV export, a provider stall) froze the whole bot for everyone
+    # and held the webhook response open. 8 concurrent updates fit the
+    # DB pool's 5 + 10 overflow headroom; handlers only ever hold one
+    # short-lived session at a time, and the per-user rate limit still
+    # dedups rapid double-taps from the same chat.
+    builder = builder.concurrent_updates(8)
     if not with_updater:
         builder = builder.updater(None)
     app = builder.build()
