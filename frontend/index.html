@@ -9,7 +9,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=15">
+<link rel="stylesheet" href="styles.css?v=16">
 </head>
 <body>
 <div class="aurora" aria-hidden="true"><i></i><i></i></div>
@@ -22,8 +22,8 @@
   <div class="ticker" id="ticker">
     <span class="ticker-dot" id="ticker-dot" aria-hidden="true"></span>
     <span class="ticker-live" id="ticker-live">LIVE</span>
-    <span class="ticker-mid">WinGo 1M · <span class="mono" id="ticker-period">#—</span> · last: <span class="mini-ball red" id="ticker-ball"><span>–</span></span> <b id="ticker-last">—</b></span>
-    <span class="ticker-right">next in <b class="ticker-count" id="ticker-countdown">0:00</b></span>
+    <span class="ticker-mid">WinGo 1M · <span class="mono" id="ticker-period">…</span> · last: <span class="mini-ball loading" id="ticker-ball"><span></span></span> <b id="ticker-last">…</b></span>
+    <span class="ticker-right">next in <b class="ticker-count" id="ticker-countdown">…</b></span>
   </div>
 
   <div class="progress" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
@@ -69,7 +69,7 @@
           <div class="panel-head">
             <div class="wordmark">Verify<span>Hub</span></div>
             <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
-            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> REGISTER MODE</span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> REGISTER MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
           </div>
           <div class="screen">
             <div class="lock-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
@@ -92,7 +92,7 @@
             <div class="panel-head">
               <div class="wordmark">Verify<span>Hub</span></div>
               <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
-              <div class="status-bar"><span class="st-left"><span class="live-dot"></span> DEPOSIT MODE</span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+              <div class="status-bar"><span class="st-left"><span class="live-dot"></span> DEPOSIT MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
             </div>
             <div class="screen">
               <div class="screen-title">DEPOSIT PROOF</div>
@@ -120,7 +120,7 @@
           <div class="panel-head">
             <div class="wordmark">Verify<span>Hub</span></div>
             <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
-            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> SUBMIT MODE</span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> SUBMIT MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
           </div>
           <div class="screen">
             <div class="screen-title">SEND UID ONCE</div>
@@ -192,17 +192,8 @@
       <span class="eyebrow">Good to know</span>
       <h3>Help &amp; support</h3>
       <p>If Window 03 asks for more info, read its message, then send one corrected UID. Anything else — use Help in the bot.</p>
-      <p class="hint review-message">Verified = admin-approved. No guarantee of recovery, and not provider-confirmed.</p>
     </div>
 
-    <footer class="dock" id="bottom-dock">
-      <div class="dock-row">
-        <div class="dock-cell dock-left"><span class="live-dot" aria-hidden="true"></span><span class="dock-live">LIVE</span><span class="dock-period mono" id="dock-period">WinGo 1M · #—</span></div>
-        <div class="dock-cell dock-centre"><span class="dock-mark"><span class="logo-v dock-v" aria-hidden="true">V</span></span><span class="dock-name">VERIFYHUB</span></div>
-        <div class="dock-cell dock-right"><span id="dock-status"><span class="badge b-not_submitted">Not verified</span></span></div>
-      </div>
-      <p class="dock-honest">Verified = admin-approved. No guarantee of recovery, and not provider-confirmed.</p>
-    </footer>
   </section>
 
   <!-- PREDICTION (verified users only — the server gates it, not the tab) -->
@@ -213,7 +204,12 @@
     </div>
 
     <div id="pred-loading" hidden>
-      <div class="empty"><b>Loading prediction…</b>Fetching the latest results.</div>
+      <div class="card">
+        <span class="skel" style="width:38%;height:16px"></span>
+        <span class="skel" style="width:56%;height:30px;margin-top:12px"></span>
+        <span class="skel" style="width:100%;height:84px;border-radius:14px;margin-top:14px"></span>
+        <p class="hint" style="text-align:center">Fetching the latest results…</p>
+      </div>
     </div>
 
     <div id="pred-locked" hidden>
@@ -221,9 +217,7 @@
         <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
-            <div class="wordmark">Verify<span>Hub</span></div>
-            <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
-            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> PREDICTION MODE</span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> PREDICTION MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
           </div>
           <div class="screen">
             <div class="lock-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
@@ -247,9 +241,7 @@
         <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
-            <div class="wordmark">Verify<span>Hub</span></div>
-            <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
-            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> LIVE : <b>ACTIVE</b></span><span class="st-right">PING : <b class="ping-ms">24MS</b></span></div>
+            <div class="status-bar"><span class="st-left"><span class="live-dot"></span> LIVE : <b>ACTIVE</b></span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
           </div>
           <div class="screen">
             <div class="screen-sub">NEXT PERIOD</div>
@@ -263,7 +255,7 @@
             <p class="pred-reason mono" id="pred-reason"></p>
             <p class="hint">Signal only — not a guarantee.</p>
             <div class="pred-history" id="pred-history"></div>
-            <div class="row"><button class="btn full" id="pred-refresh-btn" type="button">Refresh</button></div>
+            <div class="row"><button class="btn secondary full" id="pred-refresh-btn" type="button">Refresh</button></div>
             <div class="acc" id="pred-accuracy" hidden>
               <div class="acc-head"><span class="acc-title">SIGNAL RECORD — LAST 20</span><span class="acc-summary mono" id="acc-summary"></span></div>
               <div class="acc-conf mono" id="acc-conf"></div>
@@ -281,7 +273,7 @@
 
   <!-- ADMIN -->
   <section class="view" id="view-admin" role="tabpanel">
-    <div class="stats" id="admin-stats"></div>
+    <div class="stats" id="admin-stats"><div class="stat"><span class="skel" style="width:52px;height:30px"></span><span class="skel" style="width:72px;height:12px;margin-top:6px"></span></div><div class="stat"><span class="skel" style="width:52px;height:30px"></span><span class="skel" style="width:72px;height:12px;margin-top:6px"></span></div><div class="stat"><span class="skel" style="width:52px;height:30px"></span><span class="skel" style="width:72px;height:12px;margin-top:6px"></span></div><div class="stat"><span class="skel" style="width:52px;height:30px"></span><span class="skel" style="width:72px;height:12px;margin-top:6px"></span></div><div class="stat"><span class="skel" style="width:52px;height:30px"></span><span class="skel" style="width:72px;height:12px;margin-top:6px"></span></div><div class="stat"><span class="skel" style="width:52px;height:30px"></span><span class="skel" style="width:72px;height:12px;margin-top:6px"></span></div></div>
     <div class="card">
       <span class="eyebrow">Administration</span>
       <h2>Submissions</h2>
@@ -294,6 +286,15 @@
       <div class="empty" id="admin-empty" hidden><b>No submissions match.</b>Try a different search or filter.</div>
     </div>
   </section>
+
+  <footer class="dock" id="bottom-dock">
+      <div class="dock-row">
+        <div class="dock-cell dock-left"><span class="live-dot" aria-hidden="true"></span><span class="dock-live">LIVE</span><span class="dock-period mono" id="dock-period">WinGo 1M · …</span></div>
+        <div class="dock-cell dock-centre"><span class="dock-mark"><span class="logo-v dock-v" aria-hidden="true">V</span></span><span class="dock-name">VERIFYHUB</span></div>
+        <div class="dock-cell dock-right"><span id="dock-status"><span class="badge b-not_submitted">Not verified</span></span></div>
+      </div>
+      <p class="dock-honest">Verified = admin-approved. No guarantee of recovery, and not provider-confirmed.</p>
+    </footer>
 </div>
 
 <div class="modal-backdrop" id="detail-modal" role="dialog" aria-modal="true" aria-label="Submission details">
@@ -310,6 +311,6 @@
      the Mini App aggressively. Bump the ?v= number on every JS change
      so users get the new files instead of the cached old ones. -->
 <script src="config.js?v=2"></script>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

@@ -113,8 +113,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 
 /* Progress: a teal track on light grey. */
 .progress{height:4px; background:#d5dce1; margin-top:14px; border-radius:4px; overflow:hidden}
-.progress-fill{height:100%; width:33%; background:linear-gradient(90deg,#2ee6a8,#00c896,#007a55); background-size:200% 100%; box-shadow:0 0 8px rgba(0,200,150,.5); transition:width var(--dur); animation:fillFlow 1.8s linear infinite}
-@keyframes fillFlow{to{background-position:-200% 0}}
+.progress-fill{height:100%; width:33%; background:linear-gradient(90deg,#2ee6a8,#00c896,#007a55); background-size:200% 100%; box-shadow:0 0 8px rgba(0,200,150,.5); transition:width var(--dur)}
 .phase-line{
   display:flex; justify-content:space-between; gap:12px; margin-top:8px;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px;
@@ -242,9 +241,8 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .vip-pill::after{
   content:""; position:absolute; top:0; left:-70%; width:45%; height:100%;
   background:linear-gradient(100deg,transparent,rgba(255,255,255,.6),transparent);
-  transform:skewX(-20deg); animation:pillShine 2.8s ease-in-out infinite;
+  transform:skewX(-20deg); pointer-events:none;
 }
-@keyframes pillShine{0%,55%{left:-70%}100%{left:135%}}
 .status-bar{
   display:flex; align-items:center; justify-content:space-between;
   background:var(--surface-2); border:1px solid var(--hairline); border-radius:20px;
@@ -401,21 +399,15 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   background:linear-gradient(180deg,#00be8a,#00875f 60%,#007a55);
   box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45);
   transition:transform .12s ease, filter .12s ease, box-shadow .12s ease;
-  animation:breathe 2.2s ease-in-out infinite;
-}
-@keyframes breathe{
-  0%,100%{box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45)}
-  50%{box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45), 0 0 18px rgba(0,200,150,.55)}
 }
 .btn::after{
   content:""; position:absolute; top:0; left:-80%; width:50%; height:100%;
   background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);
   transform:skewX(-20deg); transition:left .5s ease; pointer-events:none;
 }
-/* Primary CTA shine: a slow auto-sweep every few seconds (the press
-   still sweeps it via left, as before). Variants/loading are excluded. */
-.btn:not(.secondary):not(.ghost):not(.danger):not(.is-loading):not(:disabled)::after{animation:btnShine 4.5s ease-in-out 1.2s infinite}
-@keyframes btnShine{0%{transform:translateX(0) skewX(-20deg)}45%,100%{transform:translateX(460%) skewX(-20deg)}}
+/* Primary CTA shine: press-triggered only (the press still sweeps it
+   via left, as before). No auto-sweep — the signal slab keeps the one
+   auto-sheen on the page. */
 .btn:active{
   transform:translateY(2px) scale(.97);
   box-shadow:0 2px 6px rgba(0,122,85,.35), inset 0 3px 8px rgba(0,0,0,.25), inset 0 -1px 0 rgba(255,255,255,.25);
@@ -601,7 +593,13 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .admin-item:focus-visible{background:var(--surface-2)}
 
 /* ---------- Loading, empty, toast, modal ---------- */
-.skel{height:16px; border-radius:8px; background:var(--surface-3)}
+.skel{display:block; height:16px; border-radius:8px; background:var(--surface-3); position:relative; overflow:hidden}
+.skel::after{
+  content:""; position:absolute; top:0; left:-70%; width:45%; height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);
+  transform:skewX(-20deg); animation:skelSheen 1.8s ease-in-out infinite; pointer-events:none;
+}
+@keyframes skelSheen{0%{left:-70%}100%{left:135%}}
 .empty{
   text-align:center; color:var(--muted); padding:28px 14px;
   border:1px dashed var(--hairline-strong); border-radius:var(--r); margin-top:4px; background:#fff;
@@ -731,7 +729,9 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 }
 .ball span{position:relative; z-index:2; font-weight:900; font-size:30px; color:#fff; text-shadow:0 2px 4px rgba(0,0,0,.35)}
 .ball::before{content:""; position:absolute; inset:5px; border-radius:50%; background:radial-gradient(circle at 35% 28%, rgba(255,255,255,.9), transparent 55%); z-index:1}
-.ball::after{content:""; position:absolute; inset:-9px; border-radius:50%; border:1.5px dashed rgba(11,43,58,.35); animation:spinSlow 7s linear infinite}
+.ball::after{content:""; position:absolute; inset:-9px; border-radius:50%; border:1.5px dashed rgba(11,43,58,.35)}
+/* The orbit ring is frozen — it only turns during the one-shot landing. */
+.pred-ball.land::after{animation:spinSlow .7s linear}
 @keyframes spinSlow{to{transform:rotate(360deg)}}
 .ball.red{background:radial-gradient(circle at 32% 28%, #ffc9c9, #ff5a4d 45%, #b30000 92%)}
 .ball.green{background:radial-gradient(circle at 32% 28%, #c8ffd9, #37d67a 45%, #0a7a33 92%)}
@@ -758,6 +758,11 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .mini-ball.violet{background:radial-gradient(circle at 32% 28%, #e9c8ff, #a55eea 45%, #5b1a9e 92%)}
 .mini-ball.vr{background:linear-gradient(135deg, #ff5a4d 0 50%, #a55eea 50% 100%)}
 .mini-ball.vg{background:linear-gradient(135deg, #37d67a 0 50%, #a55eea 50% 100%)}
+/* The newest history ball keeps a teal ring so the latest result stays
+   findable after its one-shot pop. Neutral grey while nothing loaded. */
+.pred-history .mini-ball.latest{box-shadow:0 0 0 2px var(--green)}
+.mini-ball.loading{background:#d5dce1}
+.mini-ball.loading span{color:transparent; text-shadow:none}
 /* Signal accuracy tracker: honest record of past signals vs real
    results. Green = right, red = wrong, grey = still pending. */
 .acc{margin-top:16px; padding-top:14px; border-top:1px solid var(--hairline); width:100%}

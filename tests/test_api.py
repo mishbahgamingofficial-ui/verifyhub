@@ -1712,3 +1712,117 @@ def test_rename_refuses_non_admin():
     context.bot = AsyncMock()
     asyncio.run(_handle_text(update, context))
     context.bot.set_my_name.assert_not_called()
+
+
+# --- Premium pass (bot + Mini App polish, 2026-11-06) --------------------
+# Presentation only: premium icons/styles/rich text, no logic change.
+# Rendered text is unchanged; only entities and button styling differ.
+
+
+def test_tape_segments_use_premium_icons():
+    from telegram import MessageEntity
+
+    from app.bot import EMOJI_CHECK, EMOJI_CROSS, _render, _tape_segments
+
+    text, entities = _render(_tape_segments("✅❌✅"))
+    assert text == "✅❌✅"
+    customs = [e.custom_emoji_id for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+    assert customs == [EMOJI_CHECK, EMOJI_CROSS, EMOJI_CHECK]
+    text, entities = _render(_tape_segments("—"))
+    assert text == "—"
+    assert not [e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+
+
+def test_window_segments_use_premium_check_for_done_steps():
+    from telegram import MessageEntity
+
+    from app.bot import _render, _window_segments
+
+    text, entities = _render(_window_segments("verified"))
+    assert text == "01 Mila ✅\n02 Review ho raha ✅\n03 Faisla ✅"
+    assert len([e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]) == 3
+    text, entities = _render(_window_segments("pending_review"))
+    assert text == "01 Mila ✅\n02 Review ho raha …\n03 Faisla ○"
+    assert len([e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]) == 1
+
+
+def test_preset_buttons_carry_premium_icons_not_unicode_labels():
+    from app.bot import EMOJI_CROSS, EMOJI_INFO, _submission_detail_view
+
+    sid = _make_submission(760, "PRESETICON1")
+    _text, _entities, kb = _submission_detail_view(sid)
+    buttons = [b for row in kb.inline_keyboard for b in row]
+    presets = {b.callback_data: b for b in buttons if b.callback_data.startswith("admin:preset:")}
+    assert len(presets) == 6
+    for key, b in presets.items():
+        assert "❌" not in b.text and "ℹ️" not in b.text
+        want = EMOJI_CROSS if ":r:" in key else EMOJI_INFO
+        assert b.icon_custom_emoji_id == want, key
+
+
+def test_broadcast_preview_text_is_bold_with_premium_megaphone():
+    from telegram import MessageEntity
+
+    from app.bot import EMOJI_MEGAPHONE, _broadcast_preview_text
+
+    text, entities = _broadcast_preview_text("hello sab", 10, 3, 5, 2)
+    assert text.startswith("📣 Broadcast Studio Preview:")
+    assert "Sab: 10" in text and "Verified: 3" in text
+    kinds = {e.type for e in entities}
+    assert MessageEntity.BOLD in kinds
+    assert MessageEntity.CUSTOM_EMOJI in kinds
+    customs = [e.custom_emoji_id for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+    assert customs == [EMOJI_MEGAPHONE]
+
+
+def test_notify_user_premium_icon_and_styled_buttons(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import app.bot as bot_module
+    from app.bot import EMOJI_HOURGLASS, notify_user
+
+    captured = {}
+
+    async def fake_post(client, url, payload):
+        captured.update(payload)
+        return True
+
+    monkeypatch.setattr(bot_module, "_post_telegram_json", fake_post)
+    asyncio.run(notify_user("test-token", 777, "pending_review", None, "https://example.invalid/app"))
+    assert captured["chat_id"] == 777
+    customs = [e["custom_emoji_id"] for e in captured["entities"] if e["type"] == "custom_emoji"]
+    assert EMOJI_HOURGLASS in customs
+    flat = [b for row in captured["reply_markup"]["inline_keyboard"] for b in row]
+    styles = {b["text"]: b.get("style") for b in flat}
+    assert styles["Verification Panel Kholo"] == "primary"
+    assert styles["Meri Status Dekho"] == "success"
+
+
+def test_clean_users_confirm_button_is_danger_styled():
+    from app.bot import _clean_users_preview
+
+    _text, _entities, kb = _clean_users_preview({
+        "users_total": 3, "users_kept": 1, "kept_telegram_ids": [ADMIN_ID],
+        "users_deleted": 2, "submissions_deleted": 2, "history_deleted": 2,
+        "signal_records_kept": 0, "audit_events_kept": 0,
+    })
+    confirm = [b for row in kb.inline_keyboard for b in row if b.callback_data == "admin:clean:confirm"][0]
+    assert confirm.style == "danger"
+
+
+def test_rename_reply_uses_premium_check_entity():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from telegram import MessageEntity
+
+    from app.bot import EMOJI_CHECK, _handle_text
+
+    update, context, message = _fake_update(ADMIN_ID)
+    update.message.text = "rename: Number Panel Bot"
+    context.bot = AsyncMock()
+    asyncio.run(_handle_text(update, context))
+    entities = message.reply_text.await_args.kwargs["entities"]
+    customs = [e.custom_emoji_id for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+    assert customs == [EMOJI_CHECK]

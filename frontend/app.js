@@ -42,10 +42,15 @@
       else hf.impactOccurred(kind || 'light');
     } catch (e) { /* haptics are best-effort */ }
   }
-  // Set a countdown's text, popping the digits (scale 1.15 -> 1) when it changes.
+  // Set a countdown's text, popping the digits (scale 1.15 -> 1) only when
+  // the minute changes — not on every second tick.
   function setCountdownText(el, text) {
     if (!el || el.textContent === text) return;
+    const newMin = text.split(':')[0];
+    const pop = el.dataset.lastMin !== undefined && el.dataset.lastMin !== newMin;
+    el.dataset.lastMin = newMin;
     el.textContent = text;
+    if (!pop) return;
     el.classList.remove('pop');
     void el.offsetWidth; // restart the animation
     el.classList.add('pop');
@@ -240,7 +245,12 @@
       $('#activity-list').innerHTML = rows.length ? rows.slice(0, 5).map((r) =>
         '<li><span><strong>' + esc(r.uid_masked) + '</strong><small>' + esc(fmt(r.submitted_at)) + (r.review_message ? ' · ' + esc(r.review_message) : '') + '</small></span>' + badge(r.status) + '</li>').join('')
         : '<li><span>No activity yet.</span></li>';
-    } catch (e) { $('#verify-windows').innerHTML = '<p>' + esc(e.message) + '</p>'; $('#current-body').innerHTML = '<p>' + esc(e.message) + '</p>'; }
+    } catch (e) {
+      const retryHtml = '<div class="empty"><b>Couldn\'t load your status.</b>Check your connection and try again.<div class="row" style="justify-content:center"><button class="btn secondary status-retry-btn" type="button">Try again</button></div></div>';
+      $('#verify-windows').innerHTML = retryHtml;
+      $('#current-body').innerHTML = retryHtml;
+      document.querySelectorAll('.status-retry-btn').forEach((b) => b.addEventListener('click', () => { haptic('light'); loadStatus(); }));
+    }
   }
 
   // Submit form
@@ -407,6 +417,9 @@
       '<span class="mini-ball ' + ballClass(r.number) + '" title="' + esc(r.period) + '"><span>' + esc(r.number) + '</span></span>').join('');
     // The newest history ball pops in — only when a new result arrived.
     const newest = (d.results || [])[0];
+    // ...and it keeps a teal ring so the latest result stays findable.
+    const firstBall = document.querySelector('#pred-history .mini-ball');
+    if (firstBall) firstBall.classList.add('latest');
     if (newest && newest.period !== lastHistPeriod) {
       lastHistPeriod = newest.period;
       const first = document.querySelector('#pred-history .mini-ball');
@@ -632,16 +645,17 @@
   $('#register-link').addEventListener('click', (e) => { haptic('medium'); if (!config || !config.registration_url) { e.preventDefault(); toast('Registration link not set yet.'); } });
   $('#copy-link-btn').addEventListener('click', async () => {
     haptic('light');
+    const btn = $('#copy-link-btn');
     if (!config || !config.registration_url) { toast('Registration link not set yet.'); return; }
-    try { await navigator.clipboard.writeText(config.registration_url); toast('Link copied.'); } catch (e) { toast('Copy failed. Long-press the link.'); }
+    try {
+      await navigator.clipboard.writeText(config.registration_url);
+      toast('Link copied.');
+      const prev = btn.textContent;
+      btn.textContent = 'Copied ✓';
+      clearTimeout(btn._copyTimer);
+      btn._copyTimer = setTimeout(() => { btn.textContent = prev; }, 1500);
+    } catch (e) { toast('Copy failed. Long-press the link.'); }
   });
-
-  // Live ping on every panel status bar (21–29ms jitter, like the reference).
-  function tickPing() {
-    const ms = 21 + Math.floor(Math.random() * 9);
-    document.querySelectorAll('.ping-ms').forEach((el) => { el.textContent = ms + 'MS'; });
-  }
-  setInterval(tickPing, 2000); tickPing();
 
   // Live ticker: real WinGo 1-min results from the public /api/live
   // endpoint — never hardcoded, never invented. Polls every 5s; the
@@ -657,13 +671,18 @@
   async function fetchLive() {
     if (tickerInFlight) return;
     tickerInFlight = true;
+    const startedAt = performance.now();
     try {
       const controller = new AbortController();
       const to = setTimeout(() => controller.abort(), 8000);
       let res;
       try { res = await fetch(API_BASE + '/api/live', { signal: controller.signal }); } finally { clearTimeout(to); }
       if (!res.ok) throw new Error('live failed');
-      renderTicker(await res.json());
+      const data = await res.json();
+      // Real round-trip, measured on this fetch — never invented.
+      const ms = Math.max(1, Math.round(performance.now() - startedAt));
+      document.querySelectorAll('.ping-ms').forEach((el) => { el.textContent = ms + 'MS'; });
+      renderTicker(data);
     } catch (e) {
       // Keep the last good data, show that we are reconnecting.
       const live = $('#ticker-live');

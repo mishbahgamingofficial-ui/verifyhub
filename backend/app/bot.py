@@ -136,33 +136,35 @@ def _safe_submission_id(raw) -> int | None:
     return num if 0 < num <= _INT32_MAX else None
 
 
-# One-tap admin review presets for ultra-fast moderation
+# One-tap admin review presets for ultra-fast moderation.
+# Labels are plain text — the premium ❌/ℹ️ icons ride on the buttons
+# themselves (icon_custom_emoji_id), never doubled in the label.
 REJECT_PRESETS: dict[str, tuple[str, str]] = {
     "uid_not_found": (
-        "❌ UID Nahi Mila",
+        "UID Nahi Mila",
         "Aapne jo UID bheja hai wo hamare official registration link ke neeche nahi mila. Apna UID dobara check karke phir se bhejo.",
     ),
     "wrong_link": (
-        "❌ Official Link Se Nahi",
+        "Official Link Se Nahi",
         "Aapka account official registration link se register nahi hua hai. Official link se naya account register karke uska UID bhejo.",
     ),
     "duplicate": (
-        "❌ Duplicate Submission",
+        "Duplicate Submission",
         "Ye UID pehle se submit ho chuka hai ya kisi aur account se linked hai.",
     ),
 }
 
 INFO_PRESETS: dict[str, tuple[str, str]] = {
     "deposit": (
-        "ℹ️ Pehla Deposit Chahiye",
+        "Pehla Deposit Chahiye",
         "Apna pehla deposit official platform par poora karo taaki hum aapka active UID verify kar sakein.",
     ),
     "recheck_uid": (
-        "ℹ️ UID Dobara Check Karo",
+        "UID Dobara Check Karo",
         "Apne account profile page se apna exact numeric UID copy karke dobara bhejo.",
     ),
     "activity": (
-        "ℹ️ Account Activity Chahiye",
+        "Account Activity Chahiye",
         "Aapka UID register hai par usme abhi koi recent activity nahi dikh rahi. Basic account activation poora karo aur apni submission update karo.",
     ),
 }
@@ -259,36 +261,33 @@ async def notify_user(
     if not bot_token:
         return False
     headline = STATUS_COPY.get(status, f"Aapki submission ki status badal kar {status} ho gayi hai.")
-    # _render entities instead of HTML: the verified ✅ is a premium custom
-    # emoji here (other statuses keep their Unicode icon — the sets hold no
-    # premium version for them). Text is literal, so the admin's message
-    # needs no HTML escaping at all.
+    # _render entities instead of HTML: every status icon is a premium
+    # custom emoji now (wave 2 filled the gaps). Text is literal, so the
+    # admin's message needs no HTML escaping at all.
     segments = []
-    if status == "verified":
-        segments.append(("✅", ("custom", EMOJI_CHECK)))
-    else:
-        segments.append((STATUS_ICONS.get(status, "🔔"), None))
+    segments += _status_icon_segments(status)
     segments.append((" ", None))
     segments.append((headline, "bold"))
     if message:
         segments.append(("\n\n", None))
         segments.append(("Review message:", "bold"))
         segments.append((f"\n{message}", "italic"))
+    segments.append(("\n\n", None))
     segments.append((
-        "\n\nVerification se financial recovery ki guarantee nahi milti. "
+        "Verification se financial recovery ki guarantee nahi milti. "
         "Poora status dekhne ke liye verification panel kholo.",
-        None,
+        "blockquote",
     ))
     text, entities = _render(segments)
     buttons = []
     if mini_app_url:
-        buttons.append([{"text": "Verification Panel Kholo", "web_app": {"url": mini_app_url}, "icon_custom_emoji_id": EMOJI_CROWN}])
+        buttons.append([{"text": "Verification Panel Kholo", "web_app": {"url": mini_app_url}, "style": "primary", "icon_custom_emoji_id": EMOJI_CROWN}])
         if status == "verified":
             sep = "&" if "?" in mini_app_url else "?"
             predict_url = f"{mini_app_url}{sep}startapp=prediction"
             buttons.append([{"text": "Predictions Kholo", "web_app": {"url": predict_url}, "icon_custom_emoji_id": EMOJI_TARGET}])
     buttons.append([
-        {"text": "Meri Status Dekho", "callback_data": "__status__", "icon_custom_emoji_id": EMOJI_CHART},
+        {"text": "Meri Status Dekho", "callback_data": "__status__", "style": "success", "icon_custom_emoji_id": EMOJI_CHART},
     ])
     if status in ("rejected", "info_required"):
         buttons.append([
@@ -346,10 +345,12 @@ async def notify_admins(
     if auto_verified:
         text, text_entities = _render([
             ("✅", ("custom", EMOJI_CHECK)),
+            (" Auto-verify ho gaya — submission #", "bold"),
+            (f"{submission_id}", "code"),
+            ("\n\nUID: ", None),
+            (registration_uid, "code"),
             (
-                f" Auto-verify ho gaya — submission #{submission_id}\n\n"
-                f"UID: {registration_uid}\n"
-                f"User: {who} ({user_telegram_id})\n"
+                f"\nUser: {who} ({user_telegram_id})\n"
                 f"Bheji gayi: {when}\n\n"
                 f"{auto_check_note or 'UID mili aur deposit ₹300 se zyada confirm hua.'}\n\n"
                 "Kuch karne ki zaroorat nahi — user ko verify hone ki khabar mil gayi.",
@@ -361,10 +362,12 @@ async def notify_admins(
         note = f"\n\nAuto-check: {auto_check_note}" if auto_check_note else ""
         text, text_entities = _render([
             ("🆕", ("custom", EMOJI_NEW)),
+            (" Nayi submission #", "bold"),
+            (f"{submission_id}", "code"),
+            ("\n\nUID: ", None),
+            (registration_uid, "code"),
             (
-                f" Nayi submission #{submission_id}\n\n"
-                f"UID: {registration_uid}\n"
-                f"User: {who} ({user_telegram_id})\n"
+                f"\nUser: {who} ({user_telegram_id})\n"
                 f"Bheji gayi: {when}\n\n"
                 "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho."
                 f"{note}",
@@ -374,8 +377,8 @@ async def notify_admins(
         keyboard = {
             "inline_keyboard": [
                 [
-                    {"text": "Approve", "callback_data": f"admin:approve:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CHECK},
-                    {"text": "Reject", "callback_data": f"admin:reject:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CROSS},
+                    {"text": "Approve", "callback_data": f"admin:approve:{submission_id}:n", "style": "success", "icon_custom_emoji_id": EMOJI_CHECK},
+                    {"text": "Reject", "callback_data": f"admin:reject:{submission_id}:n", "style": "danger", "icon_custom_emoji_id": EMOJI_CROSS},
                     {"text": "Info Chahiye", "callback_data": f"admin:info:{submission_id}:n", "icon_custom_emoji_id": EMOJI_INFO},
                 ],
                 [
@@ -957,8 +960,9 @@ async def _send_broadcast(
     return delivered, blocked, failed
 
 
-def _window_lines(status: str) -> list[str]:
-    """The three verification windows as text lines (✓ done, … in progress, ○ waiting)."""
+def _window_segments(status: str) -> list:
+    """The three verification windows as _render segments — done steps
+    get the premium ✅, in-progress … and waiting ○ stay plain."""
     w2 = "…" if status in ("pending_review", "under_review") else "✓"
     if status in ("verified", "rejected", "info_required"):
         w3 = "✓"
@@ -966,7 +970,15 @@ def _window_lines(status: str) -> list[str]:
         w3 = "…"
     else:
         w3 = "○"
-    return [f"01 Mila ✓", f"02 Review ho raha {w2}", f"03 Faisla {w3}"]
+
+    def _mark(mark: str) -> list:
+        return [("✅", ("custom", EMOJI_CHECK))] if mark == "✓" else [(mark, None)]
+
+    return (
+        [("01 Mila ", None)] + _mark("✓")
+        + [("\n02 Review ho raha ", None)] + _mark(w2)
+        + [("\n03 Faisla ", None)] + _mark(w3)
+    )
 
 
 def _progress_bar(status: str) -> str:
@@ -1013,7 +1025,8 @@ def _status_icon_segments(status: str) -> list:
     custom = _STATUS_ICON_EMOJI.get(status)
     if custom:
         return [(icon, ("custom", custom))]
-    return [(icon, None)]
+    # Unknown status: the bell is the fallback icon, premium too.
+    return [(icon, ("custom", EMOJI_BELL))]
 
 
 def _status_card(
@@ -1065,10 +1078,7 @@ def _status_card(
             (row.updated_at.strftime("%Y-%m-%d %H:%M UTC"), None),
         ]
     segments.append(("\n\n", None))
-    for i, line in enumerate(_window_lines(status)):
-        if i:
-            segments.append(("\n", None))
-        segments.append((line, None))
+    segments += _window_segments(status)
     if row.review_message:
         segments.append(("\n\n", None))
         segments.append(("Admin ka note:", "bold"))
@@ -1144,7 +1154,7 @@ def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool =
     segments += [
         ("\n", None),
         ("Total Submissions: ", "bold"),
-        (str(len(subs)), None),
+        (str(len(subs)), "bold"),
     ]
     if latest:
         segments += [
@@ -1244,6 +1254,22 @@ def _signal_stats_summary(rows: list[SignalRecord]) -> dict:
         "best_win_streak": best_win_streak,
         "tape": tape or "—",
     }
+
+
+def _tape_segments(tape: str) -> list:
+    """Last-10 accuracy tape as _render segments — premium ✅/❌ per
+    result, so the tape reads as icons instead of plain text."""
+    if not tape or tape == "—":
+        return [("—", None)]
+    segments = []
+    for ch in tape:
+        if ch == "✅":
+            segments.append(("✅", ("custom", EMOJI_CHECK)))
+        elif ch == "❌":
+            segments.append(("❌", ("custom", EMOJI_CROSS)))
+        else:
+            segments.append((ch, None))
+    return segments
 
 
 def _confidence_meter(pct: float) -> str:
@@ -1388,10 +1414,12 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
         ("\n\nSignal Engine Health:", "bold"),
         ("\n• 1m WinGo: ", None),
         (f"{s1['acc']}%", "bold"),
-        (f" ({s1['wins']}/{s1['total']}) · Last 10: {s1['tape']}", None),
+        (f" ({s1['wins']}/{s1['total']}) · Last 10: ", None),
+    ] + _tape_segments(s1['tape']) + [
         ("\n• 30s WinGo: ", None),
         (f"{s30['acc']}%", "bold"),
-        (f" ({s30['wins']}/{s30['total']}) · Last 10: {s30['tape']}", None),
+        (f" ({s30['wins']}/{s30['total']}) · Last 10: ", None),
+    ] + _tape_segments(s30['tape']) + [
         (f"\n\nRuntime Uptime: {_format_uptime()}", "italic"),
     ]
     text, entities = _render(segments)
@@ -1616,37 +1644,43 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
 
     kb_rows = [
         [
-            InlineKeyboardButton("Approve", callback_data=f"admin:approve:{row.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
+            InlineKeyboardButton("Approve", callback_data=f"admin:approve:{row.id}:p", style="success", icon_custom_emoji_id=EMOJI_CHECK),
             InlineKeyboardButton("Review Me Mark Karo", callback_data=f"admin:review:{row.id}:p", icon_custom_emoji_id=EMOJI_SEARCH),
         ],
         [
             InlineKeyboardButton(
                 REJECT_PRESETS["uid_not_found"][0],
                 callback_data=f"admin:preset:r:uid_not_found:{row.id}",
+                icon_custom_emoji_id=EMOJI_CROSS,
             ),
             InlineKeyboardButton(
                 REJECT_PRESETS["wrong_link"][0],
                 callback_data=f"admin:preset:r:wrong_link:{row.id}",
+                icon_custom_emoji_id=EMOJI_CROSS,
             ),
         ],
         [
             InlineKeyboardButton(
                 REJECT_PRESETS["duplicate"][0],
                 callback_data=f"admin:preset:r:duplicate:{row.id}",
+                icon_custom_emoji_id=EMOJI_CROSS,
             ),
             InlineKeyboardButton(
                 INFO_PRESETS["deposit"][0],
                 callback_data=f"admin:preset:i:deposit:{row.id}",
+                icon_custom_emoji_id=EMOJI_INFO,
             ),
         ],
         [
             InlineKeyboardButton(
                 INFO_PRESETS["recheck_uid"][0],
                 callback_data=f"admin:preset:i:recheck_uid:{row.id}",
+                icon_custom_emoji_id=EMOJI_INFO,
             ),
             InlineKeyboardButton(
                 INFO_PRESETS["activity"][0],
                 callback_data=f"admin:preset:i:activity:{row.id}",
+                icon_custom_emoji_id=EMOJI_INFO,
             ),
         ],
         [
@@ -1916,10 +1950,10 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
             (f"{s1['acc']}%", "bold"),
             (
                 f" ({s1['wins']}/{s1['total']}) · Best streak {s1['best_win_streak']}W"
-                f"\nTape: {s1['tape']}",
+                "\nTape: ",
                 None,
             ),
-        ]
+        ] + _tape_segments(s1['tape'])
     else:
         segments += [
             ("\n\n", None),
@@ -1928,7 +1962,9 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         ]
     if s30["total"]:
         segments += [
-            ("\nSignals (30s): ", None),
+            ("\n", None),
+            ("🎯", ("custom", EMOJI_TARGET)),
+            (" Signals (30s): ", None),
             (f"{s30['acc']}%", "bold"),
             (
                 f" ({s30['wins']}/{s30['total']}) · Best streak {s30['best_win_streak']}W",
@@ -1966,7 +2002,12 @@ def _clean_users_preview(summary: dict) -> tuple[str, list, InlineKeyboardMarkup
         (
             f"\n\nTotal users: {summary.get('users_total', 0)}"
             f"\nAdmin (rehne wale): {summary.get('users_kept', 0)} ({kept})"
-            f"\nDelete honge: {summary.get('users_deleted', 0)} users"
+            "\nDelete honge: ",
+            None,
+        ),
+        (f"{summary.get('users_deleted', 0)}", "bold"),
+        (
+            " users"
             f"\nUnki submissions: {summary.get('submissions_deleted', 0)}"
             f" (aur {summary.get('history_deleted', 0)} history rows)"
             f"\n\nSignal record: {summary.get('signal_records_kept', 0)} rows — rehne do"
@@ -1976,7 +2017,7 @@ def _clean_users_preview(summary: dict) -> tuple[str, list, InlineKeyboardMarkup
         ),
     ])
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Haan, delete karo", callback_data="admin:clean:confirm", icon_custom_emoji_id=EMOJI_CHECK),
+        InlineKeyboardButton("✅ Haan, delete karo", callback_data="admin:clean:confirm", style="danger", icon_custom_emoji_id=EMOJI_CHECK),
         InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
     ]])
     return text, entities, keyboard
@@ -2016,7 +2057,11 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             except Exception as exc:  # noqa: BLE001 - report the Telegram error to the admin
                 await update.message.reply_text(f"Naam change nahi ho paya: {exc}")
                 return
-            await update.message.reply_text(f"✅ Bot ka naam badal diya: {new_name}")
+            rtext, rentities = _render([
+                ("✅", ("custom", EMOJI_CHECK)),
+                (f" Bot ka naam badal diya: {new_name}", None),
+            ])
+            await update.message.reply_text(rtext, entities=rentities)
             return
         if text == "🛡 Admin Panel":
             context.user_data.pop("awaiting", None)
@@ -2123,13 +2168,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         uid_info = latest_row.registration_uid if latest_row else "None"
         support_alert, support_entities = _render([
             ("📩", ("custom", EMOJI_MAIL)),
-            (
-                f" Support / Appeal Ticket\n\n"
-                f"From: {who} ({user_id})\n"
-                f"Latest UID: {uid_info} ({STATUS_LABELS.get(status, status)})\n\n"
-                f"Message:\n{text}",
-                None,
-            ),
+            (" Support / Appeal Ticket", "bold"),
+            (f"\n\nFrom: {who} ({user_id})\nLatest UID: ", None),
+            (uid_info, "code"),
+            (f" ({STATUS_LABELS.get(status, status)})\n\nMessage:\n{text}", None),
         ])
         kb = InlineKeyboardMarkup([
             [
@@ -2181,13 +2223,17 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     ]
                 ]),
             )
-            await update.message.reply_text(
-                f"✅ User {target_tid} ko message bhej diya.",
-            )
+            dtext, dentities = _render([
+                ("✅", ("custom", EMOJI_CHECK)),
+                (f" User {target_tid} ko message bhej diya.", None),
+            ])
+            await update.message.reply_text(dtext, entities=dentities)
         except Exception as e:
-            await update.message.reply_text(
-                f"❌ User {target_tid} ko message nahi bhej paye: {e}",
-            )
+            dtext, dentities = _render([
+                ("❌", ("custom", EMOJI_CROSS)),
+                (f" User {target_tid} ko message nahi bhej paye: {e}", None),
+            ])
+            await update.message.reply_text(dtext, entities=dentities)
         return
 
     # 3. Admin Search UID / User
@@ -2227,13 +2273,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         total, verified = _broadcast_counts()
         pending_cnt = len(_broadcast_targets("pending"))
         rejected_cnt = len(_broadcast_targets("rejected"))
-        preview = (
-            f"📣 Broadcast Studio Preview:\n\n{text}\n\n"
-            f"Sab: {total}  ·  Verified: {verified}  ·  Pending: {pending_cnt}  ·  Rejected/Info: {rejected_cnt}"
-        )
+        preview, preview_entities = _broadcast_preview_text(text, total, verified, pending_cnt, rejected_cnt)
         await update.message.reply_text(
             preview,
-            entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_MEGAPHONE)],
+            entities=preview_entities,
             reply_markup=_broadcast_preview_keyboard(total, verified, pending_cnt, rejected_cnt, pin=False),
         )
         return
@@ -2272,6 +2315,22 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+def _broadcast_preview_text(text: str, total: int, verified: int, pending_cnt: int, rejected_cnt: int) -> tuple[str, list]:
+    """Broadcast Studio preview: bold title + bold audience counts."""
+    return _render([
+        ("📣", ("custom", EMOJI_MEGAPHONE)),
+        (" Broadcast Studio Preview:", "bold"),
+        (f"\n\n{text}\n\nSab: ", None),
+        (f"{total}", "bold"),
+        ("  ·  Verified: ", None),
+        (f"{verified}", "bold"),
+        ("  ·  Pending: ", None),
+        (f"{pending_cnt}", "bold"),
+        ("  ·  Rejected/Info: ", None),
+        (f"{rejected_cnt}", "bold"),
+    ])
+
+
 def _broadcast_preview_keyboard(
     total: int,
     verified: int,
@@ -2279,7 +2338,7 @@ def _broadcast_preview_keyboard(
     rejected_cnt: int,
     pin: bool = False,
 ) -> InlineKeyboardMarkup:
-    pin_label = "Auto-Pin: ON ✅" if pin else "Auto-Pin: OFF"
+    pin_label = "Auto-Pin: ON" if pin else "Auto-Pin: OFF"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(pin_label, callback_data="admin:broadcast:toggle_pin", icon_custom_emoji_id=EMOJI_PIN)],
         [InlineKeyboardButton(f"Sabko Bhejo ({total})", callback_data="admin:broadcast:all", icon_custom_emoji_id=EMOJI_MEGAPHONE)],
@@ -2489,7 +2548,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 page = 0
             kb = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("Haan, Page ki Sab Approve Karo", callback_data=f"admin:bulk_exec:{page}", icon_custom_emoji_id=EMOJI_CHECK),
+                    InlineKeyboardButton("Haan, Page ki Sab Approve Karo", callback_data=f"admin:bulk_exec:{page}", style="success", icon_custom_emoji_id=EMOJI_CHECK),
                     InlineKeyboardButton("✖️ Cancel", callback_data=f"admin:pending:{page}"),
                 ]
             ])
@@ -2586,7 +2645,8 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 ])
             else:
                 rtext, rentities = _render([
-                    ("✅ Clean ho gaya.", "bold"),
+                    ("✅", ("custom", EMOJI_CHECK)),
+                    (" Clean ho gaya.", "bold"),
                     (
                         f"\n\nDelete kiye: {summary.get('users_deleted', 0)} users, "
                         f"{summary.get('submissions_deleted', 0)} submissions, "
@@ -2672,14 +2732,11 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             total, verified = _broadcast_counts()
             pending_cnt = len(_broadcast_targets("pending"))
             rejected_cnt = len(_broadcast_targets("rejected"))
-            preview = (
-                f"📣 Broadcast Studio Preview:\n\n{text}\n\n"
-                f"Sab: {total}  ·  Verified: {verified}  ·  Pending: {pending_cnt}  ·  Rejected/Info: {rejected_cnt}"
-            )
+            preview, preview_entities = _broadcast_preview_text(text, total, verified, pending_cnt, rejected_cnt)
             await _edit_or_reply(
                 query,
                 preview,
-                entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_MEGAPHONE)],
+                entities=preview_entities,
                 reply_markup=_broadcast_preview_keyboard(total, verified, pending_cnt, rejected_cnt, pin=pin),
             )
             return
