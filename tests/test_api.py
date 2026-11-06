@@ -983,7 +983,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     status_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in status_kb.inline_keyboard] == [
         ["Status Refresh Karo"],
-        ["⬅️ Main Menu"],
+        ["Main Menu"],
     ]
 
     update, query, message = _fake_query(USER_ID, "__stats__")
@@ -991,7 +991,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in stats_kb.inline_keyboard] == [
         ["Stats Refresh Karo"],
-        ["⬅️ Main Menu"],
+        ["Main Menu"],
     ]
 
     # An admin's leaf screens go back to the panel instead.
@@ -1000,7 +1000,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     admin_stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in admin_stats_kb.inline_keyboard] == [
         ["Stats Refresh Karo"],
-        ["⬅️ Admin Panel"],
+        ["Admin Panel"],
     ]
 
     # And the keyboard labels open the admin views. The panel itself and
