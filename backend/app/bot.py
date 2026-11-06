@@ -35,8 +35,7 @@ import httpx
 from sqlalchemy import asc, desc, func, select, text
 from sqlalchemy.orm import load_only
 from telegram import (
-    BotCommandScopeChat,
-    BotCommandScopeDefault,
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputFile,
@@ -59,7 +58,7 @@ from telegram.ext import (
 from .autoverify import auto_check_summary
 from .clean_users import clean as _clean_users
 from .config import get_settings
-from .db import Admin, AuditEvent, ReviewHistory, SignalRecord, Submission, User, get_session_factory, mask_uid
+from .db import Admin, AuditEvent, BroadcastDraft, ReviewHistory, SignalRecord, Submission, SupportMessage, SupportTicket, User, get_session_factory, mask_uid
 from .prediction import get_live
 from .rate_limit import RateLimitExceeded, limiter
 from .services import (
@@ -70,6 +69,8 @@ from .services import (
     is_admin,
     list_db_admins,
     remove_admin,
+    user_badges,
+    vip_tier,
 )
 
 # Telegram Premium custom emoji IDs used by the bot's buttons and messages.
@@ -193,6 +194,7 @@ STATUS_LABELS = {
     "verified": "Verified (admin ne check kiya)",
     "rejected": "Reject ho gaya",
     "info_required": "Aur jaankari chahiye",
+    "withdrawn": "Withdraw kar li",
 }
 
 STATUS_ICONS = {
@@ -305,12 +307,19 @@ async def notify_user(
         segments.append(("\n\n", None))
         segments.append(("Admin ka note:", "bold"))
         segments.append((f"\n{message}", "blockquote"))
-    segments.append(("\n\n", None))
-    segments.append((
-        "Verification se financial recovery ki guarantee nahi milti. "
-        "Poora status dekhne ke liye verification panel kholo.",
-        "blockquote",
-    ))
+    # One honesty line, not two stacked blockquotes: the full blockquote
+    # only on the verified notification (the promise-adjacent moment);
+    # every other status gets a single plain line, so the note above
+    # stays readable and the honesty line does not get skipped.
+    if status == "verified":
+        segments.append(("\n\n", None))
+        segments.append((
+            "Verification se financial recovery ki guarantee nahi milti. "
+            "Poora status dekhne ke liye verification panel kholo.",
+            "blockquote",
+        ))
+    else:
+        segments.append(("\n\nVerified = admin-approved, recovery ki guarantee nahi.", None))
     text, entities = _render(segments)
     buttons = []
     if mini_app_url:
@@ -341,6 +350,24 @@ async def notify_user(
     except Exception:
         _notif_logger.exception("Telegram notify error (telegram_id redacted from payload)")
         return False
+
+
+async def notify_admins_text(bot_token: str, admin_ids: list[int], text: str) -> None:
+    """Best-effort plain-text note to every admin (withdraw notices and
+    other short operational notes). No buttons, no entities — the queue
+    and inspector already carry the detail. Never raises."""
+    if not bot_token or not admin_ids:
+        return
+    client = _get_telegram_client()
+    for admin_id in admin_ids:
+        try:
+            await _post_telegram_json(
+                client,
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                {"chat_id": admin_id, "text": text},
+            )
+        except Exception:
+            logger.debug("Admin text notify failed.", exc_info=True)
 
 
 async def notify_admins(
@@ -640,8 +667,17 @@ def _combine_texts(head_text: str, head_entities: list, tail_text: str, tail_ent
 def _welcome_text(
     first_name: str | None = None,
     verified: bool = False,
+    status: str | None = None,
+    submission_id: int | None = None,
 ):
-    """Welcome message — pure Hinglish now; no language toggle, no English branch."""
+    """Welcome message — pure Hinglish now; no language toggle, no English branch.
+
+    ``status``/``submission_id`` (from the user's latest submission) let
+    /start speak to a waiting user instead of showing the same generic
+    welcome to everyone: a pending submission, an info request and a
+    rejection each get their own line. ``verified`` stays for callers
+    that only ran the cheap verified check.
+    """
     greeting = f"Namaste {first_name}! " if first_name else ""
     segments = [
         ("👑", ("custom", EMOJI_CROWN)),
@@ -657,19 +693,38 @@ def _welcome_text(
         (" ", None),
         ("Verify hote hi", "bold"),
         (" — WinGo predictions khul jayenge.", None),
-        ("\n", None),
-        ("📈", ("custom", EMOJI_CHART_UP)),
-        (" ", None),
-        ("Status, badges, win rate", "bold"),
-        (" — sab live, sab real.", None),
     ]
-    if verified:
+    if verified or status == "verified":
         segments += [
             ("\n\n", None),
             ("💎", ("custom", EMOJI_DIAMOND)),
             (" ", None),
             ("Verified", "bold"),
             (" — predictions panel khul gaya hai.", None),
+        ]
+    elif status in ("pending_review", "under_review") and submission_id is not None:
+        segments += [
+            ("\n\n", None),
+            ("⏳", ("custom", EMOJI_HOURGLASS)),
+            (" ", None),
+            (f"Aapki #{submission_id} {STATUS_LABELS[status].lower()}", "bold"),
+            (" — faisla aate hi yahi batayenge.", None),
+        ]
+    elif status == "info_required" and submission_id is not None:
+        segments += [
+            ("\n\n", None),
+            ("ℹ️", ("custom", EMOJI_INFO)),
+            (" ", None),
+            (f"Admin ne #{submission_id} par aur jaankari mangi hai", "bold"),
+            (" — Verification Panel kholo.", None),
+        ]
+    elif status == "rejected" and submission_id is not None:
+        segments += [
+            ("\n\n", None),
+            ("❌", ("custom", EMOJI_CROSS)),
+            (" ", None),
+            (f"#{submission_id} reject ho gayi", "bold"),
+            (" — Help se appeal kar sakte ho.", None),
         ]
     else:
         segments += [
@@ -800,54 +855,16 @@ def _is_user_verified(telegram_id: int) -> bool:
 
 
 def _badges_for(telegram_id: int, admin: bool | None = None) -> list[str]:
-    """Badges earned from real data only — nothing invented or bought.
-
-    👑 Admin — platform administrator.
-    ✅ Verified — submission approved by an admin.
-    ⚡ First Try — verified on the very first submission.
-    ⭐ Early Bird — among the first 10 users ever.
-    🏆 OG Member — among the first 50 users ever.
-    📅 Veteran — account older than 30 days.
-    🔁 Comeback — submitted more than once.
+    """Badges earned from real data only — thin wrapper over the shared
+    services.user_badges, so the bot and the Mini App never disagree.
 
     Pass ``admin`` when the caller already ran the admin check, so this
     does not pay for a second one.
     """
-    badges: list[str] = []
     if admin is None:
         admin = _is_admin(telegram_id)
-    if admin:
-        badges.append("👑 Admin")
     with _db_session() as db:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        if user is None:
-            return badges
-        submissions = (
-            db.query(Submission)
-            .options(load_only(Submission.status, Submission.submitted_at))
-            .filter(Submission.user_id == user.id)
-            .order_by(Submission.submitted_at.asc())
-            .all()
-        )
-        is_ver = any(s.status == "verified" for s in submissions)
-        if is_ver:
-            badges.append("✅ Verified")
-            if len(submissions) == 1 and submissions[0].status == "verified":
-                badges.append("⚡ First Try")
-        rank = db.query(User).filter(User.id < user.id).count()
-        if rank < 10:
-            badges.append("⭐ Early Bird")
-        elif rank < 50:
-            badges.append("🏆 OG Member")
-        first_seen = user.first_seen_at
-        if first_seen is not None:
-            if first_seen.tzinfo is None:
-                first_seen = first_seen.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - first_seen).days >= 30:
-                badges.append("📅 Veteran")
-        if len(submissions) >= 2:
-            badges.append("🔁 Comeback")
-        return badges
+        return user_badges(db, telegram_id, is_admin_user=admin)
 
 
 # Badge icons that have a premium custom emoji in the user's sets.
@@ -898,16 +915,8 @@ def _badge_segments(badges: list[str]) -> list:
 
 
 def _vip_tier(badges: list[str], verified: bool, total_submissions: int) -> str:
-    """Compute a user's real-data tier from their verification status and badges."""
-    if "👑 Admin" in badges:
-        return "👑 Sovereign Admin"
-    if verified and ("⭐ Early Bird" in badges or "⚡ First Try" in badges or len(badges) >= 3):
-        return "💎 Diamond VIP"
-    if verified:
-        return "🥇 Gold Verified"
-    if total_submissions > 0:
-        return "🥈 Silver Applicant"
-    return "🌱 New Member"
+    """Compute a user's real-data tier — thin wrapper over services.vip_tier."""
+    return vip_tier(badges, verified, total_submissions)
 
 
 def _predict_url() -> str | None:
@@ -980,14 +989,14 @@ def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
     """The admin panel lives ONLY here, in the keyboard area next to the
     message box. There is no inline copy of it anywhere — no Admin Panel
     button in the main menu, no dashboard keyboard under the panel
-    message. An admin's whole navigation is these nine buttons."""
+    message. An admin's whole navigation is these ten buttons."""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("🛡 Admin Panel"), KeyboardButton("📈 Analytics")],
             [KeyboardButton("📋 Pending"), KeyboardButton("🔍 Search")],
             [KeyboardButton("📊 Live Stats"), KeyboardButton("👥 Admins")],
             [KeyboardButton("📣 Broadcast"), KeyboardButton("📥 Export CSV")],
-            [KeyboardButton("🧹 Clean Users")],
+            [KeyboardButton("🎫 Tickets"), KeyboardButton("🧹 Clean Users")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -1147,7 +1156,8 @@ async def _send_broadcast(
 
 def _window_segments(status: str) -> list:
     """The three verification windows as _render segments — done steps
-    get the premium ✅, in-progress … and waiting ○ stay plain."""
+    get the premium ✅, in-progress gets the premium ⏳ (same icon
+    language as the pending status icon), waiting ○ stays plain."""
     w2 = "…" if status in ("pending_review", "under_review") else "✓"
     if status in ("verified", "rejected", "info_required"):
         w3 = "✓"
@@ -1157,7 +1167,11 @@ def _window_segments(status: str) -> list:
         w3 = "○"
 
     def _mark(mark: str) -> list:
-        return [("✅", ("custom", EMOJI_CHECK))] if mark == "✓" else [(mark, None)]
+        if mark == "✓":
+            return [("✅", ("custom", EMOJI_CHECK))]
+        if mark == "…":
+            return [("⏳", ("custom", EMOJI_HOURGLASS))]
+        return [(mark, None)]
 
     return (
         [("01 Mila ", None)] + _mark("✓")
@@ -1181,8 +1195,11 @@ def _progress_bar(status: str) -> str:
 
 def _progress_segments(status: str) -> list:
     """Progress line as _render segments: verified ✅ and rejected ❌ are
-    both premium custom emojis now."""
-    segments = [("\nProgress: ", None), (_progress_bar(status), None)]
+    both premium custom emojis now. The bar itself is a ``code`` entity
+    (monospace) so the block characters line up on every client — as
+    plain text they render unevenly in Telegram's proportional font,
+    like the analytics sparkline already does."""
+    segments = [("\nProgress: ", None), (_progress_bar(status), "code")]
     if status == "verified":
         segments.append((" ", None))
         segments.append(("✅", ("custom", EMOJI_CHECK)))
@@ -1335,7 +1352,8 @@ def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool =
             ("\n", None),
             ("Member Rank: ", "bold"),
             (f"#{rank}", "code"),
-            (f" of {total_users}  ·  ", None),
+            (f" of {total_users}", None),
+            ("\n", None),
             ("Account Age: ", "bold"),
             (f"{age_days}d", None),
         ]
@@ -1521,6 +1539,7 @@ def _admin_dashboard() -> tuple[str, list]:
             counts[st] = n
         today_start = _today_start_ist()
         today = db.query(Submission).filter(Submission.submitted_at >= today_start).count()
+        open_tickets = db.query(SupportTicket).filter(SupportTicket.status.in_(("open", "answered"))).count()
     total = sum(counts.values())  # the group-by already counted every row
 
     decided = counts.get("verified", 0) + counts.get("rejected", 0)
@@ -1553,7 +1572,9 @@ def _admin_dashboard() -> tuple[str, list]:
         (str(total_users), "bold"),
         ("  ·  Submissions ", None),
         (str(total), "bold"),
-        ("\n\nNeeche button dabakar Pending, Search, Analytics, Broadcast, Admins, Export ya Clean Users kholo.", "italic"),
+        ("\n", None),
+        ("Support tickets khule: ", None),
+        (str(open_tickets), "bold"),
     ]
     return _render(segments)
 
@@ -1661,8 +1682,87 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
             InlineKeyboardButton("Users CSV", callback_data="admin:export_users", icon_custom_emoji_id=EMOJI_INBOX),
         ],
         [
+            InlineKeyboardButton("Admin Activity", callback_data="admin:activity", icon_custom_emoji_id=EMOJI_PEOPLE),
             InlineKeyboardButton("Analytics Refresh Karo", callback_data="admin:analytics", icon_custom_emoji_id=EMOJI_REFRESH),
         ],
+    ])
+    return text, entities, kb
+
+
+def _admin_activity_view() -> tuple[str, list, InlineKeyboardMarkup]:
+    """Decisions per admin (7-day + all-time) + broadcasts per admin.
+
+    Bot-added admins get submission alerts now, but the owner could not
+    tell who is actually doing the reviewing. ReviewHistory is the
+    decision log (actor = admin id); AuditEvent action=broadcast is the
+    broadcast log. Withdrawals are excluded — their actor is the user
+    themself, not an admin decision.
+    """
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    with _db_session() as db:
+        recent = (
+            db.query(ReviewHistory.admin_telegram_id, ReviewHistory.new_status, func.count())
+            .filter(ReviewHistory.created_at >= seven_days_ago, ReviewHistory.new_status != "withdrawn")
+            .group_by(ReviewHistory.admin_telegram_id, ReviewHistory.new_status)
+            .all()
+        )
+        all_time = (
+            db.query(ReviewHistory.admin_telegram_id, ReviewHistory.new_status, func.count())
+            .filter(ReviewHistory.new_status != "withdrawn")
+            .group_by(ReviewHistory.admin_telegram_id, ReviewHistory.new_status)
+            .all()
+        )
+        broadcasts = (
+            db.query(AuditEvent.actor_telegram_id, func.count())
+            .filter(AuditEvent.action == "broadcast")
+            .group_by(AuditEvent.actor_telegram_id)
+            .all()
+        )
+        admin_ids = {r[0] for r in recent} | {r[0] for r in all_time} | {r[0] for r in broadcasts}
+        names = {}
+        if admin_ids:
+            names = {
+                u.telegram_id: (f"@{u.username}" if u.username else (u.first_name or str(u.telegram_id)))
+                for u in db.query(User).filter(User.telegram_id.in_(admin_ids)).all()
+            }
+
+    def _tally(rows) -> dict[int, dict[str, int]]:
+        out: dict[int, dict[str, int]] = {}
+        for aid, st, n in rows:
+            out.setdefault(aid, {})[st] = n
+        return out
+
+    recent_map = _tally(recent)
+    total_map = _tally(all_time)
+    broadcast_map = {aid: n for aid, n in broadcasts}
+    ordered = sorted(admin_ids, key=lambda aid: sum(total_map.get(aid, {}).values()), reverse=True)
+
+    segments = [
+        ("👥", ("custom", EMOJI_PEOPLE)),
+        (" ", None),
+        ("Admin Activity", "bold"),
+        ("\n\nKaun kitna review kar raha hai — 7 din aur total.", None),
+    ]
+    for aid in ordered:
+        r7 = recent_map.get(aid, {})
+        rt = total_map.get(aid, {})
+        label = names.get(aid, str(aid))
+        segments += [
+            ("\n\n", None),
+            (label, "bold"),
+            (f" ({aid})", "code"),
+            ("\n7 din: ", None),
+            (f"✅{r7.get('verified', 0)} ❌{r7.get('rejected', 0)} ℹ️{r7.get('info_required', 0)}", None),
+            ("\nTotal: ", None),
+            (f"✅{rt.get('verified', 0)} ❌{rt.get('rejected', 0)} ℹ️{rt.get('info_required', 0)}", None),
+            (f" · Broadcasts: {broadcast_map.get(aid, 0)}", None),
+        ]
+    if not ordered:
+        segments.append(("\n\nAbhi koi admin decision nahi hai.", None))
+    text, entities = _render(segments)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Analytics", callback_data="admin:analytics", icon_custom_emoji_id=EMOJI_CHART)],
+        [_back_button(True)],
     ])
     return text, entities, kb
 
@@ -1800,8 +1900,6 @@ def _pending_view(page: int = 0, sort: str = "new", filter_mode: str = "all") ->
         return text, entities, InlineKeyboardMarkup(nav)
 
     segments = [
-        ("📋", None),
-        (" ", None),
         ("Pending submissions", "bold"),
         (f" (kul {total_pending} · page {page + 1}/{total_pages}", None),
         (" · Purani pehle" if sort == "old" else " · Nayi pehle", None),
@@ -2330,18 +2428,73 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if _too_fast(user_id):
         return
     context.user_data.pop("awaiting", None)
+    # Deep-link payloads: t.me/<bot>?start=<payload>. "ref_<id>" is a
+    # referral — recorded once, at first contact, never overwritten.
+    # "prediction" opens the Prediction tab, "support" arms the support
+    # prompt, "view_<id>" (admins) opens the submission inspector.
+    args = list(context.args or [])
+    payload = args[0] if args else None
+    referrer_id = _parse_referral_arg(args, user_id)
+    if referrer_id is not None:
+        with _db_session() as db:
+            _record_referral(
+                db,
+                user_telegram_id=user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name,
+                referrer_id=referrer_id,
+            )
     admin = _is_admin(user_id)
     if admin:
         # Admins see ONLY the panel: one compact summary message, and
         # the navigation lives in the keyboard area. No welcome text,
         # no user menu, nothing else.
+        if payload and payload.startswith("view_"):
+            sid = _safe_submission_id(payload[5:])
+            if sid is not None:
+                dtext, dentities, dkeyboard = _submission_detail_view(sid)
+                await _admin_reply(update, context, dtext, entities=dentities, reply_markup=dkeyboard)
+                return
         dtext, dentities = _admin_dashboard()
         await _admin_reply(update, context, dtext, entities=dentities, reply_markup=_admin_reply_keyboard())
         return
-    verified = _is_user_verified(user_id)
+    if payload == "prediction":
+        # Verified users go straight to the Prediction tab; everyone else
+        # gets the normal welcome (which explains how to get verified).
+        if _is_user_verified(user_id):
+            predict_url = _predict_url()
+            segments = [
+                ("🎯", ("custom", EMOJI_TARGET)),
+                (" ", None),
+                ("Predictions khul gaye", "bold"),
+                ("\n\nNeeche button dabakar Prediction tab kholo — naya period aate hi signal update hoga.", None),
+            ]
+            text, entities = _render(segments)
+            rows = []
+            if predict_url:
+                rows.append([InlineKeyboardButton("Predictions Kholo", web_app=WebAppInfo(url=predict_url), icon_custom_emoji_id=EMOJI_DIAMOND)])
+            rows.append([InlineKeyboardButton("Main Menu", callback_data="__home__", icon_custom_emoji_id=EMOJI_LEFT)])
+            await update.message.reply_text(text, entities=entities, reply_markup=InlineKeyboardMarkup(rows))
+            return
+    if payload == "support":
+        context.user_data["awaiting"] = "support_msg"
+        segments = [
+            ("💬", ("custom", EMOJI_CHAT)),
+            (" ", None),
+            ("VerifyHub Admin se Sampark / Appeal", "bold"),
+            ("\n\nApna sawaal, UID ki problem ya appeal neeche likh kar bhejo. Admin aapko yahi chat me seedha reply karega.", None),
+        ]
+        text, entities = _render(segments)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel", callback_data="__home__")]])
+        await update.message.reply_text(text, entities=entities, reply_markup=kb)
+        return
+    # /start reflects the user's live status: a waiting user is told
+    # their submission is in review instead of getting the generic welcome.
+    status, latest_row, _ = _latest_status(user_id)
     text, entities = _welcome_text(
         first_name=update.effective_user.first_name,
-        verified=verified,
+        status=status,
+        submission_id=latest_row.id if latest_row else None,
     )
     if not settings.mini_app_url and not settings.registration_url:
         text += "\n\nPanel aur registration links abhi set nahi hain — admin se MINI_APP_URL aur REGISTRATION_URL set karne ko kaho."
@@ -2349,6 +2502,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text,
         entities=entities,
         reply_markup=_keyboard(user_id=user_id),
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/help — the same guide as the Help button, as a real command.
+
+    It used to do nothing when typed (no handler, and the menu was
+    cleared at startup). Admins get the admin section too — they never
+    saw the inline user menu, so they had no Help path at all.
+    """
+    if not update.effective_user or not update.message:
+        return
+    admin = _is_admin(update.effective_user.id)
+    text, entities = _help_text(admin=admin)
+    rows = []
+    if not admin:
+        rows.append([InlineKeyboardButton("Admin se Sampark", callback_data="__support__", icon_custom_emoji_id=EMOJI_CHAT)])
+    await update.message.reply_text(
+        text,
+        entities=entities,
+        reply_markup=InlineKeyboardMarkup(rows) if rows else None,
     )
 
 
@@ -2405,10 +2579,11 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
             (" Signals (1m): abhi koi settled signal nahi hai.", None),
         ]
     if s30["total"]:
+        # The 🎯 section marker lives on the 1m line above; the 30s line
+        # gets a plain bold lead instead of repeating the same icon.
         segments += [
             ("\n", None),
-            ("🎯", ("custom", EMOJI_TARGET)),
-            (" Signals (30s): ", None),
+            ("30s: ", "bold"),
             (f"{s30['acc']}%", "bold"),
             (
                 f" ({s30['wins']}/{s30['total']}) · Best streak {s30['best_win_streak']}W"
@@ -2578,12 +2753,29 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ctext, centities, ckeyboard = _clean_users_preview(summary)
             await _admin_reply(update, context, ctext, entities=centities, reply_markup=ckeyboard)
             return
+        if text == "🎫 Tickets":
+            context.user_data.pop("awaiting", None)
+            with _db_session() as db:
+                rows = (
+                    db.query(SupportTicket, User)
+                    .join(User, User.id == SupportTicket.user_id)
+                    .filter(SupportTicket.status.in_(("open", "answered")))
+                    .order_by(desc(SupportTicket.updated_at))
+                    .limit(10)
+                    .all()
+                )
+            ttext, tentities = _tickets_list_view(rows)
+            tkeyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(f"Ticket #{t.id} Dekho", callback_data=f"admin:ticket:{t.id}", icon_custom_emoji_id=EMOJI_CHAT)] for t, _u in rows]
+            ) if rows else None
+            await _admin_reply(update, context, ttext, entities=tentities, reply_markup=tkeyboard)
+            return
 
     # Profile and Help are message buttons now (inline menu) — typing
     # their old keyboard labels is just stray text, like Stats.
     awaiting = context.user_data.get("awaiting")
 
-    # 1. User Support / Appeal Message to Admins
+    # 1. User Support / Appeal Message to Admins (ticket thread)
     if awaiting == "support_msg":
         context.user_data.pop("awaiting", None)
         if len(text) < 4:
@@ -2605,18 +2797,34 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         status, latest_row, _ = _latest_status(user_id)
         who = f"@{update.effective_user.username}" if update.effective_user.username else (update.effective_user.first_name or str(user_id))
         uid_info = latest_row.registration_uid if latest_row else "None"
+        with _db_session() as db:
+            user = _get_or_create_user(
+                db,
+                telegram_id=user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name,
+            )
+            ticket = _record_support_message(
+                db, user=user, text=text, is_admin=False, sender_telegram_id=user_id
+            )
+            prior = _ticket_messages(db, ticket.id, limit=3)
         support_alert, support_entities = _render([
             ("📩", ("custom", EMOJI_MAIL)),
-            (" Support / Appeal Ticket", "bold"),
+            (f" Support Ticket #{ticket.id}", "bold"),
             (f"\n\nFrom: {who} ({user_id})\nLatest UID: ", None),
             (uid_info, "code"),
             (f" ({STATUS_LABELS.get(status, status)})\n\nMessage:\n{text}", None),
         ])
+        if len(prior) > 1:
+            support_alert += f"\n\n— Thread me {len(prior)} messages hain, poora thread kholo —"
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("User ko Reply Karo", callback_data=f"admin:reply:{user_id}", icon_custom_emoji_id=EMOJI_CHAT),
+                InlineKeyboardButton("Thread Dekho", callback_data=f"admin:ticket:{ticket.id}", icon_custom_emoji_id=EMOJI_CHAT),
+                InlineKeyboardButton("Reply Karo", callback_data=f"admin:ticket:reply:{ticket.id}", icon_custom_emoji_id=EMOJI_CHAT),
+            ],
+            [
                 InlineKeyboardButton("User ko Inspect Karo", callback_data=f"admin:finduser:{user_id}", icon_custom_emoji_id=EMOJI_MAGNIFIER),
-            ]
+            ],
         ])
         reached = 0
         for aid in _all_admin_ids():
@@ -2627,7 +2835,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 pass
         reply_text, reply_entities = _render([
             ("✅", ("custom", EMOJI_CHECK)),
-            (" Aapka message admin ko bhej diya gaya hai. Unka reply aapko yahi chat me milega.", None),
+            (f" Aapka message admin ko bhej diya gaya hai (Ticket #{ticket.id}). Unka reply aapko yahi chat me milega.", None),
         ])
         await update.message.reply_text(
             reply_text,
@@ -2636,19 +2844,99 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    # 2. Admin Direct Reply to a User
-    if isinstance(awaiting, str) and awaiting.startswith("reply_user:") and admin:
-        target_tid_str = awaiting.split(":", 1)[1]
+    # 1b. User reply inside their own ticket thread
+    if isinstance(awaiting, str) and awaiting.startswith("support_ticket:"):
+        ticket_id_str = awaiting.split(":", 1)[1]
         context.user_data.pop("awaiting", None)
         try:
-            target_tid = int(target_tid_str)
+            ticket_id = int(ticket_id_str)
         except ValueError:
             return
+        with _db_session() as db:
+            user = db.query(User).filter(User.telegram_id == user_id).first()
+            ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first() if user else None
+            if ticket is None or ticket.user_id != user.id:
+                await update.message.reply_text("Ye ticket aapka nahi hai.")
+                return
+            if ticket.status == "closed":
+                await update.message.reply_text(
+                    "Ye ticket band ho gaya hai — naya sawaal ho to Help se Admin se Sampark karo.",
+                    reply_markup=_keyboard(user_id=user_id),
+                )
+                return
+            _record_support_message(
+                db, user=user, text=text, is_admin=False, sender_telegram_id=user_id, ticket=ticket
+            )
+        for aid in _all_admin_ids():
+            try:
+                await context.bot.send_message(
+                    aid,
+                    f"🎫 Ticket #{ticket_id} — user ne reply diya:\n\n{text}",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("Thread Dekho", callback_data=f"admin:ticket:{ticket_id}", icon_custom_emoji_id=EMOJI_CHAT),
+                    ]]),
+                )
+            except Exception:
+                pass
+        reply_text, reply_entities = _render([
+            ("✅", ("custom", EMOJI_CHECK)),
+            (f" Ticket #{ticket_id} me aapka reply bhej diya gaya hai.", None),
+        ])
+        await update.message.reply_text(
+            reply_text,
+            entities=reply_entities,
+            reply_markup=_keyboard(user_id=user_id),
+        )
+        return
+
+    # 2. Admin Direct Reply to a User (ticket-routed; the old
+    # "reply_user:<tid>" prompt from pre-ticket alerts still routes here
+    # and lands on that user's open ticket, so nothing in flight breaks.)
+    if isinstance(awaiting, str) and (awaiting.startswith("reply_ticket:") or awaiting.startswith("reply_user:")) and admin:
+        context.user_data.pop("awaiting", None)
+        target = awaiting.split(":", 1)[1]
+        ticket_id = None
+        target_tid = None
+        if awaiting.startswith("reply_ticket:"):
+            try:
+                ticket_id = int(target)
+            except ValueError:
+                return
+        else:
+            try:
+                target_tid = int(target)
+            except ValueError:
+                return
+        with _db_session() as db:
+            if ticket_id is not None:
+                ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+                if ticket is None:
+                    await update.message.reply_text("Ye ticket nahi mila.")
+                    return
+                user = db.query(User).filter(User.id == ticket.user_id).first()
+                if user is None:
+                    await update.message.reply_text("Ticket ka user nahi mila.")
+                    return
+                target_tid = user.telegram_id
+            else:
+                user = db.query(User).filter(User.telegram_id == target_tid).first()
+                if user is None:
+                    await update.message.reply_text("Ye user nahi mila.")
+                    return
+                ticket = _open_ticket_for_user(db, user)
+                if ticket is None:
+                    ticket = SupportTicket(user_id=user.id, status="open", first_message=text[:500])
+                    db.add(ticket)
+                    db.flush()
+            _record_support_message(
+                db, user=user, text=text, is_admin=True, sender_telegram_id=user_id, ticket=ticket
+            )
+            ticket_id = ticket.id
         try:
             msg_text, msg_entities = _render([
                 ("👑", ("custom", EMOJI_CROWN)),
                 (" ", None),
-                ("VerifyHub Admin ka message:", "bold"),
+                (f"VerifyHub Admin ka message (Ticket #{ticket_id}):", "bold"),
                 (f"\n\n{text}", None),
             ])
             await context.bot.send_message(
@@ -2657,14 +2945,14 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 entities=msg_entities,
                 reply_markup=InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("Admin ko Reply Karo", callback_data="__support__", icon_custom_emoji_id=EMOJI_CHAT),
+                        InlineKeyboardButton("Admin ko Reply Karo", callback_data=f"__ticket__:{ticket_id}", icon_custom_emoji_id=EMOJI_CHAT),
                         InlineKeyboardButton("Meri Status Dekho", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
                     ]
                 ]),
             )
             dtext, dentities = _render([
                 ("✅", ("custom", EMOJI_CHECK)),
-                (f" User {target_tid} ko message bhej diya.", None),
+                (f" User {target_tid} ko message bhej diya (Ticket #{ticket_id}).", None),
             ])
             await update.message.reply_text(dtext, entities=dentities)
         except Exception as e:
@@ -2709,6 +2997,9 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data["broadcast_text"] = text
         context.user_data["broadcast_entities"] = list(update.message.entities or [])
         context.user_data["broadcast_pin"] = False
+        # Durable backup: a deploy/restart mid-broadcast must not eat
+        # the draft — it is restored from Postgres on the next tap.
+        _save_broadcast_draft(admin_id=user_id, text=text, entities=list(update.message.entities or []), pin=False)
         counts = _broadcast_audience_counts()
         total, verified = counts["all"], counts["verified"]
         pending_cnt, rejected_cnt = counts["pending"], counts["rejected"]
@@ -2792,6 +3083,85 @@ def _broadcast_preview_keyboard(
     ])
 
 
+# ---------------- Broadcast drafts (Postgres-backed) ----------------
+# The live draft lives in PTB's in-memory user_data; this row is the
+# durable backup so a deploy/restart mid-broadcast does not eat the
+# admin's message. Helpers restore into user_data when the in-memory
+# copy is missing, so every existing branch keeps reading user_data
+# exactly as before. Entities are stored as MessageEntity dicts
+# (to_dict / de_json round-trip, custom emoji ids included).
+
+def _save_broadcast_draft(admin_id: int, text: str, entities, pin: bool) -> None:
+    try:
+        with _db_session() as db:
+            row = db.query(BroadcastDraft).filter(BroadcastDraft.admin_telegram_id == admin_id).first()
+            entities_json = None
+            if entities:
+                entities_json = json.dumps([e.to_dict() for e in entities])
+            if row is None:
+                db.add(BroadcastDraft(admin_telegram_id=admin_id, text=text, entities_json=entities_json, pin=bool(pin)))
+            else:
+                row.text = text
+                row.entities_json = entities_json
+                row.pin = bool(pin)
+                row.updated_at = datetime.now(timezone.utc)
+            db.commit()
+    except Exception:
+        logger.debug("Broadcast draft save failed.", exc_info=True)
+
+
+def _load_broadcast_draft(admin_id: int) -> tuple[str, list | None, bool] | None:
+    """Durable draft from Postgres, or None. Restores it into nothing —
+    the caller puts it in user_data via _get_broadcast_draft."""
+    try:
+        with _db_session() as db:
+            row = db.query(BroadcastDraft).filter(BroadcastDraft.admin_telegram_id == admin_id).first()
+            if row is None:
+                return None
+            entities = None
+            if row.entities_json:
+                try:
+                    entities = [MessageEntity.de_json(e, None) for e in json.loads(row.entities_json)]
+                except Exception:
+                    entities = None
+            return row.text, entities, bool(row.pin)
+    except Exception:
+        logger.debug("Broadcast draft load failed.", exc_info=True)
+        return None
+
+
+def _delete_broadcast_draft(admin_id: int) -> None:
+    try:
+        with _db_session() as db:
+            db.query(BroadcastDraft).filter(BroadcastDraft.admin_telegram_id == admin_id).delete()
+            db.commit()
+    except Exception:
+        logger.debug("Broadcast draft delete failed.", exc_info=True)
+
+
+def _get_broadcast_draft(context, admin_id: int) -> tuple[str, list | None, bool] | None:
+    """The draft: in-memory user_data first, Postgres backup second
+    (restored into user_data on the way). None when there is no draft."""
+    text = context.user_data.get("broadcast_text")
+    if text:
+        return text, context.user_data.get("broadcast_entities"), bool(context.user_data.get("broadcast_pin", False))
+    restored = _load_broadcast_draft(admin_id)
+    if restored is None:
+        return None
+    text, entities, pin = restored
+    context.user_data["broadcast_text"] = text
+    context.user_data["broadcast_entities"] = entities
+    context.user_data["broadcast_pin"] = pin
+    return restored
+
+
+def _clear_broadcast_draft(context, admin_id: int) -> None:
+    context.user_data.pop("broadcast_text", None)
+    context.user_data.pop("broadcast_entities", None)
+    context.user_data.pop("broadcast_pin", None)
+    _delete_broadcast_draft(admin_id)
+
+
 async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, message: str | None):
     """Run the shared transition + user notification.
 
@@ -2842,6 +3212,207 @@ async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, me
     return text, entities, None
 
 
+# ---------------- Support tickets ----------------
+# Support used to be stateless: every message fired a fresh alert with no
+# thread, no history and no status, and the admin's reply target lived in
+# a single shared "awaiting" slot — tapping Reply on user B before typing
+# to user A silently retargeted the reply to B. Messages now belong to a
+# ticket and are routed by ticket id, so a reply always lands on the
+# thread the admin actually opened.
+
+TICKET_STATUS_LABELS = {
+    "open": "Khula hai — admin ka reply baki",
+    "answered": "Admin ne reply diya — user ka jawab baki",
+    "closed": "Band ho gaya",
+}
+
+
+def _get_or_create_user(db, *, telegram_id: int, username: str | None, first_name: str | None, referred_by: int | None = None) -> User:
+    """Upsert the bot-side user row (the API upserts on Mini App open,
+    but a user who only chats with the bot has no row yet).
+
+    ``referred_by`` is honoured ONLY when the row is first created —
+    an existing row's attribution is never overwritten. Self-referrals
+    and unknown referrers are ignored by the caller.
+    """
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if user is not None:
+        return user
+    user = User(
+        telegram_id=telegram_id,
+        username=username,
+        first_name=first_name,
+        referred_by_telegram_id=referred_by,
+    )
+    db.add(user)
+    db.flush()
+    return user
+
+
+def _parse_referral_arg(args: list[str] | None, own_id: int) -> int | None:
+    """Parse a /start ref_<telegram_id> payload. Returns the referrer's
+    telegram id, or None for anything missing / malformed / self."""
+    if not args:
+        return None
+    payload = args[0]
+    if not payload.startswith("ref_"):
+        return None
+    try:
+        referrer_id = int(payload[4:])
+    except ValueError:
+        return None
+    if referrer_id <= 0 or referrer_id == own_id:
+        return None
+    return referrer_id
+
+
+def _record_referral(db, *, user_telegram_id: int, username: str | None, first_name: str | None, referrer_id: int | None) -> None:
+    """Record referral attribution at /start, once and only once.
+
+    The referrer must already be a real user (they got their link from
+    the Mini App, so their row exists); an unknown referrer id is
+    ignored, never stored. If the user row already exists, nothing
+    changes — attribution is set at first contact and never overwritten.
+    """
+    existing = db.query(User).filter(User.telegram_id == user_telegram_id).first()
+    if existing is not None:
+        return
+    referred_by = None
+    if referrer_id is not None:
+        referrer = db.query(User).filter(User.telegram_id == referrer_id).first()
+        if referrer is not None:
+            referred_by = referrer_id
+    _get_or_create_user(
+        db,
+        telegram_id=user_telegram_id,
+        username=username,
+        first_name=first_name,
+        referred_by=referred_by,
+    )
+    db.commit()
+
+
+def _open_ticket_for_user(db, user: User) -> SupportTicket | None:
+    """The user's open/answered ticket, or None."""
+    return (
+        db.query(SupportTicket)
+        .filter(SupportTicket.user_id == user.id, SupportTicket.status.in_(("open", "answered")))
+        .order_by(desc(SupportTicket.created_at))
+        .first()
+    )
+
+
+def _record_support_message(db, *, user: User, text: str, is_admin: bool, sender_telegram_id: int, ticket: SupportTicket | None = None) -> SupportTicket:
+    """Append a message to a ticket (creating one for the user when
+    needed) and move the ticket's status: a user message re-opens it,
+    an admin reply marks it answered. Commits. Returns the ticket."""
+    if ticket is None:
+        ticket = _open_ticket_for_user(db, user)
+    if ticket is None:
+        ticket = SupportTicket(user_id=user.id, status="open", first_message=text[:500])
+        db.add(ticket)
+        db.flush()
+    db.add(SupportMessage(
+        ticket_id=ticket.id,
+        sender_telegram_id=sender_telegram_id,
+        is_admin=is_admin,
+        text=text,
+    ))
+    ticket.status = "answered" if is_admin else "open"
+    ticket.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return ticket
+
+
+def _ticket_messages(db, ticket_id: int, limit: int = 6) -> list[SupportMessage]:
+    """Newest-first thread messages, capped (the alert shows the tail)."""
+    return (
+        db.query(SupportMessage)
+        .filter(SupportMessage.ticket_id == ticket_id)
+        .order_by(desc(SupportMessage.created_at))
+        .limit(limit)
+        .all()
+    )
+
+
+def _ticket_thread_view(ticket: SupportTicket, user: User, messages: list[SupportMessage]) -> tuple[str, list]:
+    """Thread view: header (ticket #, user, status) + messages oldest-first."""
+    segments = [
+        ("🎫", None),
+        (" ", None),
+        (f"Ticket #{ticket.id}", "bold"),
+        (f" — {TICKET_STATUS_LABELS.get(ticket.status, ticket.status)}", None),
+        ("\n", None),
+        ("User: ", None),
+        (f"@{user.username}" if user.username else (user.first_name or str(user.telegram_id)), "code"),
+        (f" ({user.telegram_id})", None),
+        ("\nPehla message: ", None),
+        (_fmt_ist(ticket.created_at), None),
+    ]
+    for msg in reversed(messages):
+        who = "Admin" if msg.is_admin else "User"
+        segments += [
+            ("\n\n", None),
+            (who, "bold"),
+            (f" · {_fmt_ist(msg.created_at)}", None),
+            (f"\n{msg.text}", None),
+        ]
+    return _render(segments)
+
+
+def _tickets_list_view(tickets: list[tuple[SupportTicket, User]]) -> tuple[str, list]:
+    """Admin list: one line per ticket (id, user, status, first words)."""
+    segments = [
+        ("🎫", None),
+        (" ", None),
+        ("Support Tickets", "bold"),
+        (f" — {len(tickets)} khule/jawab wale", None),
+    ]
+    for ticket, user in tickets:
+        who = f"@{user.username}" if user.username else (user.first_name or str(user.telegram_id))
+        snippet = ticket.first_message[:60].replace("\n", " ")
+        segments += [
+            ("\n\n", None),
+            (f"#{ticket.id}", "bold"),
+            (f" · {who} · {TICKET_STATUS_LABELS.get(ticket.status, ticket.status)}", None),
+            (f"\n“{snippet}”", "italic"),
+        ]
+    if not tickets:
+        segments.append(("\n\nKoi khula ticket nahi hai — sab band hain ya abhi koi support message nahi aaya.", None))
+    return _render(segments)
+
+
+def _do_withdraw(user_id: int, submission_id: int) -> tuple[str, list, str | None]:
+    """User withdraws their own pending submission. Returns
+    ``(text, entities, error)`` like _do_admin_action."""
+    with _db_session() as db:
+        user = db.query(User).filter(User.telegram_id == user_id).first()
+        if user is None:
+            return None, None, "Aapki koi submission nahi mili."
+        row = db.query(Submission).filter(Submission.id == submission_id).first()
+        if row is None or row.user_id != user.id:
+            return None, None, "Ye submission aapki nahi hai."
+        row, error, _not_found = change_submission_status(
+            db,
+            submission_id=submission_id,
+            to_status="withdrawn",
+            message="User ne apni submission withdraw kar li.",
+            admin_telegram_id=user_id,
+        )
+    if error is not None:
+        return None, None, error
+    text, entities = _render([
+        ("✅", ("custom", EMOJI_CHECK)),
+        (" Withdraw ho gayi.", "bold"),
+        (
+            f"\n\nSubmission #{submission_id} withdraw kar di. Galat UID thi to ab "
+            "sahi UID se dobara submit kar sakte ho — deposit proof wahi purana chalega.",
+            None,
+        ),
+    ])
+    return text, entities, None
+
+
 async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.from_user:
@@ -2867,9 +3438,11 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             text, entities = _admin_dashboard()
             await _edit_or_reply(query, text, entities=entities)
             return
+        status, latest_row, _ = _latest_status(admin_id)
         text, entities = _welcome_text(
             first_name=query.from_user.first_name,
-            verified=_is_user_verified(admin_id),
+            status=status,
+            submission_id=latest_row.id if latest_row else None,
         )
         await _edit_or_reply(query, text, entities=entities, reply_markup=_keyboard(user_id=admin_id))
 
@@ -2958,9 +3531,116 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             [
                 InlineKeyboardButton("Status Refresh Karo", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
             ],
-            [_back_button(admin)],
         ]
+        # A pending submission can be withdrawn by the user themself
+        # (wrong UID, changed mind) — then they can resubmit at once.
+        if row is not None and status in ("pending_review", "under_review"):
+            status_kb_rows.append([
+                InlineKeyboardButton("Submission Withdraw Karo", callback_data=f"__withdraw_ask__:{row.id}", icon_custom_emoji_id=EMOJI_CROSS),
+            ])
+        status_kb_rows.append([_back_button(admin)])
         await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(status_kb_rows))
+
+    elif data.startswith("__withdraw_ask__:"):
+        sid_str = data.split(":", 1)[1]
+        segments = [
+            ("⚠️", ("custom", EMOJI_WARNING)),
+            (" ", None),
+            (f"Submission #{sid_str} withdraw karni hai?", "bold"),
+            (
+                "\n\nWithdraw karne ke baad ye submission review nahi hogi. "
+                "Galat UID thi to sahi UID se dobara submit kar sakte ho — "
+                "deposit proof wahi purana chalega.",
+                None,
+            ),
+        ]
+        text, entities = _render(segments)
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Haan, Withdraw Karo", callback_data=f"__withdraw_yes__:{sid_str}", style="danger", icon_custom_emoji_id=EMOJI_CHECK),
+                InlineKeyboardButton("✖️ Cancel", callback_data="__status__"),
+            ],
+        ])
+        await _edit_or_reply(query, text, entities=entities, reply_markup=kb)
+
+    elif data.startswith("__withdraw_yes__:"):
+        sid_str = data.split(":", 1)[1]
+        try:
+            sid = int(sid_str)
+        except ValueError:
+            return
+        text, entities, error = _do_withdraw(admin_id, sid)
+        if error is not None:
+            await _edit_or_reply(query, error)
+            return
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Meri Status Dekho", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART)],
+            [_back_button(admin)],
+        ])
+        await _edit_or_reply(query, text, entities=entities, reply_markup=kb)
+
+    elif data == "__tickets__":
+        with _db_session() as db:
+            user = db.query(User).filter(User.telegram_id == admin_id).first()
+            tickets = (
+                db.query(SupportTicket)
+                .filter(SupportTicket.user_id == user.id)
+                .order_by(desc(SupportTicket.created_at))
+                .limit(5)
+                .all()
+            ) if user is not None else []
+        segments = [
+            ("🎫", None),
+            (" ", None),
+            ("Mere Support Tickets", "bold"),
+        ]
+        rows = []
+        for t in tickets:
+            snippet = t.first_message[:50].replace("\n", " ")
+            segments += [
+                ("\n\n", None),
+                (f"#{t.id}", "bold"),
+                (f" · {TICKET_STATUS_LABELS.get(t.status, t.status)}", None),
+                (f"\n“{snippet}”", "italic"),
+            ]
+            rows.append([InlineKeyboardButton(f"Ticket #{t.id} Dekho", callback_data=f"__ticket__:{t.id}", icon_custom_emoji_id=EMOJI_CHAT)])
+        if not tickets:
+            segments.append(("\n\nAbhi koi ticket nahi hai. Help se Admin se Sampark karo — pehla message hi aapka ticket ban jayega.", None))
+        rows.append([_back_button(admin)])
+        text, entities = _render(segments)
+        await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(rows))
+
+    elif data.startswith("__ticket_reply__:"):
+        tid_str = data.split(":", 1)[1]
+        context.user_data["awaiting"] = f"support_ticket:{tid_str}"
+        text, entities = _render([
+            ("💬", ("custom", EMOJI_CHAT)),
+            (f" Ticket #{tid_str} me admin ko reply likho:", None),
+        ])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel", callback_data=f"__ticket__:{tid_str}")]])
+        await _edit_or_reply(query, text, entities=entities, reply_markup=kb)
+
+    elif data.startswith("__ticket__:"):
+        tid_str = data.split(":", 1)[1]
+        try:
+            tid = int(tid_str)
+        except ValueError:
+            return
+        with _db_session() as db:
+            user = db.query(User).filter(User.telegram_id == admin_id).first()
+            ticket = db.query(SupportTicket).filter(SupportTicket.id == tid).first() if user else None
+            if ticket is None or user is None or ticket.user_id != user.id:
+                await _edit_or_reply(query, "Ye ticket aapka nahi hai.")
+                return
+            messages = _ticket_messages(db, tid)
+            text, entities = _ticket_thread_view(ticket, user, messages)
+            closed = ticket.status == "closed"
+        rows = []
+        if not closed:
+            rows.append([InlineKeyboardButton("Admin ko Reply Karo", callback_data=f"__ticket_reply__:{tid}", icon_custom_emoji_id=EMOJI_CHAT)])
+        rows.append([InlineKeyboardButton("Mere Tickets", callback_data="__tickets__", icon_custom_emoji_id=EMOJI_CHAT)])
+        rows.append([_back_button(admin)])
+        await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(rows))
 
     elif data == "__admin__" or data.startswith("admin:"):
         if not admin:
@@ -2980,6 +3660,12 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if data == "admin:analytics":
             context.user_data.pop("awaiting", None)
             text, entities, keyboard = _admin_analytics_view()
+            await _edit_or_reply(query, text, entities=entities, reply_markup=keyboard)
+            return
+
+        if data == "admin:activity":
+            context.user_data.pop("awaiting", None)
+            text, entities, keyboard = _admin_activity_view()
             await _edit_or_reply(query, text, entities=entities, reply_markup=keyboard)
             return
 
@@ -3068,11 +3754,29 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         if data.startswith("admin:reply:"):
+            # Legacy button (old alerts / inspector): open the user's
+            # ticket and arm a ticket-routed reply, so the message lands
+            # on the thread instead of a bare user id.
             target_tid = data.split(":", 2)[2]
-            context.user_data["awaiting"] = f"reply_user:{target_tid}"
+            try:
+                target_tid_int = int(target_tid)
+            except ValueError:
+                return
+            with _db_session() as db:
+                user = db.query(User).filter(User.telegram_id == target_tid_int).first()
+                if user is None:
+                    await _edit_or_reply(query, "Ye user nahi mila.")
+                    return
+                ticket = _open_ticket_for_user(db, user)
+                if ticket is None:
+                    ticket = SupportTicket(user_id=user.id, status="open", first_message="(admin ne reply shuru kiya)")
+                    db.add(ticket)
+                    db.commit()
+                ticket_id = ticket.id
+            context.user_data["awaiting"] = f"reply_ticket:{ticket_id}"
             rtext, rentities = _render([
                 ("💬", ("custom", EMOJI_CHAT)),
-                (f" User {target_tid} ko seedha bhejne ke liye message likho:", None),
+                (f" Ticket #{ticket_id} (User {target_tid}) ko reply likho:", None),
             ])
             await _edit_or_reply(
                 query,
@@ -3082,6 +3786,95 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
                 ]]),
             )
+            return
+
+        if data == "admin:tickets":
+            with _db_session() as db:
+                rows = (
+                    db.query(SupportTicket, User)
+                    .join(User, User.id == SupportTicket.user_id)
+                    .filter(SupportTicket.status.in_(("open", "answered")))
+                    .order_by(desc(SupportTicket.updated_at))
+                    .limit(10)
+                    .all()
+                )
+            text, entities = _tickets_list_view(rows)
+            kb_rows = [
+                [InlineKeyboardButton(f"Ticket #{t.id} Dekho", callback_data=f"admin:ticket:{t.id}", icon_custom_emoji_id=EMOJI_CHAT)]
+                for t, _u in rows
+            ]
+            kb_rows.append([_back_button(True)])
+            await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(kb_rows))
+            return
+
+        if data.startswith("admin:ticket:reply:"):
+            tid_str = data.split(":", 3)[3]
+            try:
+                tid = int(tid_str)
+            except ValueError:
+                return
+            context.user_data["awaiting"] = f"reply_ticket:{tid}"
+            rtext, rentities = _render([
+                ("💬", ("custom", EMOJI_CHAT)),
+                (f" Ticket #{tid} ko reply likho:", None),
+            ])
+            await _edit_or_reply(
+                query,
+                rtext,
+                entities=rentities,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✖️ Cancel", callback_data=f"admin:ticket:{tid}"),
+                ]]),
+            )
+            return
+
+        if data.startswith("admin:ticket:close:") or data.startswith("admin:ticket:reopen:"):
+            reopen = data.startswith("admin:ticket:reopen:")
+            tid_str = data.split(":", 3)[3]
+            try:
+                tid = int(tid_str)
+            except ValueError:
+                return
+            with _db_session() as db:
+                ticket = db.query(SupportTicket).filter(SupportTicket.id == tid).first()
+                if ticket is None:
+                    await _edit_or_reply(query, "Ye ticket nahi mila.")
+                    return
+                ticket.status = "open" if reopen else "closed"
+                ticket.updated_at = datetime.now(timezone.utc)
+                db.commit()
+            data = f"admin:ticket:{tid}"
+
+        if data.startswith("admin:ticket:"):
+            tid_str = data.split(":", 2)[2]
+            try:
+                tid = int(tid_str)
+            except ValueError:
+                return
+            with _db_session() as db:
+                ticket = db.query(SupportTicket).filter(SupportTicket.id == tid).first()
+                if ticket is None:
+                    await _edit_or_reply(query, "Ye ticket nahi mila.")
+                    return
+                user = db.query(User).filter(User.id == ticket.user_id).first()
+                messages = _ticket_messages(db, tid)
+                text, entities = _ticket_thread_view(ticket, user, messages)
+                closed = ticket.status == "closed"
+            rows = []
+            if not closed:
+                rows.append([
+                    InlineKeyboardButton("Reply Karo", callback_data=f"admin:ticket:reply:{tid}", icon_custom_emoji_id=EMOJI_CHAT),
+                    InlineKeyboardButton("Ticket Band Karo", callback_data=f"admin:ticket:close:{tid}", icon_custom_emoji_id=EMOJI_CROSS),
+                ])
+            else:
+                rows.append([
+                    InlineKeyboardButton("Ticket Dobara Kholo", callback_data=f"admin:ticket:reopen:{tid}", icon_custom_emoji_id=EMOJI_REFRESH),
+                ])
+            rows.append([
+                InlineKeyboardButton("User ko Inspect Karo", callback_data=f"admin:finduser:{user.telegram_id}", icon_custom_emoji_id=EMOJI_MAGNIFIER),
+            ])
+            rows.append([InlineKeyboardButton("Tickets List", callback_data="admin:tickets", icon_custom_emoji_id=EMOJI_CHAT)])
+            await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(rows))
             return
 
         if data == "admin:clean:confirm":
@@ -3168,15 +3961,17 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         if data == "admin:broadcast:toggle_pin":
-            text = context.user_data.get("broadcast_text")
-            if not text:
+            draft = _get_broadcast_draft(context, admin_id)
+            if not draft:
                 await _edit_or_reply(
                     query,
                     "Broadcast session khatam ho gaya — Admin Panel se dobara shuru karo.",
                 )
                 return
-            pin = not bool(context.user_data.get("broadcast_pin", False))
+            text = draft[0]
+            pin = not draft[2]
             context.user_data["broadcast_pin"] = pin
+            _save_broadcast_draft(admin_id, text, draft[1], pin)
             counts = _broadcast_audience_counts()
             total, verified = counts["all"], counts["verified"]
             pending_cnt, rejected_cnt = counts["pending"], counts["rejected"]
@@ -3191,22 +3986,20 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if data == "admin:cancel-broadcast":
             context.user_data.pop("awaiting", None)
-            context.user_data.pop("broadcast_text", None)
-            context.user_data.pop("broadcast_entities", None)
-            context.user_data.pop("broadcast_pin", None)
+            _clear_broadcast_draft(context, admin_id)
             text, entities = _admin_dashboard()
             await _edit_or_reply(query, text, entities=entities)
             return
 
         if data == "admin:broadcast:test":
-            text = context.user_data.get("broadcast_text")
-            entities = context.user_data.get("broadcast_entities")
-            if not text:
+            draft = _get_broadcast_draft(context, admin_id)
+            if not draft:
                 await _edit_or_reply(
                     query,
                     "Broadcast session khatam ho gaya — Admin Panel se dobara shuru karo.",
                 )
                 return
+            text, entities = draft[0], draft[1]
             try:
                 await context.bot.send_message(admin_id, text, entities=entities)
             except Exception:
@@ -3218,7 +4011,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             total, verified = counts["all"], counts["verified"]
             pending_cnt, rejected_cnt = counts["pending"], counts["rejected"]
             preview, preview_entities = _broadcast_preview_text(text, total, verified, pending_cnt, rejected_cnt)
-            pin = bool(context.user_data.get("broadcast_pin", False))
+            pin = draft[2]
             head, head_entities = _render([
                 ("✅", ("custom", EMOJI_CHECK)),
                 (" Test message aapko bhej diya — upar check karo, phir audience chuno.", None),
@@ -3238,18 +4031,15 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "admin:broadcast:pending",
             "admin:broadcast:rejected",
         ):
-            text = context.user_data.get("broadcast_text")
-            entities = context.user_data.get("broadcast_entities")
-            pin = bool(context.user_data.get("broadcast_pin", False))
-            if not text:
+            draft = _get_broadcast_draft(context, admin_id)
+            if not draft:
                 if query.message:
                     await query.message.reply_text(
                         "Broadcast message nahi mila — Admin Panel se dobara shuru karo.",
                     )
                 return
-            context.user_data.pop("broadcast_text", None)
-            context.user_data.pop("broadcast_entities", None)
-            context.user_data.pop("broadcast_pin", None)
+            text, entities, pin = draft[0], draft[1], draft[2]
+            _clear_broadcast_draft(context, admin_id)
             mode = data.split(":")[-1]
             targets = _broadcast_targets(mode)
             start_text, start_entities = _render([
@@ -3467,35 +4257,39 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
 
-async def clear_bot_commands(bot) -> None:
-    """Remove the Telegram command menu (default + per-admin scopes).
+async def set_bot_commands(bot) -> None:
+    """Set the Telegram command menu: /start + /help for everyone.
 
-    The bot is button-only now: /start is the only entry point and every
-    action lives on an inline keyboard. Runs at startup (post_init) so a
-    stale menu left by an older deploy is cleared too. Never raises — a
-    failed clear only means the menu is stale, and the bot keeps working.
+    The bot used to be button-only and cleared the menu at every
+    startup, so /help typed in chat did literally nothing. The menu is
+    back now — /start and /help are real commands; every other action
+    still lives on buttons. Runs at startup (post_init). Never raises —
+    a failed set only means the menu is stale, and the bot keeps working.
     """
     try:
-        await bot.delete_my_commands(scope=BotCommandScopeDefault())
-        for admin_id in _all_admin_ids():
-            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
+        await bot.set_my_commands([
+            BotCommand("start", "Shuru karo — VerifyHub menu"),
+            BotCommand("help", "Kaise kaam karta hai"),
+        ])
     except Exception:
-        logger.exception("Failed to clear bot command menu.")
+        logger.exception("Failed to set bot command menu.")
 
 
 async def _post_init(application: Application) -> None:
-    await clear_bot_commands(application.bot)
+    await set_bot_commands(application.bot)
 
 
 def register_handlers(app: Application) -> None:
     """Register every VerifyHub handler on the given Application.
 
-    Button-only by design: /start is the sole command (the entry point
-    that shows the inline keyboard); every other action is a button tap
+    /start is the entry point that shows the inline keyboard; /help
+    reuses the Help screen's text as a real command (it used to do
+    nothing when typed); every other action is a button tap
     (CallbackQueryHandler) or a plain-text reply to a bot prompt
     (MessageHandler, e.g. the add-admin ID).
     """
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
     app.add_error_handler(_on_error)

@@ -45,6 +45,14 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String(128), nullable=True)
     first_name = Column(String(128), nullable=True)
+    # Referral attribution: the telegram id of the user whose invite link
+    # this user first tapped (/start ref_<id>). Set once when the user row
+    # is first created, never overwritten; NULL for organic users and
+    # self-referrals (ignored). No reward is attached here — what a
+    # referral earns is a product decision the owner has not made yet;
+    # this column only records the link, honestly counted once the
+    # referred user is admin-verified.
+    referred_by_telegram_id = Column(BigInteger, nullable=True, index=True)
     first_seen_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     last_seen_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     submissions = relationship("Submission", back_populates="user", cascade="all, delete-orphan")
@@ -93,6 +101,70 @@ class ReviewHistory(Base):
     internal_note = Column(Text, nullable=True)  # admin-only, never sent to users
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     submission = relationship("Submission", back_populates="history")
+
+
+class SupportTicket(Base):
+    """One support/appeal conversation with a user.
+
+    Before this, support was stateless: every message fired a fresh
+    alert with no thread, no history and no status, and the admin's
+    reply target lived in a single shared "awaiting" slot — so tapping
+    Reply on user B before typing to user A silently retargeted the
+    reply to B. Messages now belong to a ticket, routed by ticket id.
+    Status: open (waiting for an admin) / answered (admin replied,
+    waiting for the user) / closed (admin closed it; a new message from
+    the user opens a fresh ticket).
+    """
+    __tablename__ = "support_tickets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="open", index=True)
+    first_message = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+    user = relationship("User")
+    messages = relationship("SupportMessage", back_populates="ticket", cascade="all, delete-orphan")
+
+
+class SupportMessage(Base):
+    """One message inside a support ticket, from the user or an admin."""
+    __tablename__ = "support_messages"
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_telegram_id = Column(BigInteger, nullable=False)  # Telegram ids exceed 32-bit int; see User.telegram_id.
+    is_admin = Column(Boolean, nullable=False, default=False)
+    text = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    ticket = relationship("SupportTicket", back_populates="messages")
+
+
+class BroadcastDraft(Base):
+    """One admin's unsent broadcast draft, persisted in Postgres.
+
+    Broadcast drafts used to live only in PTB's in-memory user_data —
+    every deploy/restart silently dropped the draft mid-broadcast. The
+    bot still keeps the live copy in user_data; this row is the durable
+    backup, restored when the in-memory copy is missing. One row per
+    admin (an admin writes one broadcast at a time).
+    """
+    __tablename__ = "broadcast_drafts"
+    admin_telegram_id = Column(BigInteger, primary_key=True)
+    text = Column(Text, nullable=False)
+    entities_json = Column(Text, nullable=True)  # JSON list of MessageEntity dicts
+    pin = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class ProcessedUpdate(Base):
+    """Telegram webhook update ids already processed (dedup).
+
+    Telegram retries an update after a 503/slow response; without
+    tracking, the retry re-runs the handler (double support alert,
+    double admin reply). Rows older than a day are pruned on insert.
+    """
+    __tablename__ = "processed_updates"
+    update_id = Column(BigInteger, primary_key=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
 class AuditEvent(Base):

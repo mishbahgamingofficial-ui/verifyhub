@@ -241,9 +241,9 @@ def test_telegram_application_builds_with_all_handlers():
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
     handlers = [h for group in app.handlers.values() for h in group]
-    assert len(handlers) == 3
+    assert len(handlers) == 4
     commands = sorted(c for h in handlers if isinstance(h, CommandHandler) for c in h.commands)
-    assert commands == ["start"]  # /start is the only command: the entry point
+    assert commands == ["help", "start"]  # /start is the entry point; /help is a real command now
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
     assert sum(isinstance(h, MessageHandler) for h in handlers) == 1
     assert len(app.error_handlers) == 1  # global error handler registered
@@ -318,7 +318,6 @@ def test_render_segments_counts_utf16_units():
 
 def test_welcome_and_help_texts_use_premium_emojis():
     from app.bot import (
-        EMOJI_CHART_UP,
         EMOJI_CHECK,
         EMOJI_CROWN,
         EMOJI_POINT_DOWN,
@@ -331,12 +330,14 @@ def test_welcome_and_help_texts_use_premium_emojis():
     assert "VerifyHub — ek baar, ek faisla." in text
     assert "UID bhejo — Verification Panel se, ek hi baar." in text
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
-    assert customs == {EMOJI_CROWN, EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP, EMOJI_POINT_DOWN}
+    # The third journey row (Status/badges/win rate) was dropped: it just
+    # repeated the menu buttons below the welcome.
+    assert customs == {EMOJI_CROWN, EMOJI_CHECK, EMOJI_TARGET, EMOJI_POINT_DOWN}
 
     text, entities = _help_text()
     assert "VerifyHub — Kaise Kaam Karta Hai" in text
     assert "Verification Panel" in text
-    assert "/start" not in text and "/status" not in text  # button-only: no commands
+    assert "/start" not in text and "/status" not in text  # the guide itself names buttons, not commands
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert EMOJI_CROWN in customs
 
@@ -455,7 +456,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
         )
 
     assert _sig(polling) == _sig(webhook)
-    assert len([h for group in polling.handlers.values() for h in group]) == 3
+    assert len([h for group in polling.handlers.values() for h in group]) == 4
 
 
 # ---------------- Production hardening (DB failures, webhook secret, health) ----------------
@@ -917,7 +918,7 @@ def test_start_shows_dashboard_to_admin():
         "📋 Pending", "🔍 Search",
         "📊 Live Stats", "👥 Admins",
         "📣 Broadcast", "📥 Export CSV",
-        "🧹 Clean Users",
+        "🎫 Tickets", "🧹 Clean Users",
     ]
 
     update, context, message = _fake_update(USER_ID)
@@ -963,12 +964,12 @@ def test_admin_reply_keyboard_is_organised():
     assert kb.resize_keyboard is True
     assert kb.one_time_keyboard is False
     rows = kb.keyboard
-    assert [len(r) for r in rows] == [2, 2, 2, 2, 1]  # panel+analytics / pending+search / stats+admins / broadcast+export / clean
+    assert [len(r) for r in rows] == [2, 2, 2, 2, 2]  # panel+analytics / pending+search / stats+admins / broadcast+export / tickets+clean
     assert [b.text for b in rows[0]] == ["🛡 Admin Panel", "📈 Analytics"]
     assert [b.text for b in rows[1]] == ["📋 Pending", "🔍 Search"]
     assert [b.text for b in rows[2]] == ["📊 Live Stats", "👥 Admins"]
     assert [b.text for b in rows[3]] == ["📣 Broadcast", "📥 Export CSV"]
-    assert [b.text for b in rows[4]] == ["🧹 Clean Users"]
+    assert [b.text for b in rows[4]] == ["🎫 Tickets", "🧹 Clean Users"]
 
 
 def test_admin_keyboard_buttons_open_the_right_views():
@@ -987,7 +988,9 @@ def test_admin_keyboard_buttons_open_the_right_views():
         ["Main Menu"],
     ]
 
-    update, query, message = _fake_query(USER_ID, "__status__")
+    # The status screen for a user with no active submission has no
+    # Withdraw button (it only appears while a submission is pending).
+    update, query, message = _fake_query(999001, "__status__")
     asyncio.run(_button(update, None))
     status_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in status_kb.inline_keyboard] == [
@@ -1024,6 +1027,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
         ("📋 Pending", "KBD1", False),
         ("👥 Admins", "Platform Admins", False),
         ("📊 Live Stats", "Live Stats", True),
+        ("🎫 Tickets", "Support Tickets", False),
     ]:
         update, context, message = _fake_update(ADMIN_ID)
         message.text = label
@@ -1286,21 +1290,24 @@ def test_db_admin_can_use_api_admin_routes():
 
 # ---------------- No command menu: button-only bot ----------------
 
-def test_command_menu_is_cleared_at_startup():
+def test_command_menu_is_set_at_startup():
+    """The menu is /start + /help now: /help typed in chat used to do
+    literally nothing (no handler, and the menu was cleared at startup).
+    Nothing is ever deleted from the menu anymore."""
     import asyncio
     from unittest.mock import AsyncMock
 
     import app.bot as handlers
 
     bot = AsyncMock()
-    asyncio.run(handlers.clear_bot_commands(bot))
-    calls = bot.delete_my_commands.await_args_list
-    default_calls = [c for c in calls if c.kwargs["scope"].type == "default"]
-    assert len(default_calls) == 1
-    chat_calls = [c for c in calls if c.kwargs["scope"].type == "chat"]
-    assert any(c.kwargs["scope"].chat_id == ADMIN_ID for c in chat_calls)
-    # No command is ever set anymore: the bot is button-only.
-    assert bot.set_my_commands.await_count == 0
+    asyncio.run(handlers.set_bot_commands(bot))
+    assert bot.delete_my_commands.await_count == 0
+    assert bot.set_my_commands.await_count == 1
+    commands = bot.set_my_commands.await_args.args[0]
+    assert [(c.command, c.description) for c in commands] == [
+        ("start", "Shuru karo — VerifyHub menu"),
+        ("help", "Kaise kaam karta hai"),
+    ]
 
 
 # ---------------- Bot hardening: rate limit, error handler, edit-in-place ----------------
@@ -1587,6 +1594,339 @@ def test_autoverify_retry_verifies_pending(monkeypatch):
     assert _submission_status(sid_fail)[0] == "pending_review"
 
 
+# --- Next-level upgrade: withdraw, tickets, /help + deep links, referral,
+# per-admin activity, broadcast drafts, webhook dedup, audit meta --------
+
+
+def test_withdraw_endpoint_lifecycle():
+    """Owner withdraws a pending submission (200), a second withdraw is a
+    409, another user gets 403, and resubmission works right after."""
+    uid_user = 7001
+    r = client.post("/api/submissions", headers=H(uid_user),
+                    json={"registration_uid": "WDRAW001", "confirm_correct": True})
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    # Another user cannot withdraw it.
+    assert client.post(f"/api/me/submissions/{sid}/withdraw", headers=H(7002)).status_code == 403
+    # Owner withdraws.
+    r = client.post(f"/api/me/submissions/{sid}/withdraw", headers=H(uid_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "withdrawn"
+    assert _submission_status(sid)[0] == "withdrawn"
+    # Withdrawing again is a 409 (terminal state, no outgoing transition).
+    r = client.post(f"/api/me/submissions/{sid}/withdraw", headers=H(uid_user))
+    assert r.status_code == 409
+    # The 409 block is lifted: the correct UID can be submitted at once.
+    r = client.post("/api/submissions", headers=H(uid_user),
+                    json={"registration_uid": "WDRAW002", "confirm_correct": True})
+    assert r.status_code == 201, r.text
+    # Unknown submission is a 404.
+    assert client.post("/api/me/submissions/999999/withdraw", headers=H(uid_user)).status_code == 404
+
+
+def test_withdraw_button_appears_only_while_pending():
+    import asyncio
+
+    from app.bot import _button
+
+    sid = _make_submission(7003, "WDBTN001")
+    update, query, message = _fake_query(7003, "__status__")
+    asyncio.run(_button(update, None))
+    kb = query.edit_message_text.await_args.kwargs["reply_markup"]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert "Submission Withdraw Karo" in labels
+    # Ask -> confirm screen, then yes -> withdrawn in the DB.
+    update, query, message = _fake_query(7003, f"__withdraw_ask__:{sid}")
+    asyncio.run(_button(update, None))
+    assert "withdraw karni hai" in query.edit_message_text.await_args.args[0]
+    update, query, message = _fake_query(7003, f"__withdraw_yes__:{sid}")
+    asyncio.run(_button(update, None))
+    assert "Withdraw ho gayi" in query.edit_message_text.await_args.args[0]
+    assert _submission_status(sid)[0] == "withdrawn"
+
+
+def test_support_ticket_thread_round_trip():
+    """User message -> ticket created; admin reply (ticket-routed) ->
+    answered + delivered; user reply re-opens; admin closes."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.bot import _handle_text
+    from app.db import SupportMessage, SupportTicket, get_session_factory
+
+    user_id, admin_id = 7101, ADMIN_ID
+    bot = AsyncMock()
+    update, context, message = _fake_update(user_id)
+    context.bot = bot
+    context.user_data["awaiting"] = "support_msg"
+    message.text = "Meri UID galat ho gayi, madad karo"
+    asyncio.run(_handle_text(update, context))
+    assert "Ticket #" in message.reply_text.await_args.args[0]
+    assert bot.send_message.await_count >= 1  # admin alert fired
+
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        ticket = db.query(SupportTicket).order_by(SupportTicket.id.desc()).first()
+        assert ticket is not None and ticket.status == "open"
+        assert db.query(SupportMessage).filter(SupportMessage.ticket_id == ticket.id).count() == 1
+        tid = ticket.id
+        ticket_user_id = ticket.user_id
+    finally:
+        db.close()
+
+    # A second message while the ticket is open appends — no duplicate ticket.
+    update, context, message = _fake_update(user_id)
+    context.bot = bot
+    context.user_data["awaiting"] = "support_msg"
+    message.text = "Aur ek baat — deposit bhi ho gaya"
+    asyncio.run(_handle_text(update, context))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        assert db.query(SupportTicket).filter(SupportTicket.user_id == ticket_user_id).count() == 1
+        assert db.query(SupportMessage).filter(SupportMessage.ticket_id == tid).count() == 2
+    finally:
+        db.close()
+
+    # Admin replies via the ticket id: routed to the thread, status answered.
+    update, context, message = _fake_update(admin_id)
+    context.bot = bot
+    context.user_data["awaiting"] = f"reply_ticket:{tid}"
+    message.text = "Theek hai, aapki UID check kar rahe hain"
+    asyncio.run(_handle_text(update, context))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        ticket = db.query(SupportTicket).filter(SupportTicket.id == tid).first()
+        assert ticket.status == "answered"
+        assert db.query(SupportMessage).filter(SupportMessage.ticket_id == tid, SupportMessage.is_admin.is_(True)).count() == 1
+    finally:
+        db.close()
+    assert bot.send_message.await_count >= 2  # the user got the reply
+
+    # Admin closes the ticket from the thread view.
+    from app.bot import _button
+
+    update, query, _msg = _fake_query(admin_id, f"admin:ticket:close:{tid}")
+    asyncio.run(_button(update, SimpleNamespace(user_data={})))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        assert db.query(SupportTicket).filter(SupportTicket.id == tid).first().status == "closed"
+    finally:
+        db.close()
+
+    # Admin ticket list shows no open tickets for this user anymore.
+    update, query, _msg = _fake_query(admin_id, "admin:tickets")
+    asyncio.run(_button(update, SimpleNamespace(user_data={})))
+    assert "Koi khula ticket nahi" in query.edit_message_text.await_args.args[0]
+
+
+def test_help_command_sends_guide_to_user_and_admin():
+    import asyncio
+
+    from app.bot import help_command
+
+    update, context, message = _fake_update(USER_ID)
+    asyncio.run(help_command(update, context))
+    assert message.reply_text.await_count == 1
+    assert "Kaise Kaam Karta Hai" in message.reply_text.await_args.args[0]
+    # Admins get the admin section — they never saw the inline menu.
+    update, context, message = _fake_update(ADMIN_ID)
+    asyncio.run(help_command(update, context))
+    assert "Admin Panel" in message.reply_text.await_args.args[0]
+
+
+def test_start_deep_links_and_referral_attribution():
+    import asyncio
+
+    from app.bot import start
+    from app.db import User, get_session_factory
+
+    # Referrer exists; a new user taps the invite link once.
+    _make_submission(7201, "REFERRER1")
+    update, context, message = _fake_update(7202, args=["ref_7201"])
+    asyncio.run(start(update, context))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        referred = db.query(User).filter(User.telegram_id == 7202).first()
+        assert referred is not None and referred.referred_by_telegram_id == 7201
+    finally:
+        db.close()
+    # A second /start with a different referrer never overwrites it.
+    update, context, message = _fake_update(7202, args=["ref_7203"])
+    asyncio.run(start(update, context))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        referred = db.query(User).filter(User.telegram_id == 7202).first()
+        assert referred.referred_by_telegram_id == 7201
+    finally:
+        db.close()
+    # Self-referral and unknown referrers are ignored.
+    update, context, message = _fake_update(7203, args=["ref_7203"])
+    asyncio.run(start(update, context))
+    update, context, message = _fake_update(7204, args=["ref_999999"])
+    asyncio.run(start(update, context))
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        # Self-referral never even creates the attribution (no row is
+        # needed for a user who only tapped /start); an unknown referrer
+        # creates the row with no attribution.
+        row_7203 = db.query(User).filter(User.telegram_id == 7203).first()
+        assert row_7203 is None or row_7203.referred_by_telegram_id is None
+        assert db.query(User).filter(User.telegram_id == 7204).first().referred_by_telegram_id is None
+    finally:
+        db.close()
+    # "support" payload arms the support prompt.
+    update, context, message = _fake_update(7202, args=["support"])
+    asyncio.run(start(update, context))
+    assert context.user_data.get("awaiting") == "support_msg"
+    assert "Sampark" in message.reply_text.await_args.args[0]
+    # "prediction" for a verified user offers the Predictions button.
+    _make_submission(7205, "REFPRED1", status="verified")
+    update, context, message = _fake_update(7205, args=["prediction"])
+    asyncio.run(start(update, context))
+    assert "Predictions khul gaye" in message.reply_text.await_args.args[0]
+    # ...and for an unverified user it falls through to the welcome.
+    update, context, message = _fake_update(7202, args=["prediction"])
+    asyncio.run(start(update, context))
+    assert "VerifyHub" in message.reply_text.await_args.args[0]
+
+
+def test_start_shows_live_status_for_waiting_user():
+    import asyncio
+
+    from app.bot import start
+
+    sid = _make_submission(7206, "LIVESTAT1")
+    update, context, message = _fake_update(7206)
+    asyncio.run(start(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert f"#{sid}" in text and "review pending hai" in text
+
+
+def test_admin_activity_view_counts_decisions_per_admin():
+    import asyncio
+
+    from app.bot import _admin_activity_view
+    from app.services import change_submission_status
+    from app.db import get_session_factory
+
+    # A fresh admin id: the shared DB already holds decisions by the env
+    # admin (and system actor 0 from auto-verification), so absolute
+    # counts would be meaningless here.
+    fresh_admin = 799001
+    sid1 = _make_submission(7301, "ACTV001")
+    sid2 = _make_submission(7302, "ACTV002")
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        change_submission_status(db, submission_id=sid1, to_status="verified", message=None, admin_telegram_id=fresh_admin)
+        change_submission_status(db, submission_id=sid2, to_status="rejected", message="nope", admin_telegram_id=fresh_admin)
+    finally:
+        db.close()
+    text, _entities, _kb = _admin_activity_view()
+    assert "Admin Activity" in text
+    assert str(fresh_admin) in text
+    # The fresh admin's own block carries exactly one verify + one reject.
+    block = text.split(str(fresh_admin), 1)[1].split("\n\n", 1)[0]
+    assert "✅1" in block and "❌1" in block
+
+
+def test_broadcast_draft_round_trip_survives_restart():
+    """Draft saved to Postgres, loaded back (entities intact), restored
+    into a fresh user_data, then cleared on send/cancel."""
+    from types import SimpleNamespace
+
+    from telegram import MessageEntity
+
+    from app.bot import (
+        EMOJI_CHECK,
+        _clear_broadcast_draft,
+        _get_broadcast_draft,
+        _save_broadcast_draft,
+    )
+
+    admin_id = 7401
+    entities = [MessageEntity(MessageEntity.BOLD, 0, 4), MessageEntity(MessageEntity.CUSTOM_EMOJI, 5, 2, custom_emoji_id=EMOJI_CHECK)]
+    _save_broadcast_draft(admin_id, "Test broadcast", entities, pin=True)
+    # Fresh process state: empty user_data, draft comes back from the DB.
+    context = SimpleNamespace(user_data={})
+    draft = _get_broadcast_draft(context, admin_id)
+    assert draft is not None
+    text, restored_entities, pin = draft
+    assert text == "Test broadcast" and pin is True
+    assert context.user_data["broadcast_text"] == "Test broadcast"
+    assert [e.type for e in restored_entities] == ["bold", "custom_emoji"]
+    assert restored_entities[1].custom_emoji_id == EMOJI_CHECK
+    _clear_broadcast_draft(context, admin_id)
+    assert _get_broadcast_draft(SimpleNamespace(user_data={}), admin_id) is None
+
+
+def test_webhook_dedup_marks_repeat_updates():
+    from app.main import _mark_update_processed
+
+    url = os.environ["DATABASE_URL"]
+    assert _mark_update_processed(url, 91001) is True
+    assert _mark_update_processed(url, 91001) is False  # Telegram retry: skip
+    assert _mark_update_processed(url, 91002) is True
+
+
+def test_audit_returns_meta_and_actor_filter():
+    from app.db import AuditEvent, get_session_factory
+
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        db.add(AuditEvent(actor_telegram_id=7501, action="broadcast", record_type="broadcast", record_id=None, meta='{"audience": "all", "preview": "hello"}'))
+        db.commit()
+    finally:
+        db.close()
+    r = client.get("/api/admin/audit", headers=H(ADMIN_ID))
+    assert r.status_code == 200
+    mine = [e for e in r.json() if e["actor_telegram_id"] == 7501 and e["action"] == "broadcast"]
+    assert mine and mine[0]["meta"] == {"audience": "all", "preview": "hello"}
+    # Actor filter narrows to one admin.
+    r = client.get("/api/admin/audit?actor=7501", headers=H(ADMIN_ID))
+    assert r.status_code == 200
+    assert all(e["actor_telegram_id"] == 7501 for e in r.json())
+    assert client.get("/api/admin/audit?actor=abc", headers=H(ADMIN_ID)).status_code == 422
+
+
+def test_me_returns_profile_and_referral_fields():
+    r = client.get("/api/me", headers=H(USER_ID))
+    assert r.status_code == 200
+    me = r.json()
+    assert isinstance(me["badges"], list) and isinstance(me["tier"], str)
+    assert isinstance(me["member_rank"], int) and me["member_rank"] >= 1
+    assert isinstance(me["total_users"], int) and me["total_users"] >= 1
+    assert isinstance(me["account_age_days"], int)
+    assert isinstance(me["referrals_verified"], int)
+    # BOT_USERNAME is unset in the test env, so no link is invented.
+    assert "referral_link" in me and me["referral_link"] is None
+    assert "bot_username" in client.get("/api/config").json()
+
+
+def test_notify_user_honesty_line_shortens_off_verified(monkeypatch):
+    """Verified keeps the full honesty blockquote; other statuses get
+    one plain line instead of two stacked blockquotes."""
+    import asyncio
+
+    import app.bot as notif_module
+
+    seen = []
+
+    async def _fake_post(client, url, payload):
+        seen.append(payload)
+        return True
+
+    monkeypatch.setattr(notif_module, "_post_telegram_json", _fake_post)
+    monkeypatch.setattr(notif_module, "_telegram_client", None)
+    asyncio.run(notif_module.notify_user(BOT_TOKEN, USER_ID, "verified", None, "https://example.test/"))
+    asyncio.run(notif_module.notify_user(BOT_TOKEN, USER_ID, "rejected", "nope", "https://example.test/"))
+    verified_text = seen[0]["text"]
+    rejected_text = seen[1]["text"]
+    assert "recovery ki guarantee nahi milti" in verified_text
+    assert "Verified = admin-approved, recovery ki guarantee nahi." in rejected_text
+    assert "recovery ki guarantee nahi milti" not in rejected_text
+
+
 # --- Clean Users (admin-only database wipe) -------------------------------
 # The free Render plan has no web shell, so the wipe runs from the bot
 # itself: admin keyboard -> "Clean Users" (dry-run counts) -> confirm.
@@ -1757,8 +2097,8 @@ def test_window_segments_use_premium_check_for_done_steps():
     assert text == "01 Mila ✅\n02 Review ho raha ✅\n03 Faisla ✅"
     assert len([e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]) == 3
     text, entities = _render(_window_segments("pending_review"))
-    assert text == "01 Mila ✅\n02 Review ho raha …\n03 Faisla ○"
-    assert len([e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]) == 1
+    assert text == "01 Mila ✅\n02 Review ho raha ⏳\n03 Faisla ○"
+    assert len([e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]) == 2
 
 
 def test_preset_buttons_carry_premium_icons_not_unicode_labels():

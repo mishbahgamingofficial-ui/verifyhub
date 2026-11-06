@@ -21,21 +21,26 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .db import Admin, AuditEvent, ReviewHistory, Submission
+from sqlalchemy.orm import load_only
+
+from .db import Admin, AuditEvent, ReviewHistory, Submission, User
 
 # Statuses a submission can be in. "not_submitted" is a virtual UI state
 # (no submission row exists), never stored.
-STATUSES = ["pending_review", "under_review", "verified", "rejected", "info_required"]
+STATUSES = ["pending_review", "under_review", "verified", "rejected", "info_required", "withdrawn"]
 
 ACTIVE_STATUSES = ["pending_review", "under_review"]
 
 # Admin transitions that are valid. Terminal states have no outgoing edges.
+# "withdrawn" is user-initiated only (the user withdraws their own pending
+# submission from the status card / Mini App) — never an admin decision.
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    "pending_review": {"under_review", "verified", "rejected", "info_required"},
-    "under_review": {"pending_review", "verified", "rejected", "info_required"},
+    "pending_review": {"under_review", "verified", "rejected", "info_required", "withdrawn"},
+    "under_review": {"pending_review", "verified", "rejected", "info_required", "withdrawn"},
     "info_required": {"pending_review", "under_review", "verified", "rejected"},
     "verified": set(),
     "rejected": set(),
+    "withdrawn": set(),
 }
 
 
@@ -81,13 +86,18 @@ def list_db_admins(db):
 
 def change_submission_status(db, *, submission_id: int, to_status: str, message: str | None,
                              admin_telegram_id: int, internal_note: str | None = None):
-    """The one admin transition, shared by the HTTP API and the bot commands.
+    """The one status transition, shared by the HTTP API and the bot commands.
 
     Validates, moves the submission, records ReviewHistory + AuditEvent and
     commits. Returns ``(row, error, not_found)``: on success ``(row, None,
     False)``; on failure ``(None, human-readable reason, whether the
     submission did not exist)``. Nothing is written when it fails. The
     caller notifies the user only after this returns successfully.
+
+    ``admin_telegram_id`` is the actor: an admin for review decisions, or
+    the user themself for a withdraw (``to_status="withdrawn"``) — the
+    history/audit rows record who actually moved it, and the inspector
+    renders a withdraw as the user's own action, not an admin decision.
     """
     if to_status not in STATUSES:
         return None, "Unknown status.", False
@@ -124,6 +134,67 @@ def change_submission_status(db, *, submission_id: int, to_status: str, message:
     )
     db.commit()
     return row, None, False
+
+
+def user_badges(db, telegram_id: int, *, is_admin_user: bool) -> list[str]:
+    """Badges earned from real data only — nothing invented or bought.
+
+    👑 Admin — platform administrator.
+    ✅ Verified — submission approved by an admin.
+    ⚡ First Try — verified on the very first submission.
+    ⭐ Early Bird — among the first 10 users ever.
+    🏆 OG Member — among the first 50 users ever.
+    📅 Veteran — account older than 30 days.
+    🔁 Comeback — submitted more than once.
+
+    The single source of truth for badges: the bot's profile card and
+    the Mini App's /api/me both call this, so the two never disagree.
+    """
+    badges: list[str] = []
+    if is_admin_user:
+        badges.append("👑 Admin")
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if user is None:
+        return badges
+    submissions = (
+        db.query(Submission)
+        .options(load_only(Submission.status, Submission.submitted_at))
+        .filter(Submission.user_id == user.id)
+        .order_by(Submission.submitted_at.asc())
+        .all()
+    )
+    is_ver = any(s.status == "verified" for s in submissions)
+    if is_ver:
+        badges.append("✅ Verified")
+        if len(submissions) == 1 and submissions[0].status == "verified":
+            badges.append("⚡ First Try")
+    rank = db.query(User).filter(User.id < user.id).count()
+    if rank < 10:
+        badges.append("⭐ Early Bird")
+    elif rank < 50:
+        badges.append("🏆 OG Member")
+    first_seen = user.first_seen_at
+    if first_seen is not None:
+        if first_seen.tzinfo is None:
+            first_seen = first_seen.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - first_seen).days >= 30:
+            badges.append("📅 Veteran")
+    if len(submissions) >= 2:
+        badges.append("🔁 Comeback")
+    return badges
+
+
+def vip_tier(badges: list[str], verified: bool, total_submissions: int) -> str:
+    """Compute a user's real-data tier from their verification status and badges."""
+    if "👑 Admin" in badges:
+        return "👑 Sovereign Admin"
+    if verified and ("⭐ Early Bird" in badges or "⚡ First Try" in badges or len(badges) >= 3):
+        return "💎 Diamond VIP"
+    if verified:
+        return "🥇 Gold Verified"
+    if total_submissions > 0:
+        return "🥈 Silver Applicant"
+    return "🌱 New Member"
 
 
 async def provider_check(registration_uid: str) -> dict:

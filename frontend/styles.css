@@ -58,13 +58,6 @@ body{
   font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;
   background:var(--bg); overflow-x:hidden;
 }
-/* ---- Soft teal blob: the reference's teal blob (screen 1) as a page
-   backdrop — one calm wash, not a gradient field. ---- */
-.aurora{position:fixed; inset:0; z-index:-1; pointer-events:none; overflow:hidden}
-.aurora i{position:absolute; width:340px; height:340px; border-radius:50%; background:radial-gradient(circle, rgba(0,200,150,.16) 0%, transparent 68%)}
-.aurora i:nth-child(1){top:-110px; right:-90px; animation:auroraDrift 24s ease-in-out infinite alternate}
-.aurora i:nth-child(2){bottom:-130px; left:-100px; width:300px; height:300px; background:radial-gradient(circle, rgba(11,43,58,.10) 0%, transparent 68%); animation:auroraDrift 28s ease-in-out infinite alternate-reverse}
-@keyframes auroraDrift{from{transform:translate(0,0) scale(1)}to{transform:translate(40px,50px) scale(1.12)}}
 a{color:var(--green-deep); text-underline-offset:3px}
 a:hover{color:var(--navy)}
 button,input,select,textarea{font:inherit}
@@ -83,7 +76,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   width:38px; height:38px; flex:none; display:grid; place-items:center;
   background:linear-gradient(180deg,#00d9a5,#00a87e 55%,#007a55);
   border:1.5px solid rgba(255,255,255,.8); border-radius:12px;
-  box-shadow:0 4px 14px rgba(11,43,58,.18), inset 0 2px 0 rgba(255,255,255,.5), 0 0 14px rgba(0,200,150,.35);
+  box-shadow:0 4px 14px rgba(11,43,58,.18), inset 0 2px 0 rgba(255,255,255,.5);
 }
 .logo-v{font-weight:900; font-size:22px; line-height:1; color:#fff}
 .brand b{
@@ -102,8 +95,8 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .icon{width:18px; height:18px; flex:none}
 .icon-sm{width:16px; height:16px; flex:none}
 .eyebrow{
-  display:block; margin:0 0 8px; font-family:"JetBrains Mono",ui-monospace,monospace;
-  font-size:11px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--green-deep);
+  display:block; margin:0 0 8px;
+  font-size:11px; font-weight:600; letter-spacing:.02em; color:var(--navy);
 }
 .banner{
   display:none; border:1px solid #f5c66b; background:#fff7e0;
@@ -150,12 +143,6 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   box-shadow:0 14px 32px rgba(11,43,58,.28);
   position:relative; overflow:hidden;
 }
-.intro::after{
-  content:""; position:absolute; right:-46px; top:-46px; width:150px; height:150px; border-radius:50%;
-  background:radial-gradient(circle, rgba(0,200,150,.35), transparent 70%); pointer-events:none;
-  animation:blobDrift 9s ease-in-out infinite alternate;
-}
-@keyframes blobDrift{from{transform:translate(0,0) scale(1)}to{transform:translate(-18px,16px) scale(1.15)}}
 .intro .eyebrow{display:inline-flex; align-items:center; gap:8px; color:var(--green-bright)}
 .intro .eyebrow::before{content:""; width:18px; height:2px; flex:none; background:var(--green); border-radius:2px}
 .intro h1{
@@ -186,6 +173,14 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   content:""; position:absolute; left:0; right:0; top:0; height:5px; z-index:3;
   background:linear-gradient(90deg,var(--green),#00a87e 55%,var(--navy));
 }
+/* The prediction panel is the navy hero slab (same language as .dock /
+   .uid-stub, with the teal top rule) — not a fifth white card. The light
+   .screen inside keeps the signal readable. */
+.panel.pred-panel{
+  background:linear-gradient(160deg,#12384e,#0b2b3a 60%,#08222e);
+  border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 10px 28px rgba(11,43,58,.25);
+}
 .panel-inner{position:relative; z-index:2; padding:20px 16px 16px; display:flex; flex-direction:column; gap:12px}
 /* Step transitions: the panel slides in from the right going forward,
    from the left going back. JS (showStep) adds the class after unhiding. */
@@ -207,12 +202,11 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   background:#fff; border:1.5px solid var(--hairline-strong); color:var(--muted);
   box-shadow:0 2px 6px rgba(11,43,58,.08);
 }
-.rail-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+.rail-label{font-size:10px; font-weight:600; letter-spacing:.02em; color:var(--muted)}
 .rail-nodes li.done .rail-dot{background:var(--green); border-color:var(--green); color:#fff}
 .rail-nodes li.done .rail-label{color:var(--green-deep)}
-.rail-nodes li.current .rail-dot{background:var(--navy); border-color:var(--navy); color:#fff; animation:railPulse 1.6s ease-in-out infinite}
+.rail-nodes li.current .rail-dot{background:var(--navy); border-color:var(--navy); color:#fff; box-shadow:0 0 0 3px rgba(0,200,150,.28), 0 2px 6px rgba(11,43,58,.2)}
 .rail-nodes li.current .rail-label{color:var(--navy)}
-@keyframes railPulse{0%,100%{box-shadow:0 0 0 3px rgba(0,200,150,.28), 0 2px 6px rgba(11,43,58,.2)}50%{box-shadow:0 0 0 5px rgba(0,200,150,.14), 0 2px 10px rgba(0,200,150,.35)}}
 /* Ghost step numeral in the panel's top corner — an outlined number, so
    each step carries its own mark without new copy. */
 .step-ghost{
@@ -251,7 +245,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 }
 .status-bar .st-left,.status-bar .st-right{display:flex; align-items:center; gap:6px}
 .status-bar .live b{color:var(--green-deep)}
-.live-dot{width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px rgba(0,200,150,.8); animation:livePulse 1.6s ease-in-out infinite}
+.live-dot{width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px rgba(0,200,150,.8)}
 @keyframes livePulse{
   0%,100%{box-shadow:0 0 6px rgba(0,200,150,.9), 0 0 0 0 rgba(0,200,150,.45); opacity:1}
   50%{box-shadow:0 0 14px rgba(0,200,150,1), 0 0 0 6px rgba(0,200,150,0); opacity:.8}
@@ -314,6 +308,9 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
   border:1px dashed rgba(0,168,126,.25); border-radius:50%;
   transform:translate(-50%,-50%) rotate(-16deg); pointer-events:none;
 }
+/* The dashed ellipse lives on step 1 only — steps 2–3 and prediction
+   lead with their own content instead of repeating the decoration. */
+#step-deposit .screen::before, #step-uid .screen::before, #view-prediction .screen::before{display:none}
 .screen>*{position:relative; z-index:2}
 .lock-badge{
   width:56px; height:56px; border-radius:16px; margin-bottom:12px;
@@ -379,7 +376,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .ticket-stub{
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; font-weight:700;
-  letter-spacing:.2em; text-transform:uppercase; color:var(--green-deep); line-height:1.7;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--green-deep); line-height:1.7;
   border:0; border-radius:0; background:transparent; text-align:left;
   padding:0 0 10px; margin-bottom:14px; border-bottom:1.5px dashed rgba(0,168,126,.55);
 }
@@ -388,31 +385,22 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:man
 .ticket-body .eyebrow{color:var(--green-deep)}
 
 /* ---------- Buttons: teal primary, white secondary ----------
-   Skeuomorphism, light touch: the primary button is a glossy teal slab
-   with a top highlight; pressing it sinks it in (shadow collapses,
-   inset shading deepens) instead of just shrinking it. */
+   Flat teal slab: the primary button sinks on press (shadow collapses,
+   inset shading deepens) instead of just shrinking it. No gloss sweep,
+   no inset top highlight — the button is one solid colour. */
 .btn{
   position:relative; overflow:hidden;
   display:inline-flex; align-items:center; justify-content:center; gap:8px;
   min-height:50px; border-radius:14px; padding:12px 18px; font-weight:800; font-size:14px; letter-spacing:.5px;
   border:1.5px solid rgba(255,255,255,.7); color:#fff; text-decoration:none;
-  background:linear-gradient(180deg,#00be8a,#00875f 60%,#007a55);
-  box-shadow:0 6px 16px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45);
+  background:#00875f;
+  box-shadow:0 6px 16px rgba(0,122,85,.35);
   transition:transform .12s ease, filter .12s ease, box-shadow .12s ease;
 }
-.btn::after{
-  content:""; position:absolute; top:0; left:-80%; width:50%; height:100%;
-  background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);
-  transform:skewX(-20deg); transition:left .5s ease; pointer-events:none;
-}
-/* Primary CTA shine: press-triggered only (the press still sweeps it
-   via left, as before). No auto-sweep — the signal slab keeps the one
-   auto-sheen on the page. */
 .btn:active{
   transform:translateY(2px) scale(.97);
   box-shadow:0 2px 6px rgba(0,122,85,.35), inset 0 3px 8px rgba(0,0,0,.25), inset 0 -1px 0 rgba(255,255,255,.25);
 }
-.btn:active::after{left:135%}
 @media (hover:hover){.btn:hover{filter:brightness(1.06)}}
 .btn.secondary{
   background:#fff;
@@ -459,8 +447,8 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
    numbered node (01 done = teal, 02 current = navy, 03 next = hollow).
    The windows are white cards with a coloured left edge. */
 .sample-label{
-  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; letter-spacing:.1em;
-  text-transform:uppercase; color:var(--muted); margin:4px 0 10px;
+  font-size:11px; font-weight:600; letter-spacing:.02em;
+  color:var(--muted); margin:4px 0 10px;
 }
 .timeline{position:relative; padding-left:36px; margin-bottom:6px}
 .timeline::before{
@@ -479,7 +467,7 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .timeline .window:nth-of-type(2)::before{content:"02"}
 .timeline .window:nth-of-type(3)::before{content:"03"}
 .timeline .window.done::before{background:var(--green); border-color:var(--green); color:#fff}
-.timeline .window.active::before{background:var(--navy); border-color:var(--navy); color:#fff; animation:railPulse 1.6s ease-in-out infinite}
+.timeline .window.active::before{background:var(--navy); border-color:var(--navy); color:#fff}
 .window{
   position:relative;
   background:#fff; border:1px solid rgba(11,43,58,.06); border-left:3px solid var(--hairline-strong); border-radius:16px;
@@ -495,8 +483,8 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .window-bar{
   display:flex; justify-content:space-between; align-items:center; gap:12px;
   padding:11px 14px; border-bottom:1px solid var(--hairline);
-  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; font-weight:700;
-  letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
+  font-size:11px; font-weight:600;
+  letter-spacing:.02em; color:var(--navy);
 }
 .window-body{padding:14px}
 .window-body b{display:block; font-size:15px; color:var(--navy)}
@@ -505,9 +493,7 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
 .dot.filled{background:var(--green); border-color:var(--green); box-shadow:0 0 8px rgba(0,200,150,.6)}
 .dot.hollow{background:transparent}
 .window.done{border-left:3px solid var(--green)}
-.window.active{border:2px solid var(--green-deep); box-shadow:0 0 18px rgba(0,200,150,.28); animation:winIn .45s cubic-bezier(.2,.9,.3,1) both, winBreathe 2.2s ease-in-out .5s infinite}
-/* The current window breathes — its glow swells so the eye lands on it. */
-@keyframes winBreathe{0%,100%{box-shadow:0 0 18px rgba(0,200,150,.28)}50%{box-shadow:0 0 28px rgba(0,200,150,.5)}}
+.window.active{border:2px solid var(--green-deep); box-shadow:0 0 18px rgba(0,200,150,.28); animation:winIn .45s cubic-bezier(.2,.9,.3,1) both}
 .window.active .dot.filled{background:var(--navy); border-color:var(--navy); box-shadow:0 0 8px rgba(11,43,58,.6); animation:pulseDot 1.2s ease-in-out infinite}
 .window.next{opacity:.72; border-style:dashed}
 .window.next .window-body b{color:var(--muted)}
@@ -662,7 +648,7 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   width:30px; height:30px; flex:none; display:grid; place-items:center;
   background:linear-gradient(180deg,#00d9a5,#00a87e 55%,#007a55);
   border:1.5px solid rgba(255,255,255,.8); border-radius:9px;
-  box-shadow:0 3px 10px rgba(0,0,0,.3), inset 0 2px 0 rgba(255,255,255,.5), 0 0 12px rgba(0,200,150,.4);
+  box-shadow:0 3px 10px rgba(0,0,0,.3), inset 0 2px 0 rgba(255,255,255,.5);
 }
 .dock-v{font-size:17px; color:#fff; font-weight:900}
 .dock-name{font-weight:900; font-size:14px; letter-spacing:1.5px; color:#fff}
@@ -687,12 +673,20 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   background:linear-gradient(180deg,#00be8a,#00875f); color:#fff;
   box-shadow:0 4px 12px rgba(0,122,85,.35), inset 0 2px 0 rgba(255,255,255,.45);
 }
+/* Signal sound toggle: small, right-aligned under the timer switch.
+   Default off; the tap itself is the gesture that unlocks WebAudio. */
+.pred-sound-row{display:flex; justify-content:flex-end; margin:-6px 0 10px}
+.pred-sound{
+  border:1px solid var(--hairline-strong); background:#fff; color:var(--muted);
+  border-radius:20px; padding:6px 12px; font-size:12px; font-weight:700;
+}
+.pred-sound[aria-pressed="true"]{color:var(--green-deep); border-color:var(--green-deep)}
 .pred-period{
-  font-size:22px; font-weight:700; letter-spacing:1px;
+  font-size:16px; font-weight:700; letter-spacing:1px;
   color:var(--navy); margin-top:6px; font-variant-numeric:tabular-nums;
 }
 .pred-countdown{
-  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:15px; font-weight:700; letter-spacing:2px;
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:30px; font-weight:800; letter-spacing:2px;
   color:var(--navy); margin-top:4px; font-variant-numeric:tabular-nums;
 }
 /* Final 10 seconds: the countdown turns orange and throbs — color, glow
@@ -744,7 +738,18 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
    only when the newest result actually changed — not on every refresh). */
 .mini-ball.new,.mini-ball.land{animation:miniPop .45s cubic-bezier(.2,.9,.3,1.4) both}
 @keyframes miniPop{0%{transform:scale(.3); opacity:0}60%{transform:scale(1.25); opacity:1}100%{transform:scale(1); opacity:1}}
-.pred-reason{font-size:12px; color:var(--muted); margin-top:10px; text-align:center}
+.pred-reason{font-size:13.5px; color:var(--muted); margin-top:10px; text-align:left}
+.pred-conf{margin-top:8px}
+.pred-colour{
+  font-family:"JetBrains Mono",ui-monospace,monospace; font-size:12px; font-weight:700;
+  letter-spacing:2px; color:var(--muted); text-align:center; margin-top:8px; min-height:16px;
+}
+/* Home-tab profile + referral cards (fed by /api/me). */
+.profile-badges{display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 6px}
+.profile-badges:empty{display:none}
+#profile-card .meta{margin-top:8px}
+.referral-link{font-size:13px; color:var(--navy); margin:8px 0 4px}
+#referral-card .row .btn{flex:1}
 .pred-history{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:4px; margin-top:14px; width:100%}
 .pred-history-label{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700; flex:0 0 100%; text-align:center; margin-bottom:4px}
 .mini-ball{
@@ -767,7 +772,7 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
    results. Green = right, red = wrong, grey = still pending. */
 .acc{margin-top:16px; padding-top:14px; border-top:1px solid var(--hairline); width:100%}
 .acc-head{display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap}
-.acc-title{font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:2px; color:var(--muted-2); font-weight:700}
+.acc-title{font-size:10px; font-weight:600; letter-spacing:.02em; color:var(--navy)}
 .acc-summary{font-size:12px; font-weight:700; letter-spacing:1px; color:var(--green-deep)}
 .acc-conf{font-size:11px; letter-spacing:1px; color:var(--muted); text-align:right; margin-top:4px}
 .acc-dots{display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-top:12px}
@@ -810,6 +815,9 @@ input.invalid,textarea.invalid{border-color:var(--red-state)}
   .dock-honest{font-size:10px; padding-left:10px; padding-right:10px}
   .timeline{padding-left:32px}
   .timeline .window::before{left:-26px}
+  /* The ticker is tight too: the ball + number already carry the colour,
+     so the "last:" label drops at this width. */
+  .ticker-last-label{display:none}
 }
 @media (min-width:900px){
   .modal-backdrop{align-items:center}

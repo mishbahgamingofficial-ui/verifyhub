@@ -8,6 +8,7 @@ Routes:
   GET  /api/prediction        verified users only (server-gated)
   GET  /api/live              public WinGo 1-min ticker (no auth, real data only)
   POST /api/submissions       create, with duplicate + rate-limit protection
+  POST /api/me/submissions/{id}/withdraw  owner withdraws their own pending submission
   GET  /api/admin/stats       admin only, derived from real DB rows
   GET  /api/admin/submissions admin only, search / filter / sort
   GET  /api/admin/submissions/{id}  admin only, full UID + history
@@ -31,7 +32,7 @@ import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
@@ -41,19 +42,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from telegram import Update as TelegramUpdate
 from telegram.ext import Application as TelegramApplication
 
 from .auth import get_current_user, get_db_session, get_identity, require_admin
 from . import autoverify
 from .config import Settings, get_settings
-from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
-from .bot import close_telegram_client, notify_admins, notify_user
+from .db import AuditEvent, ProcessedUpdate, ReviewHistory, Submission, User, get_session_factory, mask_uid
+from .bot import close_telegram_client, notify_admins, notify_admins_text, notify_user
 from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
-from .services import ACTIVE_STATUSES, STATUSES, change_submission_status, is_admin, list_db_admins
+from .services import ACTIVE_STATUSES, STATUSES, change_submission_status, is_admin, list_db_admins, user_badges, vip_tier
 
 logger = logging.getLogger("verifyhub.api")
 
@@ -386,6 +387,49 @@ def _all_admin_ids(settings: Settings) -> list[int]:
     return list(dict.fromkeys(ids))
 
 
+async def _notify_admins_withdrawn(
+    *,
+    submission_id: int,
+    registration_uid: str,
+    user_telegram_id: int,
+    username: str | None,
+    first_name: str | None,
+    settings: Settings,
+) -> None:
+    """Best-effort admin note after a user withdraws a submission. The
+    queue simply stops showing the row; this note tells an admin who
+    already saw it where it went. Never raises."""
+    try:
+        who = f"@{username}" if username else (first_name or str(user_telegram_id))
+        text = (
+            f"Submission #{submission_id} withdraw ho gayi — {who} ne khud "
+            f"withdraw ki (UID {registration_uid})."
+        )
+        await notify_admins_text(settings.bot_token, _all_admin_ids(settings), text)
+    except Exception:
+        logger.exception("Withdraw admin note failed (submission %s).", submission_id)
+
+
+def _mark_update_processed(database_url: str, update_id: int) -> bool:
+    """Record a webhook update id; True when it was new (process it),
+    False when already seen (skip). Prunes rows older than a day. A DB
+    failure returns True — fail open, a missed dedup beats a dropped
+    real update."""
+    try:
+        factory = get_session_factory(database_url)
+        with factory() as db:
+            if db.query(ProcessedUpdate).filter(ProcessedUpdate.update_id == update_id).first() is not None:
+                return False
+            cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+            db.query(ProcessedUpdate).filter(ProcessedUpdate.created_at < cutoff).delete()
+            db.add(ProcessedUpdate(update_id=update_id))
+            db.commit()
+        return True
+    except Exception:
+        logger.exception("Webhook dedup check failed; processing update anyway.")
+        return True
+
+
 _PRIOR_STATUS_WORDS = {
     "verified": "verify ho gayi thi",
     "rejected": "reject ho gayi thi",
@@ -440,6 +484,10 @@ def public_config(settings: Settings = Depends(get_settings)):
         "uid_pattern": settings.uid_pattern,
         "uid_pattern_description": settings.uid_pattern_description,
         "has_registration_url": bool(settings.registration_url),
+        # The Mini App builds invite links from this (t.me/<bot>?start=ref_<id>).
+        # Empty when BOT_USERNAME is not set on the server — the invite card
+        # hides itself then instead of building a broken link.
+        "bot_username": settings.bot_username,
     }
 
 
@@ -508,6 +556,16 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
         update = TelegramUpdate.de_json(data, ptb.bot)
     except Exception:
         raise HTTPException(status_code=422, detail="Invalid Telegram update.") from None
+    # Dedup: Telegram retries an update after a 503/slow response, and
+    # a retry without tracking re-runs the handler (double support alert,
+    # double admin reply). A seen update_id is acknowledged, not
+    # re-processed. A DB failure fails open — a missed dedup is better
+    # than dropping a real update.
+    if update.update_id is not None:
+        is_new = await asyncio.to_thread(_mark_update_processed, settings.database_url, update.update_id)
+        if not is_new:
+            logger.info("Duplicate Telegram update %s ignored.", update.update_id)
+            return {"ok": True}
     try:
         await ptb.process_update(update)
     except Exception:
@@ -520,11 +578,47 @@ async def telegram_webhook(request: Request, settings: Settings = Depends(get_se
 
 @app.get("/api/me")
 def me(identity: TelegramIdentity = Depends(get_identity), user: User = Depends(get_current_user), db: Session = Depends(get_db_session), settings: Settings = Depends(get_settings)):
+    admin = is_admin(db, identity.telegram_id, settings)
+    badges = user_badges(db, identity.telegram_id, is_admin_user=admin)
+    submissions = (
+        db.query(Submission)
+        .options(load_only(Submission.status, Submission.updated_at))
+        .filter(Submission.user_id == user.id)
+        .order_by(Submission.submitted_at.asc())
+        .all()
+    )
+    verified = any(s.status == "verified" for s in submissions)
+    verified_at = next((s.updated_at for s in submissions if s.status == "verified"), None)
+    # Honest referral count: referred users who actually got admin-verified.
+    # A share click proves nothing — only a verified referral counts.
+    referrals_verified = (
+        db.query(User.id)
+        .join(Submission, Submission.user_id == User.id)
+        .filter(User.referred_by_telegram_id == identity.telegram_id, Submission.status == "verified")
+        .distinct()
+        .count()
+    )
+    first_seen = user.first_seen_at
+    if first_seen is not None and first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
     return {
         "telegram_id": identity.telegram_id,
         "username": identity.username,
         "first_name": identity.first_name,
-        "is_admin": is_admin(db, identity.telegram_id, settings),
+        "is_admin": admin,
+        "badges": badges,
+        "tier": vip_tier(badges, verified, len(submissions)),
+        "verified": verified,
+        "verified_at": verified_at.isoformat() if verified_at else None,
+        "member_rank": db.query(User).filter(User.id < user.id).count() + 1,
+        "total_users": db.query(User).count(),
+        "account_age_days": (datetime.now(timezone.utc) - first_seen).days if first_seen else 0,
+        "referrals_verified": referrals_verified,
+        "referral_link": (
+            f"https://t.me/{settings.bot_username}?start=ref_{identity.telegram_id}"
+            if settings.bot_username
+            else None
+        ),
     }
 
 
@@ -724,6 +818,48 @@ def create_submission(
     return _public_submission(row)
 
 
+@app.post("/api/me/submissions/{submission_id}/withdraw")
+def withdraw_submission(
+    submission_id: int,
+    background: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+):
+    """The user withdraws their own pending submission (wrong UID typed,
+    changed mind). Owner-only, pending_review/under_review only — terminal
+    states and other users' rows are refused with 409/403. Withdrawing
+    lifts the 409 block, so the user can immediately submit the correct
+    UID; the deposit proof carries over to the resubmission exactly like
+    after info_required. The daily auto-check only selects
+    pending_review rows, so a withdrawn row is never re-checked. Admins
+    get a short note (best-effort, after commit)."""
+    row = db.query(Submission).filter(Submission.id == submission_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    if row.user_id != user.id:
+        raise HTTPException(status_code=403, detail="This submission is not yours.")
+    updated, error, _not_found = change_submission_status(
+        db,
+        submission_id=submission_id,
+        to_status="withdrawn",
+        message="User ne apni submission withdraw kar li.",
+        admin_telegram_id=user.telegram_id,
+    )
+    if error is not None:
+        raise HTTPException(status_code=409, detail=error)
+    background.add_task(
+        _notify_admins_withdrawn,
+        submission_id=submission_id,
+        registration_uid=row.registration_uid,
+        user_telegram_id=user.telegram_id,
+        username=user.username,
+        first_name=user.first_name,
+        settings=settings,
+    )
+    return _public_submission(updated)
+
+
 # ---------------- admin routes ----------------
 
 @app.get("/api/admin/stats")
@@ -896,19 +1032,39 @@ async def admin_autoverify_retry(
 
 
 @app.get("/api/admin/audit")
-def admin_audit(admin: TelegramIdentity = Depends(require_admin), db: Session = Depends(get_db_session)):
-    rows = db.query(AuditEvent).order_by(desc(AuditEvent.created_at)).limit(100).all()
-    return [
-        {
-            "id": r.id,
-            "actor_telegram_id": r.actor_telegram_id,
-            "action": r.action,
-            "record_type": r.record_type,
-            "record_id": r.record_id,
-            "created_at": _iso(r.created_at),
-        }
-        for r in rows
-    ]
+def admin_audit(admin: TelegramIdentity = Depends(require_admin), db: Session = Depends(get_db_session), actor: str = Query(default="")):
+    """Recent audit events, newest first. ``actor`` filters to one
+    Telegram id (per-admin activity). ``meta`` is parsed JSON — the
+    broadcast preview text lives there, so the per-admin view can show
+    what was actually sent."""
+    q = db.query(AuditEvent).order_by(desc(AuditEvent.created_at))
+    if actor:
+        try:
+            actor_id = int(actor)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="actor must be a Telegram id.") from None
+        q = q.filter(AuditEvent.actor_telegram_id == actor_id)
+    rows = q.limit(100).all()
+    out = []
+    for r in rows:
+        meta = None
+        if r.meta:
+            try:
+                meta = json.loads(r.meta)
+            except Exception:
+                meta = r.meta
+        out.append(
+            {
+                "id": r.id,
+                "actor_telegram_id": r.actor_telegram_id,
+                "action": r.action,
+                "record_type": r.record_type,
+                "record_id": r.record_id,
+                "meta": meta,
+                "created_at": _iso(r.created_at),
+            }
+        )
+    return out
 
 
 @app.exception_handler(RateLimitExceeded)

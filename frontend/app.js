@@ -42,6 +42,35 @@
       else hf.impactOccurred(kind || 'light');
     } catch (e) { /* haptics are best-effort */ }
   }
+  // Signal sound (Prediction tab only): a short WebAudio beep on a new
+  // period, behind a per-user on/off toggle persisted in localStorage.
+  // Default OFF. Audio in a Telegram WebView needs a prior user gesture
+  // to unlock, so the toggle tap itself creates/resumes the AudioContext.
+  let predSoundOn = false;
+  try { predSoundOn = localStorage.getItem('vh_pred_sound') === '1'; } catch (e) { /* storage unavailable */ }
+  let predAudioCtx = null;
+  function predBeep() {
+    if (!predSoundOn) return;
+    try {
+      if (!predAudioCtx) predAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (predAudioCtx.state === 'suspended') predAudioCtx.resume();
+      const t = predAudioCtx.currentTime;
+      const o = predAudioCtx.createOscillator();
+      const g = predAudioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.15, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      o.connect(g); g.connect(predAudioCtx.destination);
+      o.start(t); o.stop(t + 0.3);
+    } catch (e) { /* sound is best-effort */ }
+  }
+  function syncSoundToggle() {
+    const btn = $('#pred-sound-btn');
+    if (!btn) return;
+    btn.textContent = predSoundOn ? 'Sound: on' : 'Sound: off';
+    btn.setAttribute('aria-pressed', String(predSoundOn));
+  }
   // Set a countdown's text, popping the digits (scale 1.15 -> 1) only when
   // the minute changes — not on every second tick.
   function setCountdownText(el, text) {
@@ -143,7 +172,8 @@
       + '<div><dt>Submitted</dt><dd>' + esc(fmt(s.submitted_at)) + '</dd></div>'
       + '<div><dt>Last updated</dt><dd>' + esc(fmt(s.updated_at)) + '</dd></div>'
       + '<div><dt>Deposit proof</dt><dd>' + (s.has_deposit_screenshot ? 'Received' : '—') + '</dd></div></dl>'
-      + (s.review_message ? '<p class="review-message"><strong>Review message:</strong><br>' + esc(s.review_message) + '</p>' : '');
+      + (s.review_message ? '<p class="review-message"><strong>Review message:</strong><br>' + esc(s.review_message) + '</p>' : '')
+      + (st === 'rejected' ? '<p class="hint">If this looks wrong, appeal via Help in the bot — an admin will take another look.</p>' : '');
   }
   // Step switch inside Phase 1: register -> deposit -> uid.
   // The panel slides in — from the right going forward, from the left
@@ -216,6 +246,46 @@
   // first submit is already on file, and the server carries it over.
   if (resubmitBtn) resubmitBtn.addEventListener('click', () => { isResubmit = true; setPhase(null); showStep('uid'); });
 
+  // Withdraw: a pending/under-review submission can be taken back by its
+  // owner (wrong UID typed). Two-tap confirm; the server decides whether
+  // it can still be withdrawn (409 with the server's message when already
+  // decided). After a withdraw the status reloads on the same path as
+  // after a submit.
+  let withdrawSubmissionId = null, withdrawArmed = false;
+  function resetWithdraw() {
+    withdrawArmed = false;
+    const btn = $('#withdraw-btn');
+    if (btn) { btn.textContent = 'Withdraw karo'; btn.classList.remove('danger'); btn.disabled = false; }
+    const cancelRow = $('#withdraw-cancel-row');
+    if (cancelRow) cancelRow.hidden = true;
+  }
+  const withdrawBtn = $('#withdraw-btn');
+  if (withdrawBtn) withdrawBtn.addEventListener('click', async () => {
+    if (!withdrawSubmissionId) return;
+    if (!withdrawArmed) {
+      withdrawArmed = true;
+      withdrawBtn.textContent = 'Pakka? Withdraw karo';
+      withdrawBtn.classList.add('danger');
+      const cancelRow = $('#withdraw-cancel-row');
+      if (cancelRow) cancelRow.hidden = false;
+      return;
+    }
+    haptic('medium');
+    withdrawBtn.disabled = true;
+    try {
+      await api('/api/me/submissions/' + withdrawSubmissionId + '/withdraw', { method: 'POST' });
+      toast('Submission withdrawn.', 'success'); haptic('success');
+      resetWithdraw();
+      loadStatus();
+    } catch (err) { toast(err.message, 'error'); } finally { withdrawBtn.disabled = false; }
+  });
+  const withdrawCancelBtn = $('#withdraw-cancel-btn');
+  if (withdrawCancelBtn) withdrawCancelBtn.addEventListener('click', () => { haptic('light'); resetWithdraw(); });
+
+  // Verified users get a road to Prediction from the home tab.
+  const predCtaBtn = $('#pred-cta-btn');
+  if (predCtaBtn) predCtaBtn.addEventListener('click', () => showTab('prediction'));
+
   // Celebration + dock: fired once per load, only when the latest
   // submission is verified (never on every refresh).
   let verifiedBurstDone = false;
@@ -228,6 +298,15 @@
       rowsP.catch(() => {}); // no unhandled rejection if latest fails first
       const latest = await latestP;
       setPhase(latest.submission || null);
+      // Withdraw: only while the submission can still be withdrawn.
+      const canWithdraw = latest.submission && ['pending_review', 'under_review'].includes(latest.submission.status);
+      withdrawSubmissionId = canWithdraw ? latest.submission.id : null;
+      resetWithdraw();
+      const wb = $('#withdraw-btn');
+      if (wb) wb.hidden = !canWithdraw;
+      // Verified users get a road to Prediction from the home tab.
+      const cta = $('#pred-cta');
+      if (cta) cta.hidden = !(latest.submission && latest.submission.status === 'verified');
       const html = latest.submission ? statusBlock(latest.submission) : '<div class="empty"><b>Not submitted yet.</b>Send your UID once above.</div>';
       $('#verify-windows').innerHTML = html;
       $('#current-body').innerHTML = latest.submission ? badge(latest.submission.status) + '<p style="margin-top:10px">UID <span class="mono">' + esc(latest.submission.uid_masked) + '</span> · submitted ' + esc(fmt(latest.submission.submitted_at)) + '</p>' : html;
@@ -249,6 +328,8 @@
       const retryHtml = '<div class="empty"><b>Couldn\'t load your status.</b>Check your connection and try again.<div class="row" style="justify-content:center"><button class="btn secondary status-retry-btn" type="button">Try again</button></div></div>';
       $('#verify-windows').innerHTML = retryHtml;
       $('#current-body').innerHTML = retryHtml;
+      const wb = $('#withdraw-btn'); if (wb) wb.hidden = true;
+      const cta = $('#pred-cta'); if (cta) cta.hidden = true;
       document.querySelectorAll('.status-retry-btn').forEach((b) => b.addEventListener('click', () => { haptic('light'); loadStatus(); }));
     }
   }
@@ -333,7 +414,7 @@
       $('#deposit-continue-btn').disabled = false;
       $('#deposit-pick-btn').textContent = 'Change screenshot';
       haptic('success');
-    } catch (err) { $('#deposit-err').textContent = 'Could not read that image. Try another.'; }
+    } catch (err) { $('#deposit-err').textContent = err && err.message === 'too large' ? 'That screenshot is still too large after compression — try a smaller one.' : 'Could not read that image. Try another.'; }
   });
 
   // Prediction (verified users only — the server gates /api/prediction;
@@ -429,13 +510,23 @@
     // One-shot burst behind the ball when a NEW signal period arrives.
     if (d.period !== lastPredPeriod) {
       lastPredPeriod = d.period;
+      haptic('success');
+      predBeep();
       burst(document.querySelector('.pred-signal'), 10);
       // The signal ball lands as an event + the slab pops.
       ball.classList.remove('land'); void ball.offsetWidth; ball.classList.add('land');
       const sig = document.querySelector('.pred-signal');
       if (sig) { sig.classList.remove('signal-pop'); void sig.offsetWidth; sig.classList.add('signal-pop'); }
     }
-    $('#pred-reason').textContent = d.signal.reason + ' · Confidence: ' + d.signal.confidence;
+    const colourEl = $('#pred-colour');
+    if (colourEl) colourEl.textContent = d.signal.colour ? String(d.signal.colour).replace(',', '+').toUpperCase() : '';
+    $('#pred-reason').textContent = d.signal.reason || '';
+    const confEl = $('#pred-conf');
+    if (confEl) {
+      confEl.hidden = !d.signal.confidence;
+      confEl.textContent = d.signal.confidence ? 'Confidence: ' + d.signal.confidence : '';
+      confEl.className = 'badge pred-conf ' + (d.signal.confidence === 'medium' ? 'b-verified' : 'b-under_review');
+    }
     $('#pred-history').innerHTML = '<span class="pred-history-label">LAST 10</span>' + (d.results || []).map((r) =>
       '<span class="mini-ball ' + ballClass(r.number) + '" title="' + esc(r.period) + '"><span>' + esc(r.number) + '</span></span>').join('');
     // The newest history ball pops in — only when a new result arrived.
@@ -602,6 +693,17 @@
     document.querySelectorAll('.pred-timer').forEach((x) => x.classList.toggle('active', x === b));
     loadPrediction();
   }));
+  const soundBtn = $('#pred-sound-btn');
+  if (soundBtn) soundBtn.addEventListener('click', () => {
+    haptic('light');
+    predSoundOn = !predSoundOn;
+    try { localStorage.setItem('vh_pred_sound', predSoundOn ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+    syncSoundToggle();
+    // The tap is the gesture that unlocks audio: create/resume here and
+    // play one beep so the user hears what "on" means.
+    if (predSoundOn) predBeep();
+  });
+  syncSoundToggle();
   $('#pred-refresh-btn').addEventListener('click', () => { haptic('medium'); loadPrediction(); });
   $('#pred-error-refresh').addEventListener('click', () => { haptic('medium'); loadPrediction(); });
   $('#pred-back-btn').addEventListener('click', () => showTab('home'));
@@ -704,17 +806,16 @@
     if (tc) tc.classList.toggle('urgent', left <= 10 && left > 0);
     if (left <= 0) fetchLive();
   }
+  // Routed through api(): the raw fetch used to abort at 8s while the
+  // free-tier server needs ~50s to wake — api() gives it the 70s timeout
+  // plus one retry, so the ticker no longer sits on RECONNECTING for a
+  // minute on every cold start. The 5s retry cadence lives in startTicker.
   async function fetchLive() {
     if (tickerInFlight) return;
     tickerInFlight = true;
     const startedAt = performance.now();
     try {
-      const controller = new AbortController();
-      const to = setTimeout(() => controller.abort(), 8000);
-      let res;
-      try { res = await fetch(API_BASE + '/api/live', { signal: controller.signal }); } finally { clearTimeout(to); }
-      if (!res.ok) throw new Error('live failed');
-      const data = await res.json();
+      const data = await api('/api/live');
       // Real round-trip, measured on this fetch — never invented.
       const ms = Math.max(1, Math.round(performance.now() - startedAt));
       document.querySelectorAll('.ping-ms').forEach((el) => { el.textContent = ms + 'MS'; });
@@ -758,6 +859,62 @@
     tickerTickId = setInterval(tickTicker, 1000);
   }
 
+  // Profile card (home tab): tier, badges, rank, account age, verified
+  // date — all exactly as /api/me returns them. Hidden in preview.
+  function renderProfile() {
+    const card = $('#profile-card');
+    if (!card) return;
+    if (!me) { card.hidden = true; return; }
+    card.hidden = false;
+    const tierEl = $('#profile-tier');
+    if (tierEl) tierEl.textContent = me.tier || 'Member';
+    const badgesEl = $('#profile-badges');
+    if (badgesEl) badgesEl.innerHTML = (me.badges || []).map((b) => '<span class="badge">' + esc(b) + '</span>').join(' ');
+    const rows = [
+      ['Member rank', (me.member_rank && me.total_users) ? '#' + me.member_rank + ' of ' + me.total_users : '—'],
+      ['Account age', (me.account_age_days != null) ? me.account_age_days + 'd' : '—'],
+    ];
+    if (me.verified_at) rows.push(['Verified', fmt(me.verified_at)]);
+    const metaEl = $('#profile-meta');
+    if (metaEl) metaEl.innerHTML = rows.map(([k, v]) => '<div><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>').join('');
+  }
+
+  // Referral invite card (home tab): shown only when the server returns a
+  // referral link. No reward copy anywhere — the reward does not exist yet.
+  let referralLink = null;
+  function renderReferral() {
+    const card = $('#referral-card');
+    if (!card) return;
+    referralLink = me && me.referral_link ? me.referral_link : null;
+    if (!referralLink) { card.hidden = true; return; }
+    card.hidden = false;
+    const linkEl = $('#referral-link');
+    if (linkEl) linkEl.textContent = referralLink;
+    const countEl = $('#referral-count');
+    if (countEl) countEl.textContent = 'Verified referrals: ' + (me.referrals_verified != null ? me.referrals_verified : 0);
+  }
+  const referralCopyBtn = $('#referral-copy-btn');
+  if (referralCopyBtn) referralCopyBtn.addEventListener('click', async () => {
+    haptic('light');
+    if (!referralLink) { toast('Referral link not set yet.'); return; }
+    try {
+      await navigator.clipboard.writeText(referralLink);
+      toast('Link copied.');
+      const prev = referralCopyBtn.textContent;
+      referralCopyBtn.textContent = 'Copied ✓';
+      clearTimeout(referralCopyBtn._copyTimer);
+      referralCopyBtn._copyTimer = setTimeout(() => { referralCopyBtn.textContent = prev; }, 1500);
+    } catch (e) { toast('Copy failed. Long-press the link.'); }
+  });
+  const referralShareBtn = $('#referral-share-btn');
+  if (referralShareBtn) referralShareBtn.addEventListener('click', () => {
+    haptic('medium');
+    if (!referralLink) { toast('Referral link not set yet.'); return; }
+    const shareUrl = 'https://t.me/share/url?url=' + encodeURIComponent(referralLink) + '&text=' + encodeURIComponent('Join VerifyHub — admin-reviewed verification.');
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(shareUrl);
+    else window.open(shareUrl, '_blank', 'noopener');
+  });
+
   // Init
   async function init() {
     if (tg) {
@@ -772,6 +929,10 @@
     // UI updates and error handling — only the network overlaps.
     const configP = api('/api/config');
     const meP = isPreview ? null : api('/api/me');
+    // loadStatus authenticates from initData directly and does not depend
+    // on /api/me's result: fire it alongside instead of queueing it
+    // behind /api/me (one fewer sequential round-trip on every open).
+    if (!isPreview) loadStatus();
     try {
       config = await configP;
       // /api/config is public, so call it without auth in preview too — api() sends an empty header, which is fine.
@@ -796,7 +957,8 @@
       me = await meP;
       $('#who-pill').textContent = (me.first_name ? me.first_name : 'User') + (me.is_admin ? ' · Admin' : '');
       if (me.is_admin) $('#admin-tab').hidden = false;
-      loadStatus();
+      renderProfile();
+      renderReferral();
     } catch (e) {
       $('#who-pill').textContent = 'Not signed in';
       $('#current-body').innerHTML = '<p>' + esc(e.message) + ' Reopen the panel from the bot.</p>';

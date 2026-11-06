@@ -9,10 +9,9 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=16">
+<link rel="stylesheet" href="styles.css?v=17">
 </head>
 <body>
-<div class="aurora" aria-hidden="true"><i></i><i></i></div>
 <div class="wrap">
   <header class="topbar">
     <div class="brand"><div class="logo" aria-hidden="true"><span class="logo-v">V</span></div><div><b id="brand-name">VerifyHub</b><span>One pass · Admin-reviewed</span></div></div>
@@ -22,12 +21,12 @@
   <div class="ticker" id="ticker">
     <span class="ticker-dot" id="ticker-dot" aria-hidden="true"></span>
     <span class="ticker-live" id="ticker-live">LIVE</span>
-    <span class="ticker-mid">WinGo 1M · <span class="mono" id="ticker-period">…</span> · last: <span class="mini-ball loading" id="ticker-ball"><span></span></span> <b id="ticker-last">…</b></span>
+    <span class="ticker-mid">WinGo 1M · <span class="mono" id="ticker-period">…</span> · <span class="ticker-last-label">last: </span><span class="mini-ball loading" id="ticker-ball"><span></span></span> <b id="ticker-last">…</b></span>
     <span class="ticker-right">next in <b class="ticker-count" id="ticker-countdown">…</b></span>
   </div>
 
   <div class="progress" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
-  <div class="phase-line"><span id="phase-label">Step 1 of 2 — Send UID</span><span id="phase-count">01 / 02</span></div>
+  <div class="phase-line"><span id="phase-label">Step 1 of 3 — Register</span><span id="phase-count">01 / 03</span></div>
 
   <div class="banner" id="preview-banner" role="alert">
     <b>Browser preview.</b> Sign in through Telegram to use this panel.
@@ -64,7 +63,6 @@
       <div id="step-register">
       <section class="panel" aria-label="Register">
         <span class="step-ghost" aria-hidden="true">01</span>
-        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="wordmark">Verify<span>Hub</span></div>
@@ -87,11 +85,8 @@
       <div id="step-deposit" hidden>
         <section class="panel" aria-label="Deposit proof">
           <span class="step-ghost" aria-hidden="true">02</span>
-          <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
           <div class="panel-inner">
             <div class="panel-head">
-              <div class="wordmark">Verify<span>Hub</span></div>
-              <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
               <div class="status-bar"><span class="st-left"><span class="live-dot"></span> DEPOSIT MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
             </div>
             <div class="screen">
@@ -115,11 +110,8 @@
       <div id="step-uid" hidden>
       <section class="panel" aria-label="Send UID">
         <span class="step-ghost" aria-hidden="true">03</span>
-        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
-            <div class="wordmark">Verify<span>Hub</span></div>
-            <div class="vip-row"><span class="swoosh"></span><span class="vip-pill">VERIFY PANEL</span><span class="swoosh"></span></div>
             <div class="status-bar"><span class="st-left"><span class="live-dot"></span> SUBMIT MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
           </div>
           <div class="screen">
@@ -181,11 +173,39 @@
       <div class="row"><button class="btn secondary full" id="resubmit-btn" type="button" hidden>Submit a corrected UID</button></div>
       <p class="hint" id="resubmit-hint" hidden>Admin asked for more info. Send one corrected UID.</p>
 
+      <div class="row"><button class="btn ghost full" id="withdraw-btn" type="button" hidden>Withdraw karo</button></div>
+      <div class="row" id="withdraw-cancel-row" hidden><button class="btn secondary full" id="withdraw-cancel-btn" type="button">Cancel</button></div>
+
       <div class="card">
         <span class="eyebrow">Earlier</span>
         <h2>Previous submissions</h2>
         <ul class="list" id="activity-list"><li><span class="skel" style="width:100%"></span></li></ul>
       </div>
+    </div>
+
+    <div class="card" id="pred-cta" hidden>
+      <span class="eyebrow">Prediction unlocked</span>
+      <h3>Prediction khul gaya — signals dekho</h3>
+      <p>Your prediction page is open — the next WinGo signal is live.</p>
+      <div class="row"><button class="btn full" id="pred-cta-btn" type="button">Open Prediction</button></div>
+    </div>
+
+    <div class="card" id="profile-card" hidden>
+      <span class="eyebrow">Your status</span>
+      <h3 id="profile-tier">Member</h3>
+      <div class="profile-badges" id="profile-badges"></div>
+      <dl class="meta" id="profile-meta"></dl>
+    </div>
+
+    <div class="card" id="referral-card" hidden>
+      <span class="eyebrow">Invite</span>
+      <h3>Invite friends</h3>
+      <p class="referral-link mono" id="referral-link"></p>
+      <div class="row">
+        <button class="btn secondary" id="referral-copy-btn" type="button">Copy link</button>
+        <button class="btn" id="referral-share-btn" type="button">Share</button>
+      </div>
+      <p class="hint" id="referral-count"></p>
     </div>
 
     <div class="card help-card">
@@ -201,20 +221,22 @@
     <div class="pred-timers" role="group" aria-label="WinGo timer">
       <button type="button" class="pred-timer" data-timer="30s">30s</button>
       <button type="button" class="pred-timer active" data-timer="1m">1 min</button>
+      <button type="button" class="pred-timer" data-timer="3m">3 min</button>
+      <button type="button" class="pred-timer" data-timer="5m">5 min</button>
     </div>
+    <div class="pred-sound-row"><button type="button" class="pred-sound" id="pred-sound-btn" aria-pressed="false">Sound: off</button></div>
 
     <div id="pred-loading" hidden>
       <div class="card">
         <span class="skel" style="width:38%;height:16px"></span>
         <span class="skel" style="width:56%;height:30px;margin-top:12px"></span>
-        <span class="skel" style="width:100%;height:84px;border-radius:14px;margin-top:14px"></span>
+        <span class="skel" style="width:100%;height:66px;border-radius:14px;margin-top:14px"></span>
         <p class="hint" style="text-align:center">Fetching the latest results…</p>
       </div>
     </div>
 
     <div id="pred-locked" hidden>
       <section class="panel" aria-label="Prediction locked">
-        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="status-bar"><span class="st-left"><span class="live-dot"></span> PREDICTION MODE</span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
@@ -237,8 +259,8 @@
     </div>
 
     <div id="pred-open" hidden>
-      <section class="panel" aria-label="Prediction">
-        <div class="embers" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <section class="panel pred-panel" aria-label="Prediction">
+        <div class="embers" aria-hidden="true"><i></i><i></i><i></i></div>
         <div class="panel-inner">
           <div class="panel-head">
             <div class="status-bar"><span class="st-left"><span class="live-dot"></span> LIVE : <b>ACTIVE</b></span><span class="st-right">PING : <b class="ping-ms">—</b></span></div>
@@ -248,23 +270,25 @@
             <div class="pred-period mono" id="pred-period">—</div>
             <div class="screen-sub" style="margin-top:10px">CLOSES IN</div>
             <div class="pred-countdown" id="pred-countdown">—</div>
+            <p class="err" id="pred-err" role="alert"></p>
             <div class="pred-signal">
               <div class="pred-size" id="pred-size">—</div>
               <div class="pred-ball ball red" id="pred-ball"><span>–</span></div>
             </div>
-            <p class="pred-reason mono" id="pred-reason"></p>
+            <div class="pred-colour" id="pred-colour"></div>
+            <p class="pred-reason" id="pred-reason"></p>
+            <span class="badge pred-conf b-under_review" id="pred-conf" hidden></span>
             <p class="hint">Signal only — not a guarantee.</p>
             <div class="pred-history" id="pred-history"></div>
             <div class="row"><button class="btn secondary full" id="pred-refresh-btn" type="button">Refresh</button></div>
             <div class="acc" id="pred-accuracy" hidden>
-              <div class="acc-head"><span class="acc-title">SIGNAL RECORD — LAST 20</span><span class="acc-summary mono" id="acc-summary"></span></div>
+              <div class="acc-head"><span class="acc-title">Signal record — last 20</span><span class="acc-summary mono" id="acc-summary"></span></div>
               <div class="acc-conf mono" id="acc-conf"></div>
               <div class="acc-dots" id="acc-dots" aria-label="Signal accuracy dots"></div>
               <div class="acc-rows" id="acc-rows"></div>
               <p class="hint">Past signals only — not a guarantee of the next one.</p>
               <p class="err" id="acc-err" role="alert"></p>
             </div>
-            <p class="err" id="pred-err" role="alert"></p>
           </div>
         </div>
       </section>
@@ -311,6 +335,6 @@
      the Mini App aggressively. Bump the ?v= number on every JS change
      so users get the new files instead of the cached old ones. -->
 <script src="config.js?v=2"></script>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>
