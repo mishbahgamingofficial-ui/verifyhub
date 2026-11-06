@@ -268,8 +268,8 @@ def test_main_keyboard_is_colourful_and_complete():
     # the everyday tools (Signal Hub, Submit UID, Profile, Stats, Help,
     # language) moved to the persistent reply keyboard below.
     assert [len(r) for r in rows] == [1, 2]
-    assert rows[0][0].text == "Open Verification Panel"
-    assert [b.text for b in rows[1]] == ["Check My Status", "Open Predictions"]
+    assert rows[0][0].text == "Verification Panel Kholo"
+    assert [b.text for b in rows[1]] == ["Meri Status Dekho", "Predictions Kholo"]
     # Every inline button is premium-only: a custom emoji icon and no
     # Unicode emoji in the label (no doubled icons).
     assert all(b.icon_custom_emoji_id for b in buttons)
@@ -279,15 +279,15 @@ def test_main_keyboard_is_colourful_and_complete():
     assert all(b.text != "🛡 Admin Panel" for row in rows for b in row)
     assert all(b.callback_data != "__admin__" for row in rows for b in row)
     by_text = {b.text: b for b in buttons}
-    assert by_text["Open Verification Panel"].style == "primary"
-    assert by_text["Open Verification Panel"].icon_custom_emoji_id == EMOJI_CROWN
-    assert by_text["Check My Status"].style == "success"
-    assert by_text["Check My Status"].icon_custom_emoji_id == EMOJI_CHART
-    assert by_text["Open Predictions"].icon_custom_emoji_id == EMOJI_DIAMOND
+    assert by_text["Verification Panel Kholo"].style == "primary"
+    assert by_text["Verification Panel Kholo"].icon_custom_emoji_id == EMOJI_CROWN
+    assert by_text["Meri Status Dekho"].style == "success"
+    assert by_text["Meri Status Dekho"].icon_custom_emoji_id == EMOJI_CHART
+    assert by_text["Predictions Kholo"].icon_custom_emoji_id == EMOJI_DIAMOND
     assert sum(1 for b in buttons if b.style is not None) <= 2
     # The style field serialises into the Bot API payload.
-    assert by_text["Open Verification Panel"].to_dict()["style"] == "primary"
-    assert by_text["Open Verification Panel"].to_dict()["icon_custom_emoji_id"] == EMOJI_CROWN
+    assert by_text["Verification Panel Kholo"].to_dict()["style"] == "primary"
+    assert by_text["Verification Panel Kholo"].to_dict()["icon_custom_emoji_id"] == EMOJI_CROWN
 
 
 def test_render_segments_counts_utf16_units():
@@ -323,13 +323,13 @@ def test_welcome_and_help_texts_use_premium_emojis():
 
     text, entities = _welcome_text()
     assert "VerifyHub — ek baar, ek faisla." in text
-    assert "Apna UID panel se ya seedha chat mein bhejo" in text
+    assert "Apna UID Verification Panel se bhejo" in text
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert customs == {EMOJI_CROWN, EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP}
 
     text, entities = _help_text()
     assert "VerifyHub — Kaise Kaam Karta Hai" in text
-    assert "Open Verification Panel" in text
+    assert "Verification Panel" in text
     assert "/start" not in text and "/status" not in text  # button-only: no commands
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert EMOJI_CROWN in customs
@@ -342,7 +342,7 @@ def test_status_card_uses_entities_not_html():
     from app.db import Submission, mask_uid
 
     text, entities = _status_card("not_submitted", None)
-    assert "You have not submitted a UID yet." in text
+    assert "Aapne abhi tak UID nahi bheja hai." in text
     assert "<b>" not in text and "<code>" not in text
 
     row = Submission(
@@ -352,7 +352,7 @@ def test_status_card_uses_entities_not_html():
         review_message="Looks good <b>not a tag</b>",
     )
     text, entities = _status_card("verified", row)
-    assert "Verified (administrator-reviewed)" in text
+    assert "Verified (admin ne check kiya)" in text
     assert mask_uid("ABCDEF123456") in text
     assert "<b>not a tag</b>" in text  # literal: no HTML parsing anymore
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
@@ -574,11 +574,11 @@ def test_admin_buttons_refuse_non_admin():
     sid = _make_submission(555, "ADMINCMD1")
     update, query, message = _fake_query(USER_ID, "admin:pending")
     asyncio.run(_button(update, None))
-    assert "for admins only" in message.reply_text.await_args.args[0]
+    assert "sirf admins ke liye hai" in message.reply_text.await_args.args[0]
 
     update, query, message = _fake_query(USER_ID, f"admin:approve:{sid}:p")
     asyncio.run(_button(update, None))
-    assert "for admins only" in message.reply_text.await_args.args[0]
+    assert "sirf admins ke liye hai" in message.reply_text.await_args.args[0]
     assert _submission_status(sid)[0] == "pending_review"
 
 
@@ -609,8 +609,8 @@ def test_admin_approve_marks_verified_and_notifies(monkeypatch):
     update, query, message = _fake_query(ADMIN_ID, f"admin:approve:{sid}:p")
     asyncio.run(_button(update, None))
     text = query.edit_message_text.await_args.args[0]
-    assert f"Submission #{sid} verified." in text
-    assert "The user has been notified." in text
+    assert f"Submission #{sid} verify kar diya." in text
+    assert "User ko notify kar diya gaya hai." in text
     status, review = _submission_status(sid)
     assert status == "verified" and review is None  # one-tap approve carries no custom message
     db = get_session_factory(os.environ["DATABASE_URL"])()
@@ -651,16 +651,16 @@ def test_admin_queue_buttons_apply_default_messages(monkeypatch):
     sid = _make_submission(560, "ADMINCMD6")
     update, query, message = _fake_query(ADMIN_ID, f"admin:reject:{sid}:p")
     asyncio.run(_button(update, None))
-    assert f"Submission #{sid} rejected." in query.edit_message_text.await_args.args[0]
-    assert _submission_status(sid) == ("rejected", "Your submission was not approved by the administrator.")
+    assert f"Submission #{sid} reject kar diya." in query.edit_message_text.await_args.args[0]
+    assert _submission_status(sid) == ("rejected", "Aapki submission admin ne approve nahi ki.")
 
     sid2 = _make_submission(561, "ADMINCMD7")
     update, query, message = _fake_query(ADMIN_ID, f"admin:info:{sid2}:p")
     asyncio.run(_button(update, None))
-    assert "needing more information" in query.edit_message_text.await_args.args[0]
+    assert "aur jaankari mangi" in query.edit_message_text.await_args.args[0]
     assert _submission_status(sid2) == (
         "info_required",
-        "Additional information is required. Please check the verification panel.",
+        "Aur jaankari chahiye. Verification panel me check karo.",
     )
 
 
@@ -673,7 +673,7 @@ def test_help_has_no_commands_and_mentions_admin_panel_only_for_admin():
     text, _ = _help_text()
     assert "Admin Panel" not in text
     assert "/start" not in text and "/status" not in text
-    assert "Your tools" in text
+    assert "Aapke tools" in text
 
 
 # ---------------- Admin panel + instant admin alerts ----------------
@@ -775,7 +775,7 @@ def test_admin_dashboard_shows_stats():
     text = message.reply_text.await_args.args[0]
     assert "Admin Panel" in text
     assert "Queue:" in text and "Verified" in text
-    assert "Today" in text
+    assert "Aaj" in text
     # Slim on purpose: no recent rows, no admin count, no DB ping.
     assert "DASH1" not in text and "DASH2" not in text and "DASH3" not in text
     assert "DB Ping" not in text and "Admins:" not in text
@@ -795,7 +795,7 @@ def test_admin_approve_button_edits_notification(monkeypatch):
     asyncio.run(_button(update, None))
     assert _submission_status(sid)[0] == "verified"
     text = query.edit_message_text.await_args.args[0]
-    assert f"Submission #{sid} verified." in text
+    assert f"Submission #{sid} verify kar diya." in text
     # The alert is edited into the outcome with no keyboard attached.
     assert query.edit_message_text.await_args.kwargs.get("reply_markup") is None
 
@@ -809,7 +809,7 @@ def test_admin_button_refuses_non_admin():
     update, query, message = _fake_query(USER_ID, f"admin:approve:{sid}:n")
     asyncio.run(_button(update, None))
     assert _submission_status(sid)[0] == "pending_review"
-    assert "for admins only" in message.reply_text.await_args.args[0]
+    assert "sirf admins ke liye hai" in message.reply_text.await_args.args[0]
 
 
 def test_start_shows_dashboard_to_admin():
@@ -844,9 +844,8 @@ def test_start_shows_dashboard_to_admin():
     user_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
     assert isinstance(user_kb, ReplyKeyboardMarkup)
     assert [b.text for row in user_kb.keyboard for b in row] == [
-        "🎯 Signal Hub", "🚀 Submit UID",
         "👤 Profile", "📈 Stats",
-        "Help", "🇬🇧 EN",
+        "Help",
     ]
 
 
@@ -864,15 +863,14 @@ def test_admin_keyboard_has_panel_button_only_for_admin():
     kb = _admin_reply_keyboard()
     labels = [b.text for row in kb.keyboard for b in row]
     assert "🛡 Admin Panel" in labels
-    # The moved user tools live in the user keyboard, not the menu.
+    # The user tools live in the user keyboard, not the menu.
     user_kb = _user_reply_keyboard()
     user_labels = [b.text for row in user_kb.keyboard for b in row]
     assert user_labels == [
-        "🎯 Signal Hub", "🚀 Submit UID",
         "👤 Profile", "📈 Stats",
-        "Help", "🇬🇧 EN",
+        "Help",
     ]
-    assert all(b.text not in ("🎯 Signal Hub", "🚀 Submit UID", "👤 Profile", "📈 Stats")
+    assert all(b.text not in ("👤 Profile", "📈 Stats")
                 for row in rows for b in row)
 
 
@@ -902,7 +900,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     help_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in help_kb.inline_keyboard] == [
-        ["Live Stats", "💬 Contact Admin"],
+        ["Live Stats", "💬 Admin se Sampark"],
         ["⬅️ Main Menu"],
     ]
 
@@ -910,7 +908,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     status_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in status_kb.inline_keyboard] == [
-        ["Refresh Status", "Signal Hub"],
+        ["Status Refresh Karo"],
         ["⬅️ Main Menu"],
     ]
 
@@ -918,7 +916,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in stats_kb.inline_keyboard] == [
-        ["Refresh Stats"],
+        ["Stats Refresh Karo"],
         ["⬅️ Main Menu"],
     ]
 
@@ -927,7 +925,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     admin_stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in admin_stats_kb.inline_keyboard] == [
-        ["Refresh Stats"],
+        ["Stats Refresh Karo"],
         ["⬅️ Admin Panel"],
     ]
 
@@ -955,37 +953,21 @@ def test_admin_keyboard_buttons_open_the_right_views():
     update, context, message = _fake_update(USER_ID)
     message.text = "🛡 Admin Panel"
     asyncio.run(_handle_text(update, context))
-    assert "Use the buttons below" in message.reply_text.await_args.args[0]
+    assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
 
 
 def test_user_keyboard_labels_open_their_views(monkeypatch):
     """The user's reply-keyboard buttons arrive as plain text and open
-    the same views as the old inline buttons did."""
+    their views. (Signal Hub and Submit UID were removed from users;
+    only Profile, Stats and Help remain in the keyboard.)"""
     import asyncio
 
-    from app.bot import _get_lang, _handle_text
-    from app.prediction import ProviderError
+    from app.bot import _handle_text
 
-    def _must_not_fetch(timer, provider=None):
-        raise AssertionError("locked card must not fetch a signal")
-
-    monkeypatch.setattr("app.bot.get_prediction", _must_not_fetch)
     monkeypatch.setattr(
         "app.bot.get_live",
         lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
     )
-
-    # Signal Hub (locked for this user) and Submit UID prompt.
-    update, context, message = _fake_update(USER_ID)
-    message.text = "🎯 Signal Hub"
-    asyncio.run(_handle_text(update, context))
-    assert "Verified Members Only" in message.reply_text.await_args.args[0]
-
-    update, context, message = _fake_update(USER_ID)
-    message.text = "🚀 Submit UID"
-    asyncio.run(_handle_text(update, context))
-    assert "Quick UID Submission" in message.reply_text.await_args.args[0]
-    assert context.user_data.get("awaiting") == "submit_uid"
 
     # Profile, Stats and Help.
     for label, needle in [
@@ -998,23 +980,11 @@ def test_user_keyboard_labels_open_their_views(monkeypatch):
         asyncio.run(_handle_text(update, context))
         assert needle in message.reply_text.await_args.args[0], label
 
-    # Language toggle flips the language and re-sends the keyboard
-    # with the opposite label.
-    lang_before = _get_lang(USER_ID)
-    label = "🇬🇧 EN" if lang_before == "hi" else "🇮🇳 HI"
+    # A removed label is just stray text now — the nudge, not a view.
     update, context, message = _fake_update(USER_ID)
-    message.text = label
+    message.text = "🎯 Signal Hub"
     asyncio.run(_handle_text(update, context))
-    assert _get_lang(USER_ID) != lang_before
-    assert message.reply_text.await_count == 2
-    new_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
-    new_labels = [b.text for row in new_kb.keyboard for b in row]
-    assert ("🇮🇳 HI" in new_labels) if lang_before == "hi" else ("🇬🇧 EN" in new_labels)
-    # Leave the language as we found it for the tests after this one.
-    from app.bot import _toggle_lang
-
-    _toggle_lang(USER_ID)
-    assert _get_lang(USER_ID) == lang_before
+    assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
 
 
 def test_search_by_telegram_id_does_not_overflow():
@@ -1026,7 +996,7 @@ def test_search_by_telegram_id_does_not_overflow():
 
     # A 10-digit id with no user behind it: no match, no crash.
     text, _kb = _search_submissions("8995828029")
-    assert "No submissions or users matched" in text
+    assert "se koi submission ya user nahi mila" in text
 
     # The same id owning a submission: found via the users table.
     _make_submission(8995828029, "SEARCHBIG1")
@@ -1070,7 +1040,7 @@ def test_stats_button_shows_live_numbers(monkeypatch):
     assert "Users " in text and "Verified " in text
     assert "Signals (1m): 66.7% (2/3)" in text
     assert "Tape: ✅✅❌" in text
-    assert "Live 1m: period …0952 ends in 42s" in text
+    assert "Live 1m: period …0952 42s me khatam" in text
 
 
 def test_stats_button_without_live_period(monkeypatch):
@@ -1147,7 +1117,7 @@ def test_admin_add_remove_admins():
     # Non-admin cannot open the admins view.
     update, query, message = _fake_query(USER_ID, "admin:admins")
     asyncio.run(_button(update, None))
-    assert "for admins only" in message.reply_text.await_args.args[0]
+    assert "sirf admins ke liye hai" in message.reply_text.await_args.args[0]
 
     # Admins view lists the server admin; Add asks for an ID.
     ctx = SimpleNamespace(user_data={})
@@ -1168,18 +1138,18 @@ def test_admin_add_remove_admins():
     context.user_data["awaiting"] = "add_admin"
     message.text = "abc"
     asyncio.run(_handle_text(update, context))
-    assert "doesn't look like a Telegram ID" in message.reply_text.await_args.args[0]
+    assert "Telegram ID nahi lag rahi" in message.reply_text.await_args.args[0]
     assert context.user_data.get("awaiting") == "add_admin"
 
     # Adding the server admin is refused.
     message.text = str(ADMIN_ID)
     asyncio.run(_handle_text(update, context))
-    assert "already an admin" in message.reply_text.await_args.args[0]
+    assert "pehle se admin hai" in message.reply_text.await_args.args[0]
 
     # Add 777, then 777 can open the admins view.
     message.text = "777"
     asyncio.run(_handle_text(update, context))
-    assert "777 is now an admin" in message.reply_text.await_args.args[0]
+    assert "777 ab admin hai" in message.reply_text.await_args.args[0]
     update, query, message = _fake_query(777, "admin:admins")
     asyncio.run(_button(update, None))
     assert "777" in query.edit_message_text.await_args.args[0]
@@ -1199,13 +1169,13 @@ def test_admin_add_remove_admins():
     # Cannot remove yourself; can remove 777.
     update, query, message = _fake_query(ADMIN_ID, f"admin:remove:{ADMIN_ID}")
     asyncio.run(_button(update, None))
-    assert "cannot remove yourself" in message.reply_text.await_args.args[0].lower()
+    assert "khud ko remove nahi kar sakte" in message.reply_text.await_args.args[0].lower()
     update, query, message = _fake_query(ADMIN_ID, "admin:remove:777")
     asyncio.run(_button(update, None))
-    assert "777 is no longer an admin" in query.edit_message_text.await_args.args[0]
+    assert "777 ab admin nahi raha" in query.edit_message_text.await_args.args[0]
     update, query, message = _fake_query(777, "admin:admins")
     asyncio.run(_button(update, None))
-    assert "for admins only" in message.reply_text.await_args.args[0]
+    assert "sirf admins ke liye hai" in message.reply_text.await_args.args[0]
     update, query, message = _fake_query(ADMIN_ID, "admin:remove:777")
     asyncio.run(_button(update, None))
     assert "not an admin" in message.reply_text.await_args.args[0]
@@ -1275,7 +1245,7 @@ def test_error_handler_alerts_admin_once_per_window():
 
     import app.bot as handlers
 
-    handlers._last_error_alert = 0.0
+    handlers._last_error_alert = float("-inf")  # "never alerted", not 0.0 (which throttles on a fresh boot)
     bot = SimpleNamespace(send_message=AsyncMock())
     ctx = SimpleNamespace(bot=bot, error=ValueError("boom"))
     asyncio.run(handlers._on_error(None, ctx))
@@ -1300,7 +1270,7 @@ def test_help_and_status_edit_in_place():
     update, query, message = _fake_query(USER_ID, "__status__")
     asyncio.run(_button(update, None))
     assert query.edit_message_text.await_count == 1
-    assert "Your verification status" in query.edit_message_text.await_args.args[0]
+    assert "Aapki verification status" in query.edit_message_text.await_args.args[0]
     assert message.reply_text.await_count == 0
 
 
@@ -1374,7 +1344,7 @@ def test_broadcast_flow_sends_to_all_and_reports():
         total = db.query(User).count()
     finally:
         db.close()
-    assert f"All: {total}" in preview
+    assert f"Sab: {total}" in preview
     keyboard = message.reply_text.await_args.kwargs["reply_markup"]
     assert keyboard.inline_keyboard[1][0].callback_data == "admin:broadcast:all"
     assert keyboard.inline_keyboard[2][0].callback_data == "admin:broadcast:verified"
@@ -1383,7 +1353,7 @@ def test_broadcast_flow_sends_to_all_and_reports():
     update, query, message = _fake_query(ADMIN_ID, "admin:broadcast:all")
     asyncio.run(_button(update, ctx))
     report = query.edit_message_text.await_args.args[0]
-    assert "Broadcast complete" in report
+    assert "Broadcast poora ho gaya" in report
     assert f"Delivered: {total - 1}" in report
     assert "Blocked: 1" in report and "Failed: 0" in report
     assert "broadcast_text" not in ctx.user_data
@@ -1402,127 +1372,23 @@ def test_broadcast_cancel_clears_prompt():
     assert "Admin Panel" in query.edit_message_text.await_args.args[0]
 
 
-# ---------------- Signal Hub (get_prediction fix) ----------------
+# ---------------- Removed features redirect to the panel ----------------
 
-def _fake_prediction(timer="1m"):
-    """A deterministic get_prediction payload for the Signal Hub tests."""
-    return {
-        "timer": timer,
-        "period": "202611061235",
-        "current_period": "202611061234",
-        "next_period_at": "2026-11-06T06:30:00+00:00",
-        "server_time": "2026-11-06T06:29:30+00:00",
-        "results": [],
-        "signal": {
-            "size": "big",
-            "colour": "red",
-            "confidence": "medium",
-            "reason": "Big leading 11-9",
-        },
-        "generated_at": "2026-11-06T06:29:30+00:00",
-    }
-
-
-def test_signal_hub_shows_live_pick_for_verified(monkeypatch):
+def test_removed_signal_and_submit_buttons_redirect_to_panel():
+    """Signal Hub and in-chat UID submit were removed from users; old
+    buttons in old messages show a Hinglish redirect, not a dead tap."""
     import asyncio
 
-    from app.bot import _signal_preview_card
-    from app.db import SignalRecord, get_session_factory
+    from app.bot import _button
 
-    _make_submission(USER_ID, "SIGHUB1", status="verified")
-    monkeypatch.setattr("app.bot.get_prediction", lambda timer, provider=None: _fake_prediction(timer))
-    text, _entities, kb = _signal_preview_card(USER_ID, timer="1m")
-    assert "Signal Hub — WinGo 1M" in text
-    assert "Active Period (1m):" in text and "…061234" in text
-    assert "30s left" in text
-    assert "Live Signal:" in text and "BIG · RED" in text
-    assert "(medium)" in text and "Big leading 11-9" in text
-    # The shown signal is recorded for the accuracy tracker, first wins.
-    db = get_session_factory(os.environ["DATABASE_URL"])()
-    try:
-        row = (
-            db.query(SignalRecord)
-            .filter(SignalRecord.timer == "1m", SignalRecord.period == "202611061235")
-            .first()
-        )
-        assert row is not None and row.signal == "BIG" and row.confidence == "medium"
-    finally:
-        db.close()
-    # The 30s switcher asks get_prediction for 30s, not the 1m ticker.
-    seen = {}
+    update, query, message = _fake_query(USER_ID, "__signal__")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
+    assert "Signal Hub ab chat me nahi hai" in text
+    assert "Prediction tab" in text
 
-    def _capture(timer, provider=None):
-        seen["timer"] = timer
-        return _fake_prediction(timer)
-
-    monkeypatch.setattr("app.bot.get_prediction", _capture)
-    text, _entities, kb = _signal_preview_card(USER_ID, timer="30s")
-    assert seen["timer"] == "30s"
-    assert "Signal Hub — WinGo 30S" in text
-    assert "BIG · RED" in text
-    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
-    assert "__signal__:1m" in callbacks and "__signal__:30s" in callbacks
-
-
-def test_signal_hub_stays_locked_for_unverified(monkeypatch):
-    from app.bot import _signal_preview_card
-
-    _make_submission(597, "SIGHUB2")  # pending, not verified
-
-    def _must_not_fetch(timer, provider=None):
-        raise AssertionError("locked card must not fetch a signal")
-
-    monkeypatch.setattr("app.bot.get_prediction", _must_not_fetch)
-    text, _entities, _kb = _signal_preview_card(597, timer="1m")
-    assert "Verified Members Only" in text
-    assert "Live Signal:" not in text
-
-
-def test_signal_hub_survives_provider_failure(monkeypatch):
-    from app.bot import _signal_preview_card
-    from app.prediction import ProviderError
-
-    def _boom(timer, provider=None):
-        raise ProviderError("down")
-
-    monkeypatch.setattr("app.bot.get_prediction", _boom)
-    text, _entities, _kb = _signal_preview_card(USER_ID, timer="1m")
-    assert "Live feed notice: down" in text
-
-
-# ---------------- In-chat UID submit (API pattern parity) ----------------
-
-def test_submit_uid_in_chat_uses_api_uid_rule(monkeypatch):
-    import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from app.bot import _submit_uid_in_chat
-    from app.db import Submission, User, get_session_factory
-
-    user_tg = SimpleNamespace(id=598, username="t", first_name="T")
-
-    # 4 chars: the API's 6–64 rule rejects this — the chat must too.
-    text, _e, _kb, sub = asyncio.run(_submit_uid_in_chat(user_tg, "AB12"))
-    assert sub is None and "Invalid UID format." in text
-    db = get_session_factory(os.environ["DATABASE_URL"])()
-    try:
-        assert db.query(Submission).join(User).filter(User.telegram_id == 598).count() == 0
-    finally:
-        db.close()
-
-    # 6 chars: accepted, stored, and the admins are alerted (mocked: no network).
-    monkeypatch.setattr("app.bot.notify_admins", AsyncMock(return_value=1))
-    text, _e, _kb, sub = asyncio.run(_submit_uid_in_chat(user_tg, "ABCDEF"))
-    assert sub is not None and f"Submission #{sub.id} received!" in text
-    db = get_session_factory(os.environ["DATABASE_URL"])()
-    try:
-        row = db.query(Submission).filter(Submission.id == sub.id).first()
-        assert row is not None and row.registration_uid == "ABCDEF"
-        assert row.status == "pending_review"
-    finally:
-        db.close()
-
-    # A second UID while the first is still active is refused, not stacked.
-    text, _e, _kb, sub2 = asyncio.run(_submit_uid_in_chat(user_tg, "GHIJKL"))
-    assert sub2 is None and "already in the review queue" in text
+    update, query, message = _fake_query(USER_ID, "__submit_uid__")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
+    assert "Chat me UID bhejna band ho gaya hai" in text
+    assert "Verification Panel" in text

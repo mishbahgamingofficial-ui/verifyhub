@@ -55,7 +55,7 @@ from telegram.ext import (
 
 from .config import get_settings
 from .db import Admin, SignalRecord, Submission, User, get_session_factory, mask_uid
-from .prediction import ProviderError, get_live, get_prediction, record_signal
+from .prediction import get_live
 from .services import (
     ACTIVE_STATUSES,
     STATUSES,
@@ -104,42 +104,36 @@ def _safe_submission_id(raw) -> int | None:
     except (TypeError, ValueError):
         return None
     return num if 0 < num <= _INT32_MAX else None
-# Same UID rule as the API (settings.uid_pattern, 6–64 chars): the chat
-# submit must accept exactly what the Mini App accepts and reject what it
-# rejects — one source of truth, so the two can never drift apart.
-UID_PATTERN = settings.uid_regex
 
-# Per-user language preference ("hi" = Hinglish default, "en" = English)
-_user_lang: dict[int, str] = {}
 
 # One-tap admin review presets for ultra-fast moderation
 REJECT_PRESETS: dict[str, tuple[str, str]] = {
     "uid_not_found": (
-        "❌ UID Not Found",
-        "The UID you submitted was not found under our official registration link. Please check your UID and submit again.",
+        "❌ UID Nahi Mila",
+        "Aapne jo UID bheja hai wo hamare official registration link ke neeche nahi mila. Apna UID dobara check karke phir se bhejo.",
     ),
     "wrong_link": (
-        "❌ Not Under Official Link",
-        "Your account was not registered using the official registration link. Please register a new account via the official link and submit that UID.",
+        "❌ Official Link Se Nahi",
+        "Aapka account official registration link se register nahi hua hai. Official link se naya account register karke uska UID bhejo.",
     ),
     "duplicate": (
         "❌ Duplicate Submission",
-        "This UID has already been submitted or linked to another account.",
+        "Ye UID pehle se submit ho chuka hai ya kisi aur account se linked hai.",
     ),
 }
 
 INFO_PRESETS: dict[str, tuple[str, str]] = {
     "deposit": (
-        "ℹ️ First Deposit Needed",
-        "Please complete your first deposit on the official platform so we can verify your active UID.",
+        "ℹ️ Pehla Deposit Chahiye",
+        "Apna pehla deposit official platform par poora karo taaki hum aapka active UID verify kar sakein.",
     ),
     "recheck_uid": (
-        "ℹ️ Recheck Numeric UID",
-        "Please copy your exact numeric UID from your account profile page and submit it again.",
+        "ℹ️ UID Dobara Check Karo",
+        "Apne account profile page se apna exact numeric UID copy karke dobara bhejo.",
     ),
     "activity": (
-        "ℹ️ Account Activity Required",
-        "Your UID is registered but shows no recent activity yet. Please complete basic account activation and update your submission.",
+        "ℹ️ Account Activity Chahiye",
+        "Aapka UID register hai par usme abhi koi recent activity nahi dikh rahi. Basic account activation poora karo aur apni submission update karo.",
     ),
 }
 
@@ -147,20 +141,20 @@ INFO_PRESETS: dict[str, tuple[str, str]] = {
 # never roll back a status change — they are logged and the admin response
 # still succeeds. No tokens are logged.
 STATUS_COPY = {
-    "pending_review": "Your submission is now pending review.",
-    "under_review": "Your submission is now under review by an administrator.",
-    "verified": "Good news — your submission has been marked as verified by an administrator.",
-    "rejected": "Your submission was not approved. Please check the review message in the panel.",
-    "info_required": "An administrator needs additional information. Please check the review message in the panel.",
+    "pending_review": "Aapki submission ab review ke liye pending hai.",
+    "under_review": "Admin aapki submission ko abhi check kar raha hai.",
+    "verified": "Badhai ho — admin ne aapki submission verify kar di hai.",
+    "rejected": "Aapki submission approve nahi hui. Panel me review message dekho.",
+    "info_required": "Admin ko aur jaankari chahiye. Panel me review message dekho.",
 }
 
 STATUS_LABELS = {
-    "not_submitted": "Not submitted",
-    "pending_review": "Pending review",
-    "under_review": "Under review",
-    "verified": "Verified (administrator-reviewed)",
-    "rejected": "Rejected",
-    "info_required": "Additional information required",
+    "not_submitted": "Abhi tak bheja nahi",
+    "pending_review": "Review pending hai",
+    "under_review": "Review ho raha hai",
+    "verified": "Verified (admin ne check kiya)",
+    "rejected": "Reject ho gaya",
+    "info_required": "Aur jaankari chahiye",
 }
 
 STATUS_ICONS = {
@@ -183,17 +177,7 @@ def _db_session():
         db.close()
 
 
-def _get_lang(user_id: int) -> str:
-    return _user_lang.get(user_id, "hi")
 
-
-def _toggle_lang(user_id: int) -> str:
-    curr = _user_lang.get(user_id, "hi")
-    nxt = "en" if curr == "hi" else "hi"
-    if len(_user_lang) > 20_000:
-        _user_lang.clear()
-    _user_lang[user_id] = nxt
-    return nxt
 
 
 def _format_uptime() -> str:
@@ -245,31 +229,29 @@ async def notify_user(
     if not bot_token:
         return False
     icon = STATUS_ICONS.get(status, "🔔")
-    headline = STATUS_COPY.get(status, f"Your submission status changed to {status}.")
+    headline = STATUS_COPY.get(status, f"Aapki submission ki status badal kar {status} ho gayi hai.")
     text = f"{icon} <b>{html.escape(headline)}</b>"
     if message:
         # The payload uses parse_mode=HTML, so escape the admin's message:
         # a raw "<" or "&" would make Telegram reject the whole notification.
         text += f"\n\n<b>Review message:</b>\n<i>{html.escape(message)}</i>"
     text += (
-        "\n\nVerification does not guarantee financial recovery. "
-        "Open the verification panel to see the full status."
+        "\n\nVerification se financial recovery ki guarantee nahi milti. "
+        "Poora status dekhne ke liye verification panel kholo."
     )
     buttons = []
     if mini_app_url:
-        buttons.append([{"text": "Open Verification Panel", "web_app": {"url": mini_app_url}}])
+        buttons.append([{"text": "Verification Panel Kholo", "web_app": {"url": mini_app_url}}])
         if status == "verified":
             sep = "&" if "?" in mini_app_url else "?"
             predict_url = f"{mini_app_url}{sep}startapp=prediction"
-            buttons.append([{"text": "🎯 Open Predictions", "web_app": {"url": predict_url}}])
+            buttons.append([{"text": "🎯 Predictions Kholo", "web_app": {"url": predict_url}}])
     buttons.append([
-        {"text": "📊 Check My Status", "callback_data": "__status__"},
-        {"text": "🎯 Live Signal", "callback_data": "__signal__"},
+        {"text": "📊 Meri Status Dekho", "callback_data": "__status__"},
     ])
     if status in ("rejected", "info_required"):
         buttons.append([
-            {"text": "🚀 Resubmit UID in Chat", "callback_data": "__submit_uid__"},
-            {"text": "💬 Contact Admin", "callback_data": "__support__"},
+            {"text": "💬 Admin se Sampark", "callback_data": "__support__"},
         ])
     payload: dict = {
         "chat_id": telegram_id,
@@ -314,29 +296,29 @@ async def notify_admins(
     who = f"@{username}" if username else (first_name or str(user_telegram_id))
     when = submitted_at.strftime("%Y-%m-%d %H:%M UTC") if submitted_at else "—"
     text = (
-        f"🆕 New submission #{submission_id}\n\n"
+        f"🆕 Nayi submission #{submission_id}\n\n"
         f"UID: {registration_uid}\n"
         f"User: {who} ({user_telegram_id})\n"
-        f"Sent: {when}\n\n"
-        "Tap to decide, pick a preset reason, or inspect full user history."
+        f"Bheji gayi: {when}\n\n"
+        "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho."
     )
     keyboard = {
         "inline_keyboard": [
             [
                 {"text": "✅ Approve", "callback_data": f"admin:approve:{submission_id}:n"},
                 {"text": "❌ Reject", "callback_data": f"admin:reject:{submission_id}:n"},
-                {"text": "ℹ️ Need info", "callback_data": f"admin:info:{submission_id}:n"},
+                {"text": "ℹ️ Info Chahiye", "callback_data": f"admin:info:{submission_id}:n"},
             ],
             [
-                {"text": "🔎 Under Review", "callback_data": f"admin:review:{submission_id}:n"},
+                {"text": "🔎 Review Me", "callback_data": f"admin:review:{submission_id}:n"},
                 {"text": "⚡ Presets / Note", "callback_data": f"admin:view:{submission_id}"},
-                {"text": "↩️ Message User", "callback_data": f"admin:reply:{user_telegram_id}"},
+                {"text": "↩️ User ko Message", "callback_data": f"admin:reply:{user_telegram_id}"},
             ],
         ]
     }
     if mini_app_url:
         keyboard["inline_keyboard"].append(
-            [{"text": "Open Verification Panel", "web_app": {"url": mini_app_url}}]
+            [{"text": "Verification Panel Kholo", "web_app": {"url": mini_app_url}}]
         )
     sent = 0
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -357,7 +339,9 @@ async def notify_admins(
 # Per-user last-action timestamps for the rate limit (see _too_fast).
 _last_action: dict[int, float] = {}
 # Monotonic timestamp of the last admin error alert (see _on_error).
-_last_error_alert: float = 0.0
+# -inf means "never alerted": 0.0 would suppress the first real alert
+# for 10 minutes after every restart (time.monotonic() starts near 0).
+_last_error_alert: float = float("-inf")
 
 
 def _too_fast(user_id: int, window: float = 0.7) -> bool:
@@ -448,34 +432,8 @@ def _render(segments):
 def _welcome_text(
     first_name: str | None = None,
     verified: bool = False,
-    lang: str = "hi",
 ):
-    if lang == "en":
-        greeting = f"Welcome, {first_name}! " if first_name else ""
-        segments = [
-            ("👑", ("custom", EMOJI_CROWN)),
-            (" ", None),
-            (f"{greeting}VerifyHub — one UID, one decision.", "bold"),
-            ("\n\n", None),
-            ("✅", ("custom", EMOJI_CHECK)),
-            (" Send your UID from the panel or right here in chat.", None),
-            ("\n", None),
-            ("🎯", ("custom", EMOJI_TARGET)),
-            (" Once verified, live WinGo signals (30s & 1m) unlock.", None),
-            ("\n", None),
-            ("📈", ("custom", EMOJI_CHART_UP)),
-            (" Status, badges and win rate — all in real time.", None),
-        ]
-        if verified:
-            segments += [
-                ("\n\n", None),
-                ("💎", ("custom", EMOJI_DIAMOND)),
-                (" You're Verified — signals and predictions are open.", "bold"),
-            ]
-        else:
-            segments.append(("\n\nTap a button below to begin.", None))
-        return _render(segments)
-
+    """Welcome message — pure Hinglish now; no language toggle, no English branch."""
     greeting = f"Namaste {first_name}! " if first_name else ""
     segments = [
         ("👑", ("custom", EMOJI_CROWN)),
@@ -483,10 +441,10 @@ def _welcome_text(
         (f"{greeting}VerifyHub — ek baar, ek faisla.", "bold"),
         ("\n\n", None),
         ("✅", ("custom", EMOJI_CHECK)),
-        (" Apna UID panel se ya seedha chat mein bhejo.", None),
+        (" Apna UID Verification Panel se bhejo.", None),
         ("\n", None),
         ("🎯", ("custom", EMOJI_TARGET)),
-        (" Verify hote hi live WinGo signals (30s & 1m) khul jayenge.", None),
+        (" Verify hote hi WinGo predictions panel me khul jayenge.", None),
         ("\n", None),
         ("📈", ("custom", EMOJI_CHART_UP)),
         (" Status, badges aur win rate — sab real-time.", None),
@@ -495,49 +453,48 @@ def _welcome_text(
         segments += [
             ("\n\n", None),
             ("💎", ("custom", EMOJI_DIAMOND)),
-            (" Verified — signals aur predictions khul gaye.", "bold"),
+            (" Verified — predictions panel me khul gaye.", "bold"),
         ]
     else:
         segments.append(("\n\nShuru karne ke liye neeche button dabao.", None))
     return _render(segments)
 
 
-def _help_text(admin: bool = False, lang: str = "hi"):
+def _help_text(admin: bool = False):
+    """Complete guide — pure Hinglish now; no language toggle, no English branch."""
     segments = [
         ("👑", ("custom", EMOJI_CROWN)),
         (" ", None),
-        ("VerifyHub — Complete Guide" if lang == "en" else "VerifyHub — Kaise Kaam Karta Hai", "bold"),
+        ("VerifyHub — Kaise Kaam Karta Hai", "bold"),
         ("\n\n", None),
         ("1.", "bold"),
-        (" Register on the official site and copy your UID.", None),
+        (" Official site par register karo aur apna UID copy karo.", None),
         ("\n", None),
         ("2.", "bold"),
-        (" Tap Open Verification Panel — or send the UID right here in chat.", None),
+        (" Verification Panel kholo aur apna UID wahi se bhejo.", None),
         ("\n", None),
         ("3.", "bold"),
-        (" An admin reviews it. Track your status live.", None),
+        (" Admin check karega. Apna status live track karo.", None),
         ("\n\n", None),
         ("Verified", "bold"),
-        (" = approved by an admin. Not a guarantee of recovery, and not provider-confirmed.", None),
-        ("\nVerified users unlock the Prediction Mini App and the Signal Hub (WinGo 30s & 1m).", None),
-        ("\n\nWe never ask for passwords, OTPs, or recovery phrases.", None),
+        (" = admin ne approve kiya hai. Ye recovery ki guarantee nahi hai, aur provider ne confirm nahi kiya hai.", None),
+        ("\nVerify hone ke baad Prediction Mini App khul jata hai (WinGo 30s & 1m).", None),
+        ("\n\nHum kabhi password, OTP ya recovery phrase nahi mangte.", None),
         ("\n\n", None),
-        ("Your tools", "bold"),
-        ("\n• Verification Panel — the full Mini App", None),
-        ("\n• 🚀 Quick Submit UID — send your UID in chat", None),
-        ("\n• 📊 Status — progress, history & admin notes", None),
-        ("\n• 🎯 Signal Hub — 1m & 30s signals, streaks, last 10", None),
-        ("\n• 👤 Profile — VIP tier, badges & admin support", None),
+        ("Aapke tools", "bold"),
+        ("\n• Verification Panel — poora Mini App", None),
+        ("\n• Status — progress, history aur admin notes", None),
+        ("\n• Profile — VIP tier, badges aur admin support", None),
     ]
     if admin:
         segments += [
             ("\n\n", None),
             ("Admin Panel", "bold"),
-            ("\n• Pending Queue — one-tap approve / reject / info, presets & bulk approve", None),
-            ("\n• Search — any UID, Telegram ID, or #SubmissionID", None),
-            ("\n• Analytics — 7-day trend, funnel & turnaround", None),
-            ("\n• Broadcast — message all, verified, pending or rejected users", None),
-            ("\n• Admins & Exports — manage admins, download CSVs", None),
+            ("\n• Pending Queue — ek tap me approve / reject / info, presets aur bulk approve", None),
+            ("\n• Search — koi bhi UID, Telegram ID, ya #SubmissionID", None),
+            ("\n• Analytics — 7 din ka trend, funnel aur turnaround", None),
+            ("\n• Broadcast — sabko, verified, pending ya rejected users ko message", None),
+            ("\n• Admins & Exports — admin manage karo, CSV download karo", None),
         ]
     return _render(segments)
 
@@ -641,12 +598,11 @@ def _predict_url() -> str | None:
 def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     """The user main menu. Admins never see it — their only navigation is
     the reply keyboard, so there is no admin row here at all."""
-    lang = _get_lang(user_id) if user_id else "hi"
     rows = []
     if settings.mini_app_url:
         rows.append([
             InlineKeyboardButton(
-                "Open Verification Panel",
+                "Verification Panel Kholo",
                 web_app=WebAppInfo(url=settings.mini_app_url),
                 style="primary",
                 icon_custom_emoji_id=EMOJI_CROWN,
@@ -662,7 +618,7 @@ def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
 
     middle = [
         InlineKeyboardButton(
-            "Check My Status",
+            "Meri Status Dekho",
             callback_data="__status__",
             style="success",
             icon_custom_emoji_id=EMOJI_CHART,
@@ -672,17 +628,9 @@ def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     if predict_url:
         middle.append(
             InlineKeyboardButton(
-                "Open Predictions",
+                "Predictions Kholo",
                 web_app=WebAppInfo(url=predict_url),
                 icon_custom_emoji_id=EMOJI_DIAMOND,
-            )
-        )
-    else:
-        middle.append(
-            InlineKeyboardButton(
-                "Quick Submit UID",
-                callback_data="__submit_uid__",
-                icon_custom_emoji_id=EMOJI_CHECK,
             )
         )
     rows.append(middle)
@@ -691,21 +639,17 @@ def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
 
 def _user_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
     """The user's everyday tools, in the keyboard area next to the message
-    box — Signal Hub, Submit UID, Profile, Stats, Help and the language
-    toggle. The top actions (Panel, Status, Predictions) stay as inline
-    buttons under the welcome message.
+    box — Profile, Stats and Help. The top actions (Panel, Status,
+    Predictions) stay as inline buttons under the welcome message.
 
     NOTE: reply-keyboard buttons are plain text — Telegram does not let
     them carry premium custom emojis, so these labels keep their simple
     Unicode icons. The inline buttons are premium-only (no Unicode
     emoji next to a custom icon)."""
-    lang = _get_lang(user_id) if user_id else "hi"
-    lang_label = "🇬🇧 EN" if lang == "hi" else "🇮🇳 HI"
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("🎯 Signal Hub"), KeyboardButton("🚀 Submit UID")],
             [KeyboardButton("👤 Profile"), KeyboardButton("📈 Stats")],
-            [KeyboardButton("Help"), KeyboardButton(lang_label)],
+            [KeyboardButton("Help")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -843,7 +787,7 @@ def _window_lines(status: str) -> list[str]:
         w3 = "…"
     else:
         w3 = "○"
-    return [f"01 Received ✓", f"02 Under review {w2}", f"03 Decision {w3}"]
+    return [f"01 Mila ✓", f"02 Review ho raha {w2}", f"03 Faisla {w3}"]
 
 
 def _progress_bar(status: str) -> str:
@@ -852,7 +796,7 @@ def _progress_bar(status: str) -> str:
         "not_submitted": "[░░░░░░] 0/3",
         "pending_review": "[██░░░░] 1/3",
         "under_review": "[████░░] 2/3",
-        "info_required": "[████░░] 2/3 (Action Needed)",
+        "info_required": "[████░░] 2/3 (Action Chahiye)",
         "verified": "[██████] 3/3 ✅",
         "rejected": "[██████] 3/3 ❌",
     }
@@ -869,14 +813,14 @@ def _status_card(
     header = [
         ("📊", ("custom", EMOJI_CHART)),
         (" ", None),
-        ("Your verification status", "bold"),
+        ("Aapki verification status", "bold"),
     ]
     if row is None:
         segments = header + [
             ("\n\nStatus: ", None),
-            ("Not submitted", "bold"),
+            (STATUS_LABELS["not_submitted"], "bold"),
             (f"\nProgress: {_progress_bar('not_submitted')}", None),
-            ("\n\nYou have not submitted a UID yet.\nSend it via 🚀 Quick Submit UID or the Verification Panel.", None),
+            ("\n\nAapne abhi tak UID nahi bheja hai.\nVerification Panel se UID bhejo.", None),
         ]
         if badges:
             segments += [("\n\n", None), ("Badges: ", "bold"), (" · ".join(badges), None)]
@@ -899,12 +843,12 @@ def _status_card(
         (f"#{row.id}", "code"),
         ("  ·  UID: ", None),
         (mask_uid(row.registration_uid), "code"),
-        ("\nSent: ", None),
+        ("\nBheja: ", None),
         (row.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if row.submitted_at else "—", None),
     ]
     if getattr(row, "updated_at", None) and row.updated_at != row.submitted_at:
         segments += [
-            ("\nUpdated: ", None),
+            ("\nUpdate hua: ", None),
             (row.updated_at.strftime("%Y-%m-%d %H:%M UTC"), None),
         ]
     segments.append(("\n\n", None))
@@ -914,11 +858,11 @@ def _status_card(
         segments.append((line, None))
     if row.review_message:
         segments.append(("\n\n", None))
-        segments.append(("Admin note:", "bold"))
+        segments.append(("Admin ka note:", "bold"))
         segments.append((f"\n{row.review_message}", "italic"))
     if history and len(history) > 1:
         segments.append(("\n\n", None))
-        segments.append((f"Recent submissions ({len(history)}):", "bold"))
+        segments.append((f"Pichli submissions ({len(history)}):", "bold"))
         for h in history[:4]:
             h_when = h.submitted_at.strftime("%m-%d %H:%M") if h.submitted_at else "—"
             h_icon = STATUS_ICONS.get(h.status, "•")
@@ -978,18 +922,17 @@ def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool =
             (f" ({STATUS_LABELS.get(latest.status, latest.status)})", None),
         ]
     if badges:
-        segments += [("\n\nEarned Badges:\n", "bold"), (" · ".join(badges), None)]
+        segments += [("\n\nBadges mile:\n", "bold"), (" · ".join(badges), None)]
     else:
-        segments.append(("\n\nEarned Badges: none yet — verify your UID to unlock.", None))
+        segments.append(("\n\nAbhi koi badge nahi — UID verify karke apna pehla badge lo.", None))
 
     text, entities = _render(segments)
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Submit / Update UID", callback_data="__submit_uid__", icon_custom_emoji_id=EMOJI_CHECK),
             InlineKeyboardButton("Status Card", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
         ],
         [
-            InlineKeyboardButton("💬 Contact Admin / Appeal", callback_data="__support__"),
+            InlineKeyboardButton("💬 Admin se Sampark / Appeal", callback_data="__support__"),
             _back_button(admin),
         ],
     ])
@@ -1022,101 +965,6 @@ def _user_submissions(telegram_id: int, limit: int = 5) -> list[Submission]:
             .limit(limit)
             .all()
         )
-
-
-async def _submit_uid_in_chat(
-    user_tg,
-    raw_uid: str,
-) -> tuple[str, list, InlineKeyboardMarkup, Submission | None]:
-    """Allow a user to submit a UID directly in Telegram chat and notify all admins."""
-    uid = raw_uid.strip()
-    admin = _is_admin(user_tg.id)
-    if not UID_PATTERN.match(uid):
-        segments = [
-            ("❌ ", None),
-            ("Invalid UID format.", "bold"),
-            ("\n\nPlease send only your Registration UID (6–64 characters, letters, numbers, dash or underscore — no spaces or links).", None),
-        ]
-        text, entities = _render(segments)
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel", callback_data="__home__")]])
-        return text, entities, kb, None
-
-    now = datetime.now(timezone.utc)
-    with _db_session() as db:
-        user = db.query(User).filter(User.telegram_id == user_tg.id).first()
-        if user is None:
-            user = User(telegram_id=user_tg.id)
-            if hasattr(User, "username"):
-                setattr(user, "username", user_tg.username)
-            if hasattr(User, "first_name"):
-                setattr(user, "first_name", user_tg.first_name)
-            if hasattr(User, "first_seen_at"):
-                setattr(user, "first_seen_at", now)
-            db.add(user)
-            db.flush()
-        else:
-            if hasattr(user, "username") and user_tg.username:
-                setattr(user, "username", user_tg.username)
-            if hasattr(user, "first_name") and user_tg.first_name:
-                setattr(user, "first_name", user_tg.first_name)
-
-        # Check if user already has an active pending/under_review submission
-        active_sub = (
-            db.query(Submission)
-            .filter(Submission.user_id == user.id, Submission.status.in_(ACTIVE_STATUSES))
-            .order_by(desc(Submission.submitted_at))
-            .first()
-        )
-        if active_sub is not None:
-            segments = [
-                ("⏳ ", None),
-                (f"Submission #{active_sub.id} is already in the review queue!", "bold"),
-                (f"\n\nActive UID: {mask_uid(active_sub.registration_uid)}\nStatus: {STATUS_LABELS.get(active_sub.status, active_sub.status)}\n\nPlease wait for an administrator to review your active submission.", None),
-            ]
-            text, entities = _render(segments)
-            return text, entities, _keyboard(user_id=user_tg.id), None
-
-        sub = Submission(
-            user_id=user.id,
-            registration_uid=uid,
-            status="pending_review",
-        )
-        if hasattr(Submission, "submitted_at"):
-            setattr(sub, "submitted_at", now)
-        if hasattr(Submission, "updated_at"):
-            setattr(sub, "updated_at", now)
-        db.add(sub)
-        db.commit()
-        db.refresh(sub)
-        sub_id = sub.id
-        sub_at = getattr(sub, "submitted_at", now)
-
-    # Notify all admins (config + DB admins)
-    await notify_admins(
-        settings.bot_token,
-        _all_admin_ids(),
-        submission_id=sub_id,
-        registration_uid=uid,
-        user_telegram_id=user_tg.id,
-        username=user_tg.username,
-        first_name=user_tg.first_name,
-        submitted_at=sub_at,
-        mini_app_url=settings.mini_app_url,
-    )
-
-    segments = [
-        ("✅", ("custom", EMOJI_CHECK)),
-        (" ", None),
-        (f"Submission #{sub_id} received!", "bold"),
-        ("\n\nUID: ", None),
-        (mask_uid(uid), "code"),
-        ("\nStatus: ", None),
-        ("Pending review", "bold"),
-        (f"\nProgress: {_progress_bar('pending_review')}", None),
-        ("\n\nOur administrators have been alerted and will review your UID shortly. You will receive an instant notification here as soon as a decision is made.", None),
-    ]
-    text, entities = _render(segments)
-    return text, entities, _keyboard(user_id=user_tg.id), sub
 
 
 def _signal_stats_summary(rows: list[SignalRecord]) -> dict:
@@ -1171,151 +1019,6 @@ def _confidence_meter(pct: float) -> str:
     return "█" * filled + "░" * (10 - filled)
 
 
-def _signal_preview_card(
-    telegram_id: int,
-    admin: bool = False,
-    timer: str = "1m",
-) -> tuple[str, list, InlineKeyboardMarkup]:
-    """In-bot live WinGo signal & streak analytics hub with 1m / 30s switcher."""
-    if timer not in ("1m", "30s"):
-        timer = "1m"
-    verified = admin or _is_user_verified(telegram_id)
-    if not verified:
-        status, _, _ = _latest_status(telegram_id)
-        segments = [
-            ("🎯", ("custom", EMOJI_TARGET)),
-            (" ", None),
-            ("Signal Hub — Verified Members Only", "bold"),
-            ("\n\nYour current status: ", None),
-            (STATUS_LABELS.get(status, status), "bold"),
-            ("\n\nVerify your UID first — then the Signal Hub and the Prediction Mini App unlock.", None),
-        ]
-        text, entities = _render(segments)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Submit UID", callback_data="__submit_uid__", icon_custom_emoji_id=EMOJI_CHECK)],
-            [_back_button(admin)],
-        ])
-        return text, entities, kb
-
-    with _db_session() as db:
-        rows_1m = db.query(SignalRecord).filter(SignalRecord.timer == "1m").all()
-        rows_30s = db.query(SignalRecord).filter(SignalRecord.timer == "30s").all()
-
-    s1 = _signal_stats_summary(rows_1m)
-    s30 = _signal_stats_summary(rows_30s)
-    active_stats = s1 if timer == "1m" else s30
-
-    segments = [
-        ("🎯", ("custom", EMOJI_TARGET)),
-        (" ", None),
-        (f"Signal Hub — WinGo {timer.upper()}", "bold"),
-        ("\n\n", None),
-    ]
-    try:
-        # Live signal for the NEXT period, from the same deterministic
-        # engine the Mini App uses. get_live() cannot serve this: it only
-        # returns the 1m ticker (period + countdown), never a pick — and
-        # it takes no timer argument, so get_live(timer) raised on every
-        # tap and the hub always showed "syncing". get_prediction works
-        # for both timers and is the pick's real source.
-        pred = get_prediction(timer)
-    except ProviderError as e:
-        segments.append((f"Live feed notice: {e}\n", "italic"))
-        pred = None
-    except Exception:
-        segments.append(("Live feed: syncing next period…\n", "italic"))
-        pred = None
-    if pred is not None:
-        sig = pred.get("signal")
-        current_period = str(pred.get("current_period", "—"))
-        try:
-            ends_in = max(0, int((
-                datetime.fromisoformat(pred["next_period_at"])
-                - datetime.fromisoformat(pred["server_time"])
-            ).total_seconds()))
-        except Exception:
-            ends_in = "—"
-        segments += [
-            (f"Active Period ({timer}): ", "bold"),
-            (f"…{current_period[-6:] if len(current_period) >= 6 else current_period}", "code"),
-            (f"  ·  {ends_in}s left\n", None),
-        ]
-        if sig:
-            segments += [
-                ("Live Signal: ", "bold"),
-                (f"{str(sig.get('size', '')).upper()} · {str(sig.get('colour', '')).upper()}", "code"),
-            ]
-            if sig.get("confidence"):
-                segments.append((f" ({sig['confidence']})", None))
-            segments.append(("\n", None))
-            if sig.get("reason"):
-                segments.append((f"{sig['reason']}\n", "italic"))
-            # Record it for the accuracy tracker, exactly like the API
-            # endpoint does (first signal wins per period; never raises).
-            with _db_session() as db:
-                record_signal(
-                    db, timer, pred["period"], sig["size"],
-                    sig.get("reason"), sig.get("confidence"),
-                )
-
-    if active_stats["total"] > 0:
-        streak_str = (
-            f"{active_stats['streak_count']}W Streak"
-            if active_stats["streak_win"]
-            else f"{active_stats['streak_count']}L Streak"
-        )
-        segments += [
-            ("\n", None),
-            ("📊", ("custom", EMOJI_CHART)),
-            (f" {timer.upper()} Performance:", "bold"),
-            (f"\n• All-Time Win Rate: {active_stats['acc']}% ({active_stats['wins']}/{active_stats['total']})", None),
-            (f"\n• Last 20 Form: [{_confidence_meter(active_stats['acc_20'])}] {active_stats['acc_20']}%", None),
-            (f"\n• Current Streak: {streak_str}  ·  Best Streak: {active_stats['best_win_streak']}W", None),
-            (f"\n• Last 10 Tape: {active_stats['tape']}", None),
-        ]
-    else:
-        segments.append((f"\n📊 {timer.upper()} Performance: Warming up settled signals…", None))
-
-    other_timer = "30s" if timer == "1m" else "1m"
-    other_stats = s30 if timer == "1m" else s1
-    if other_stats["total"] > 0:
-        segments.append(
-            (f"\n\n{other_timer.upper()} Summary: {other_stats['acc']}% ({other_stats['wins']}/{other_stats['total']} settled)", None)
-        )
-
-    segments.append(("\n\nSignals are statistical estimates — play responsibly, never a guarantee.", "italic"))
-    text, entities = _render(segments)
-
-    btn_rows = []
-    predict_url = _predict_url()
-    if predict_url:
-        btn_rows.append([
-            InlineKeyboardButton(
-                "Open Full Predictions Mini App",
-                web_app=WebAppInfo(url=predict_url),
-                style="primary",
-                icon_custom_emoji_id=EMOJI_DIAMOND,
-            )
-        ])
-    btn_rows.append([
-        InlineKeyboardButton(
-            "⏱ 1m Active" if timer == "1m" else "⏱ Switch to 1m",
-            callback_data="__signal__:1m",
-            style="success" if timer == "1m" else None,
-        ),
-        InlineKeyboardButton(
-            "⚡ 30s Active" if timer == "30s" else "⚡ Switch to 30s",
-            callback_data="__signal__:30s",
-            style="success" if timer == "30s" else None,
-        ),
-    ])
-    btn_rows.append([
-        InlineKeyboardButton("Refresh Live Feed", callback_data=f"__signal__:{timer}", icon_custom_emoji_id=EMOJI_TARGET),
-        _back_button(admin),
-    ])
-    return text, entities, InlineKeyboardMarkup(btn_rows)
-
-
 def _admin_dashboard() -> tuple[str, list]:
     """The admin panel, as one clean message: queue, verdicts, today.
 
@@ -1343,13 +1046,13 @@ def _admin_dashboard() -> tuple[str, list]:
         (" ", None),
         ("Admin Panel", "bold"),
         ("\n\n", None),
-        (f"Queue: {active_wait} waiting", "bold"),
-        (f"  ·  Pending {counts['pending_review']}  ·  In review {counts['under_review']}", None),
+        (f"Queue: {active_wait} wait kar rahe hain", "bold"),
+        (f"  ·  Pending {counts['pending_review']}  ·  Review me {counts['under_review']}", None),
         ("\n", None),
         (f"Verified {counts['verified']} ({approval_rate})  ·  Rejected {counts['rejected']}  ·  Info {counts['info_required']}", None),
         ("\n", None),
-        (f"Today +{today}  ·  Users {total_users}  ·  Submissions {total}", None),
-        ("\n\nTap a button below to open Pending, Search, Analytics, Broadcast, Admins or Export.", None),
+        (f"Aaj +{today}  ·  Users {total_users}  ·  Submissions {total}", None),
+        ("\n\nNeeche button dabakar Pending, Search, Analytics, Broadcast, Admins ya Export kholo.", None),
     ]
     return _render(segments)
 
@@ -1422,11 +1125,11 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
         ("VerifyHub — Deep Analytics & Funnel", "bold"),
         ("\n\nConversion Funnel:", "bold"),
         (f"\n• Total Bot Users: {total_users}", None),
-        (f"\n• Submitted UID: {users_with_subs} ({sub_rate}% of users)", None),
+        (f"\n• UID Bheja: {users_with_subs} ({sub_rate}% users ne)", None),
         (f"\n• Verified Users: {verified_users} ({ver_rate}% of users)", None),
         (f"\n• Avg Review Speed: ⚡ {avg_turnaround}", None),
-        ("\n\n7-Day Submission Trend:", "bold"),
-        (f"\n{spark}  ({sum(daily_counts)} total in 7d)", "code"),
+        ("\n\n7 Din ka Submission Trend:", "bold"),
+        (f"\n{spark}  (7 din me kul {sum(daily_counts)})", "code"),
         (f"\n{' · '.join(f'{lbl}:{cnt}' for lbl, cnt in zip(day_labels, daily_counts))}", None),
         ("\n\nSignal Engine Health:", "bold"),
         (f"\n• 1m WinGo: {s1['acc']}% ({s1['wins']}/{s1['total']}) · Last 10: {s1['tape']}", None),
@@ -1440,7 +1143,7 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
             InlineKeyboardButton("📥 Users CSV", callback_data="admin:export_users"),
         ],
         [
-            InlineKeyboardButton("🔄 Refresh Analytics", callback_data="admin:analytics"),
+            InlineKeyboardButton("🔄 Analytics Refresh Karo", callback_data="admin:analytics"),
         ],
     ])
     return text, entities, kb
@@ -1455,11 +1158,11 @@ def _admins_view() -> tuple[str, InlineKeyboardMarkup]:
     for tid in settings.admin_telegram_ids:
         lines.append(f"• {tid} (server config)")
     for r in rows:
-        lines.append(f"• {r.telegram_id} (added by {r.added_by_telegram_id})")
+        lines.append(f"• {r.telegram_id} ({r.added_by_telegram_id} ne add kiya)")
         keyboard_rows.append([
-            InlineKeyboardButton(f"❌ Remove {r.telegram_id}", callback_data=f"admin:remove:{r.telegram_id}")
+            InlineKeyboardButton(f"❌ {r.telegram_id} ko Remove Karo", callback_data=f"admin:remove:{r.telegram_id}")
         ])
-    keyboard_rows.append([InlineKeyboardButton("➕ Add Admin", callback_data="admin:add")])
+    keyboard_rows.append([InlineKeyboardButton("➕ Admin Add Karo", callback_data="admin:add")])
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
 
@@ -1491,12 +1194,12 @@ def _pending_view(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
             }
 
     nav = [[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"admin:pending:{page}" if page else "admin:refresh:p"),
+        InlineKeyboardButton("🔄 Refresh Karo", callback_data=f"admin:pending:{page}" if page else "admin:refresh:p"),
     ]]
     if not rows:
-        return "✅ No submissions are waiting for review.", InlineKeyboardMarkup(nav)
+        return "✅ Koi submission review ke liye wait nahi kar rahi.", InlineKeyboardMarkup(nav)
 
-    lines = [f"📋 Pending submissions ({total_pending} total · page {page + 1}/{total_pages}):"]
+    lines = [f"📋 Pending submissions (kul {total_pending} · page {page + 1}/{total_pages}):"]
     keyboard_rows = []
     for r in rows:
         when = r.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if r.submitted_at else "—"
@@ -1515,7 +1218,7 @@ def _pending_view(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     if len(rows) > 1:
         keyboard_rows.append([
             InlineKeyboardButton(
-                f"⚡ Bulk Approve Page ({len(rows)} items)",
+                f"⚡ Page ki Sab Approve Karo ({len(rows)} items)",
                 callback_data=f"admin:bulk_ask:{page}",
             )
         ])
@@ -1523,13 +1226,13 @@ def _pending_view(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     if total_pages > 1:
         pager = []
         if page > 0:
-            pager.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"admin:pending:{page - 1}"))
+            pager.append(InlineKeyboardButton("⬅️ Peeche", callback_data=f"admin:pending:{page - 1}"))
         pager.append(InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data="admin:pending"))
         if page + 1 < total_pages:
-            pager.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin:pending:{page + 1}"))
+            pager.append(InlineKeyboardButton("Aage ➡️", callback_data=f"admin:pending:{page + 1}"))
         keyboard_rows.append(pager)
 
-    lines.append("\nTap ✅ to approve, ❌ to reject, ℹ️ for info, or 🔎 for preset reasons & custom notes.")
+    lines.append("\n✅ dabao approve ke liye, ❌ reject ke liye, ℹ️ info ke liye, ya 🔎 preset reasons aur custom notes ke liye.")
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows + nav)
 
 
@@ -1539,8 +1242,8 @@ def _submission_detail_view(submission_id: int) -> tuple[str, InlineKeyboardMark
         row = db.query(Submission).filter(Submission.id == submission_id).first()
         if row is None:
             return (
-                f"Submission #{submission_id} not found.",
-                InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Panel", callback_data="admin:dashboard")]]),
+                f"Submission #{submission_id} nahi mili.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Panel pe Wapas", callback_data="admin:dashboard")]]),
             )
         owner = db.query(User).filter(User.id == row.user_id).first()
         owner_tid = owner.telegram_id if owner else "?"
@@ -1565,13 +1268,13 @@ def _submission_detail_view(submission_id: int) -> tuple[str, InlineKeyboardMark
         f"UID: {row.registration_uid}",
         f"Status: {icon} {STATUS_LABELS.get(row.status, row.status)}",
         f"User Telegram ID: {owner_tid} ({len(user_subs)} recent submissions)",
-        f"Submitted: {when}",
+        f"Bheji gayi: {when}",
         f"Last Updated: {updated}",
     ]
     if row.review_message:
         lines.append(f"Review Note: {row.review_message}")
     if len(user_subs) > 1:
-        lines.append("\nUser's Submission History:")
+        lines.append("\nUser ki Submission History:")
         for s in user_subs:
             s_icon = STATUS_ICONS.get(s.status, "•")
             s_when = s.submitted_at.strftime("%m-%d %H:%M") if s.submitted_at else "—"
@@ -1580,7 +1283,7 @@ def _submission_detail_view(submission_id: int) -> tuple[str, InlineKeyboardMark
     kb_rows = [
         [
             InlineKeyboardButton("✅ Approve", callback_data=f"admin:approve:{row.id}:p"),
-            InlineKeyboardButton("🔎 Mark Under Review", callback_data=f"admin:review:{row.id}:p"),
+            InlineKeyboardButton("🔎 Review Me Mark Karo", callback_data=f"admin:review:{row.id}:p"),
         ],
         [
             InlineKeyboardButton(
@@ -1619,7 +1322,7 @@ def _submission_detail_view(submission_id: int) -> tuple[str, InlineKeyboardMark
     ]
     if isinstance(owner_tid, int):
         kb_rows.append([
-            InlineKeyboardButton(f"↩️ Send Direct Message to {owner_tid}", callback_data=f"admin:reply:{owner_tid}"),
+            InlineKeyboardButton(f"↩️ {owner_tid} ko Direct Message Bhejo", callback_data=f"admin:reply:{owner_tid}"),
         ])
     return "\n".join(lines), InlineKeyboardMarkup(kb_rows)
 
@@ -1671,13 +1374,13 @@ def _search_submissions(query_str: str) -> tuple[str, InlineKeyboardMarkup]:
 
     if not matched_rows:
         return (
-            f"No submissions or users matched '{query_str}'.",
+            f"'{query_str}' se koi submission ya user nahi mila.",
             InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔍 Search Again", callback_data="admin:search")],
+                [InlineKeyboardButton("🔍 Dobara Search Karo", callback_data="admin:search")],
             ]),
         )
 
-    lines = [f"🔍 Search results for '{query_str}' ({len(matched_rows)} found):"]
+    lines = [f"🔍 '{query_str}' ke search results ({len(matched_rows)} mile):"]
     kb_rows = []
     for r in matched_rows[:6]:
         when = r.submitted_at.strftime("%Y-%m-%d %H:%M") if r.submitted_at else "—"
@@ -1692,7 +1395,7 @@ def _search_submissions(query_str: str) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton(f"🔎 #{r.id}", callback_data=f"admin:view:{r.id}"),
         ])
     kb_rows.append([
-        InlineKeyboardButton("🔍 New Search", callback_data="admin:search"),
+        InlineKeyboardButton("🔍 Nayi Search", callback_data="admin:search"),
     ])
     return "\n".join(lines), InlineKeyboardMarkup(kb_rows)
 
@@ -1794,10 +1497,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text, entities = _welcome_text(
         first_name=update.effective_user.first_name,
         verified=verified,
-        lang=_get_lang(user_id),
     )
     if not settings.mini_app_url and not settings.registration_url:
-        text += "\n\nThe panel and registration links are not configured yet — ask the administrator to set MINI_APP_URL and REGISTRATION_URL."
+        text += "\n\nPanel aur registration links abhi set nahi hain — admin se MINI_APP_URL aur REGISTRATION_URL set karne ko kaho."
     await update.message.reply_text(
         text,
         entities=entities,
@@ -1807,7 +1509,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # own message — one message can carry either an inline keyboard or
     # a reply keyboard, never both.
     await update.message.reply_text(
-        "Neeche wale buttons 👇 — Signal Hub, Submit UID, Profile, Stats, Help.",
+        "Neeche wale buttons 👇 — Profile, Stats, Help.",
         reply_markup=_user_reply_keyboard(user_id),
     )
 
@@ -1838,7 +1540,7 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         ("\n\n", None),
         (f"Users {total_users}  ·  Submissions {total_subs}", None),
         ("\n", None),
-        (f"Verified {verified}  ·  Today +{verified_today}  ·  Queue {pending}", None),
+        (f"Verified {verified}  ·  Aaj +{verified_today}  ·  Queue {pending}", None),
     ]
     if s1["total"]:
         segments += [
@@ -1854,7 +1556,7 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         segments += [
             ("\n\n", None),
             ("🎯", ("custom", EMOJI_TARGET)),
-            (" Signals (1m): no settled signals yet.", None),
+            (" Signals (1m): abhi koi settled signal nahi hai.", None),
         ]
     if s30["total"]:
         segments.append((
@@ -1863,27 +1565,27 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         ))
     try:
         live = get_live()
-        segments.append((f"\n\nLive 1m: period …{live['period'][-4:]} ends in {live['ends_in_seconds']}s", None))
+        segments.append((f"\n\nLive 1m: period …{live['period'][-4:]} {live['ends_in_seconds']}s me khatam", None))
     except Exception:
         logger.debug("Live period unavailable for stats.")
     segments += [
-        ("\n\nYour Tier: ", "bold"),
+        ("\n\nAapki Tier: ", "bold"),
         (tier, None),
     ]
     if badges:
-        segments.append(("\nYour Badges: ", "bold"))
+        segments.append(("\nAapke Badges: ", "bold"))
         segments.append((" · ".join(badges), None))
     else:
-        segments.append(("\nNo badges yet — get verified to earn your first one.", None))
+        segments.append(("\nAbhi koi badge nahi — verify hokar apna pehla badge lo.", None))
     return _render(segments)
 
 
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Plain-text replies to interactive bot prompts (submit UID, support
-    message, admin reply, search, custom note, broadcast, add admin).
+    """Plain-text replies to interactive bot prompts (support message,
+    admin reply, search, custom note, broadcast, add admin).
 
-    The bot is button-only: there is no reply keyboard, so stray text
-    just gets the nudge below — every action lives on an inline button.
+    The navigation buttons are reply-keyboard buttons, so tapping one
+    arrives here as plain text; stray text just gets the nudge below.
     """
     if not update.effective_user or not update.message:
         return
@@ -1915,7 +1617,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data.pop("awaiting", None)
             context.user_data["awaiting"] = "search_uid"
             await update.message.reply_text(
-                "Send a Registration UID, User Telegram ID, or #SubmissionID to search:",
+                "Search karne ke liye Registration UID, User Telegram ID, ya #SubmissionID bhejo:",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
                 ]]),
@@ -1935,7 +1637,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data.pop("awaiting", None)
             context.user_data["awaiting"] = "broadcast"
             await update.message.reply_text(
-                "Send the broadcast message (supports bold, italic, code & custom emoji).",
+                "Broadcast message bhejo (bold, italic, code aur custom emoji chalenge).",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast"),
                 ]]),
@@ -1954,26 +1656,6 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # The user's everyday tools are reply-keyboard buttons, so tapping
     # one arrives here as plain text — same pattern as the admin panel.
     # Each opens its view; the keyboard itself stays on screen.
-    if text == "🎯 Signal Hub":
-        context.user_data.pop("awaiting", None)
-        sig_text, sig_entities, sig_kb = _signal_preview_card(user_id, admin=admin, timer="1m")
-        await update.message.reply_text(sig_text, entities=sig_entities, reply_markup=sig_kb)
-        return
-    if text == "🚀 Submit UID":
-        context.user_data.pop("awaiting", None)
-        context.user_data["awaiting"] = "submit_uid"
-        ptext, pentities = _render([
-            ("✅", ("custom", EMOJI_CHECK)),
-            (" ", None),
-            ("Quick UID Submission", "bold"),
-            ("\n\nSend your Registration UID right now as a message (6–64 characters, letters, numbers, dash or underscore).", None),
-            ("\n\nTip: Copy your exact UID from your account profile page on the official site.", "italic"),
-        ])
-        await update.message.reply_text(
-            ptext, entities=pentities,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel", callback_data="__home__")]]),
-        )
-        return
     if text == "👤 Profile":
         context.user_data.pop("awaiting", None)
         prof_text, prof_entities, prof_kb = _profile_card(
@@ -1988,49 +1670,24 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if text == "Help":
         context.user_data.pop("awaiting", None)
-        htext, hentities = _help_text(admin=admin, lang=_get_lang(user_id))
+        htext, hentities = _help_text(admin=admin)
         help_rows = [
             [
                 InlineKeyboardButton("Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
-                InlineKeyboardButton("💬 Contact Admin", callback_data="__support__"),
+                InlineKeyboardButton("💬 Admin se Sampark", callback_data="__support__"),
             ],
             [_back_button(admin)],
         ]
         await update.message.reply_text(htext, entities=hentities, reply_markup=InlineKeyboardMarkup(help_rows))
         return
-    if text in ("🇬🇧 EN", "🇮🇳 HI"):
-        context.user_data.pop("awaiting", None)
-        new_lang = _toggle_lang(user_id)
-        wtext, wentities = _welcome_text(
-            first_name=update.effective_user.first_name,
-            verified=_is_user_verified(user_id),
-            lang=new_lang,
-        )
-        await update.message.reply_text(
-            wtext, entities=wentities, reply_markup=_keyboard(user_id=user_id)
-        )
-        await update.message.reply_text(
-            "Neeche wale buttons 👇 — Signal Hub, Submit UID, Profile, Stats, Help.",
-            reply_markup=_user_reply_keyboard(user_id),
-        )
-        return
-
     awaiting = context.user_data.get("awaiting")
 
-    # 1. User In-Chat Quick UID Submission
-    if awaiting == "submit_uid":
-        res_text, res_entities, res_kb, sub = await _submit_uid_in_chat(update.effective_user, text)
-        if sub is not None:
-            context.user_data.pop("awaiting", None)
-        await update.message.reply_text(res_text, entities=res_entities, reply_markup=res_kb)
-        return
-
-    # 2. User Support / Appeal Message to Admins
+    # 1. User Support / Appeal Message to Admins
     if awaiting == "support_msg":
         context.user_data.pop("awaiting", None)
         if len(text) < 4:
             await update.message.reply_text(
-                "Please write a clear message (at least a few words) so an admin can help you.",
+                "Kuch saaf likho (kuch words) taaki admin aapki madad kar sake.",
                 reply_markup=None if admin else _keyboard(user_id=user_id),
             )
             return
@@ -2045,8 +1702,8 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("↩️ Reply to User", callback_data=f"admin:reply:{user_id}"),
-                InlineKeyboardButton("🔍 Inspect User", callback_data=f"admin:finduser:{user_id}"),
+                InlineKeyboardButton("↩️ User ko Reply Karo", callback_data=f"admin:reply:{user_id}"),
+                InlineKeyboardButton("🔍 User ko Inspect Karo", callback_data=f"admin:finduser:{user_id}"),
             ]
         ])
         reached = 0
@@ -2058,7 +1715,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 pass
         reply_text, reply_entities = _render([
             ("✅", ("custom", EMOJI_CHECK)),
-            (" Your message has been sent to the administrators. You will receive their reply right here in chat.", None),
+            (" Aapka message admin ko bhej diya gaya hai. Unka reply aapko yahi chat me milega.", None),
         ])
         await update.message.reply_text(
             reply_text,
@@ -2067,7 +1724,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    # 3. Admin Direct Reply to a User
+    # 2. Admin Direct Reply to a User
     if isinstance(awaiting, str) and awaiting.startswith("reply_user:") and admin:
         target_tid_str = awaiting.split(":", 1)[1]
         context.user_data.pop("awaiting", None)
@@ -2079,7 +1736,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             msg_text, msg_entities = _render([
                 ("👑", ("custom", EMOJI_CROWN)),
                 (" ", None),
-                ("Message from VerifyHub Admin:", "bold"),
+                ("VerifyHub Admin ka message:", "bold"),
                 (f"\n\n{text}", None),
             ])
             await context.bot.send_message(
@@ -2088,28 +1745,28 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 entities=msg_entities,
                 reply_markup=InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("↩️ Reply to Admin", callback_data="__support__"),
-                        InlineKeyboardButton("📊 Check My Status", callback_data="__status__"),
+                        InlineKeyboardButton("↩️ Admin ko Reply Karo", callback_data="__support__"),
+                        InlineKeyboardButton("📊 Meri Status Dekho", callback_data="__status__"),
                     ]
                 ]),
             )
             await update.message.reply_text(
-                f"✅ Sent message to user {target_tid}.",
+                f"✅ User {target_tid} ko message bhej diya.",
             )
         except Exception as e:
             await update.message.reply_text(
-                f"❌ Could not message user {target_tid}: {e}",
+                f"❌ User {target_tid} ko message nahi bhej paye: {e}",
             )
         return
 
-    # 4. Admin Search UID / User
+    # 3. Admin Search UID / User
     if awaiting == "search_uid" and admin:
         context.user_data.pop("awaiting", None)
         stext, skeyboard = _search_submissions(text)
         await update.message.reply_text(stext, reply_markup=skeyboard)
         return
 
-    # 5. Admin Custom Review Note
+    # 4. Admin Custom Review Note
     if isinstance(awaiting, str) and awaiting.startswith("custom_note:") and admin:
         _, action_key, sid_str, origin = awaiting.split(":", 3)
         context.user_data.pop("awaiting", None)
@@ -2129,7 +1786,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    # 6. Admin Broadcast Studio Preview
+    # 5. Admin Broadcast Studio Preview
     if awaiting == "broadcast" and admin:
         context.user_data.pop("awaiting", None)
         context.user_data["broadcast_text"] = text
@@ -2140,7 +1797,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         rejected_cnt = len(_broadcast_targets("rejected"))
         preview = (
             f"📣 Broadcast Studio Preview:\n\n{text}\n\n"
-            f"All: {total}  ·  Verified: {verified}  ·  Pending: {pending_cnt}  ·  Rejected/Info: {rejected_cnt}"
+            f"Sab: {total}  ·  Verified: {verified}  ·  Pending: {pending_cnt}  ·  Rejected/Info: {rejected_cnt}"
         )
         await update.message.reply_text(
             preview,
@@ -2148,17 +1805,17 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    # 7. Admin Add New Admin
+    # 6. Admin Add New Admin
     if awaiting == "add_admin" and admin:
         if not text.isdigit():
             await update.message.reply_text(
-                "That doesn't look like a Telegram ID — send just the number.",
+                "Ye Telegram ID nahi lag rahi — sirf number bhejo.",
             )
             return
         new_id = int(text)
         if settings.is_admin(new_id):
             await update.message.reply_text(
-                "That user is already an admin (set in the server config).",
+                "Ye user pehle se admin hai (server config me set hai).",
             )
             return
         with _db_session() as db:
@@ -2169,7 +1826,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data.pop("awaiting", None)
         reply_text, entities = _render([
             ("✅", ("custom", EMOJI_CHECK)),
-            (f" {new_id} is now an admin. They get the Admin Panel in their keyboard area and full admin access.", None),
+            (f" {new_id} ab admin hai. Unhe keyboard area me Admin Panel aur poora admin access milega.", None),
         ])
         await update.message.reply_text(reply_text, entities=entities)
         return
@@ -2177,7 +1834,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Stray text: users get the menu back, admins already have their
     # panel in the keyboard area, so theirs is text only.
     await update.message.reply_text(
-        "Use the buttons below — tap /start if they are not showing.",
+        "Neeche wale buttons use karo — agar dikh nahi rahe to /start dabao.",
         reply_markup=None if admin else _keyboard(user_id=user_id),
     )
 
@@ -2192,8 +1849,8 @@ def _broadcast_preview_keyboard(
     pin_label = "📌 Auto-Pin: ON ✅" if pin else "📌 Auto-Pin: OFF"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(pin_label, callback_data="admin:broadcast:toggle_pin")],
-        [InlineKeyboardButton(f"📣 Send to All ({total})", callback_data="admin:broadcast:all")],
-        [InlineKeyboardButton(f"✅ Send to Verified Only ({verified})", callback_data="admin:broadcast:verified")],
+        [InlineKeyboardButton(f"📣 Sabko Bhejo ({total})", callback_data="admin:broadcast:all")],
+        [InlineKeyboardButton(f"✅ Sirf Verified ko Bhejo ({verified})", callback_data="admin:broadcast:verified")],
         [
             InlineKeyboardButton(f"⏳ Unverified ({pending_cnt})", callback_data="admin:broadcast:pending"),
             InlineKeyboardButton(f"❌ Rejected/Info ({rejected_cnt})", callback_data="admin:broadcast:rejected"),
@@ -2228,10 +1885,10 @@ async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, me
             settings.bot_token, owner_telegram_id, to_status, row.review_message, settings.mini_app_url
         )
     verb = {
-        "verified": "verified",
-        "rejected": "rejected",
-        "info_required": "marked as needing more information",
-        "under_review": "marked as under review",
+        "verified": "verify kar diya",
+        "rejected": "reject kar diya",
+        "info_required": "aur jaankari mangi",
+        "under_review": "review me daal diya",
     }.get(to_status, to_status)
     text, entities = _render([
         ("✅", ("custom", EMOJI_CHECK)),
@@ -2240,9 +1897,9 @@ async def _do_admin_action(admin_id: int, submission_id: int, to_status: str, me
     if row.review_message:
         text += f"\nReview message: {row.review_message}"
     text += (
-        "\nThe user has been notified."
+        "\nUser ko notify kar diya gaya hai."
         if notified
-        else "\nThe user could not be notified (they may have blocked the bot)."
+        else "\nUser ko notify nahi kar paye (shayad unhone bot ko block kar diya hai)."
     )
     return text, entities, None
 
@@ -2268,37 +1925,24 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text, entities = _welcome_text(
             first_name=query.from_user.first_name,
             verified=_is_user_verified(admin_id),
-            lang=_get_lang(admin_id),
-        )
-        await _edit_or_reply(query, text, entities=entities, reply_markup=_keyboard(user_id=admin_id))
-
-    elif data == "__lang__":
-        new_lang = _toggle_lang(admin_id)
-        if admin:
-            text, entities = _admin_dashboard()
-            await _edit_or_reply(query, text, entities=entities)
-            return
-        text, entities = _welcome_text(
-            first_name=query.from_user.first_name,
-            verified=_is_user_verified(admin_id),
-            lang=new_lang,
         )
         await _edit_or_reply(query, text, entities=entities, reply_markup=_keyboard(user_id=admin_id))
 
     elif data == "__submit_uid__":
-        context.user_data["awaiting"] = "submit_uid"
+        # In-chat UID submit is removed: UIDs go through the panel only.
+        # Old buttons still show this redirect instead of dying silently.
         segments = [
             ("✅", ("custom", EMOJI_CHECK)),
             (" ", None),
-            ("Quick UID Submission", "bold"),
-            ("\n\nSend your Registration UID right now as a message (6–64 characters, letters, numbers, dash or underscore).", None),
-            ("\n\nTip: Copy your exact UID from your account profile page on the official site.", "italic"),
+            ("Chat me UID bhejna band ho gaya hai", "bold"),
+            ("\n\nApna UID Verification Panel se bhejo — wahi se deposit proof bhi jata hai. Verify hone ke baad predictions Prediction tab me khul jayenge.", None),
         ]
         text, entities = _render(segments)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✖️ Cancel", callback_data="__home__")],
-        ])
-        await _edit_or_reply(query, text, entities=entities, reply_markup=kb)
+        rows = []
+        if settings.mini_app_url:
+            rows.append([InlineKeyboardButton("Verification Panel Kholo", web_app=WebAppInfo(url=settings.mini_app_url), icon_custom_emoji_id=EMOJI_CROWN)])
+        rows.append([_back_button(admin)])
+        await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(rows))
 
     elif data == "__profile__":
         context.user_data.pop("awaiting", None)
@@ -2313,22 +1957,22 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["awaiting"] = "support_msg"
         segments = [
             ("💬 ", None),
-            ("Contact VerifyHub Admin / Appeal", "bold"),
-            ("\n\nType your question, UID issue, or appeal below and send it. An administrator will reply to you directly in this chat.", None),
+            ("VerifyHub Admin se Sampark / Appeal", "bold"),
+            ("\n\nApna sawaal, UID ki problem ya appeal neeche likh kar bhejo. Admin aapko yahi chat me seedha reply karega.", None),
         ]
         text, entities = _render(segments)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel", callback_data="__home__")]])
         await _edit_or_reply(query, text, entities=entities, reply_markup=kb)
 
     elif data == "__help__":
-        text, entities = _help_text(admin=admin, lang=_get_lang(admin_id))
+        text, entities = _help_text(admin=admin)
         # Help is a leaf screen: its own actions + Back. It used to
         # repeat the whole main menu underneath, which pushed the real
         # buttons down and made every screen look different.
         help_rows = [
             [
                 InlineKeyboardButton("Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
-                InlineKeyboardButton("💬 Contact Admin", callback_data="__support__"),
+                InlineKeyboardButton("💬 Admin se Sampark", callback_data="__support__"),
             ],
             [_back_button(admin)],
         ]
@@ -2337,17 +1981,27 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data == "__stats__":
         text, entities = _stats_text(admin_id)
         stats_rows = [
-            [InlineKeyboardButton("Refresh Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)],
+            [InlineKeyboardButton("Stats Refresh Karo", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)],
             [_back_button(admin)],
         ]
         await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(stats_rows))
 
     elif data == "__signal__" or data.startswith("__signal__:"):
-        timer = "1m"
-        if ":" in data:
-            timer = data.split(":", 1)[1]
-        text, entities, sig_kb = _signal_preview_card(admin_id, admin=admin, timer=timer)
-        await _edit_or_reply(query, text, entities=entities, reply_markup=sig_kb)
+        # The in-chat Signal Hub is removed: signals live in the Mini App
+        # Prediction tab for verified users. Old buttons show this redirect.
+        segments = [
+            ("🎯", ("custom", EMOJI_TARGET)),
+            (" ", None),
+            ("Signal Hub ab chat me nahi hai", "bold"),
+            ("\n\nLive signals aur predictions ab Prediction tab me milenge — Verification Panel kholo.", None),
+        ]
+        text, entities = _render(segments)
+        rows = []
+        predict_url = _predict_url()
+        if predict_url:
+            rows.append([InlineKeyboardButton("Predictions Kholo", web_app=WebAppInfo(url=predict_url), icon_custom_emoji_id=EMOJI_DIAMOND)])
+        rows.append([_back_button(admin)])
+        await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(rows))
 
     elif data == "__status__":
         status, row, _ = _latest_status(admin_id)
@@ -2356,8 +2010,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Same leaf-screen rule as Help: own actions + Back, no repeated menu.
         status_kb_rows = [
             [
-                InlineKeyboardButton("Refresh Status", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
-                InlineKeyboardButton("Signal Hub", callback_data="__signal__:1m", icon_custom_emoji_id=EMOJI_TARGET),
+                InlineKeyboardButton("Status Refresh Karo", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
             ],
             [_back_button(admin)],
         ]
@@ -2366,7 +2019,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data == "__admin__" or data.startswith("admin:"):
         if not admin:
             if query.message:
-                await query.message.reply_text("This command is for admins only.", reply_markup=_keyboard(user_id=admin_id))
+                await query.message.reply_text("Ye command sirf admins ke liye hai.", reply_markup=_keyboard(user_id=admin_id))
             return
 
         if data == "__admin__" or data == "admin:dashboard":
@@ -2402,13 +2055,13 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 page = 0
             kb = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Yes, Approve All on Page", callback_data=f"admin:bulk_exec:{page}"),
+                    InlineKeyboardButton("✅ Haan, Page ki Sab Approve Karo", callback_data=f"admin:bulk_exec:{page}"),
                     InlineKeyboardButton("✖️ Cancel", callback_data=f"admin:pending:{page}"),
                 ]
             ])
             await _edit_or_reply(
                 query,
-                f"⚡ Are you sure you want to approve all pending submissions on page {page + 1} and notify each user?",
+                f"⚡ Kya aap page {page + 1} ki saari pending submissions approve karna chahte hain aur har user ko notify karna chahte hain?",
                 reply_markup=kb,
             )
             return
@@ -2436,7 +2089,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             ptext, pkeyboard = _pending_view(page=0)
             await _edit_or_reply(
                 query,
-                f"✅ Bulk-approved {approved_cnt} submissions and notified users.\n\n{ptext}",
+                f"✅ {approved_cnt} submissions bulk-approve kar di aur users ko notify kar diya.\n\n{ptext}",
                 reply_markup=pkeyboard,
             )
             return
@@ -2472,7 +2125,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data["awaiting"] = f"reply_user:{target_tid}"
             await _edit_or_reply(
                 query,
-                f"↩️ Type the message to send directly to User {target_tid}:",
+                f"↩️ User {target_tid} ko seedha bhejne ke liye message likho:",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
                 ]]),
@@ -2485,7 +2138,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if query.message:
                 await query.message.reply_document(
                     document=InputFile(io.BytesIO(csv_bytes), filename=f"verifyhub_submissions_{stamp}.csv"),
-                    caption=f"📥 Exported {count} submissions ({stamp} UTC).",
+                    caption=f"📥 {count} submissions export kar di ({stamp} UTC).",
                 )
             return
 
@@ -2495,7 +2148,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if query.message:
                 await query.message.reply_document(
                     document=InputFile(io.BytesIO(csv_bytes), filename=f"verifyhub_users_{stamp}.csv"),
-                    caption=f"📥 Exported {count} users ({stamp} UTC).",
+                    caption=f"📥 {count} users export kar diye ({stamp} UTC).",
                 )
             return
 
@@ -2508,7 +2161,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data["awaiting"] = "add_admin"
             await _edit_or_reply(
                 query,
-                "Send the Telegram ID of the new admin (just the number).",
+                "Naye admin ki Telegram ID bhejo (sirf number).",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-add"),
                 ]]),
@@ -2525,7 +2178,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data["awaiting"] = "broadcast"
             await _edit_or_reply(
                 query,
-                "Send the broadcast message (supports bold, italic, code & custom emoji).",
+                "Broadcast message bhejo (bold, italic, code aur custom emoji chalenge).",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast"),
                 ]]),
@@ -2537,7 +2190,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not text:
                 await _edit_or_reply(
                     query,
-                    "Broadcast session expired — start again from the Admin Panel.",
+                    "Broadcast session khatam ho gaya — Admin Panel se dobara shuru karo.",
                 )
                 return
             pin = not bool(context.user_data.get("broadcast_pin", False))
@@ -2547,7 +2200,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             rejected_cnt = len(_broadcast_targets("rejected"))
             preview = (
                 f"📣 Broadcast Studio Preview:\n\n{text}\n\n"
-                f"All: {total}  ·  Verified: {verified}  ·  Pending: {pending_cnt}  ·  Rejected/Info: {rejected_cnt}"
+                f"Sab: {total}  ·  Verified: {verified}  ·  Pending: {pending_cnt}  ·  Rejected/Info: {rejected_cnt}"
             )
             await _edit_or_reply(
                 query,
@@ -2577,7 +2230,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not text:
                 if query.message:
                     await query.message.reply_text(
-                        "Broadcast message not found — start again from the Admin Panel.",
+                        "Broadcast message nahi mila — Admin Panel se dobara shuru karo.",
                     )
                 return
             context.user_data.pop("broadcast_text", None)
@@ -2585,12 +2238,12 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data.pop("broadcast_pin", None)
             mode = data.split(":")[-1]
             targets = _broadcast_targets(mode)
-            await _edit_or_reply(query, f"Sending broadcast to {len(targets)} users…")
+            await _edit_or_reply(query, f"{len(targets)} users ko broadcast bhej rahe hain…")
 
             async def _progress(done: int, total: int, d: int, b: int, f: int) -> None:
                 await _edit_or_reply(
                     query,
-                    f"Sending broadcast… {done}/{total}\nDelivered: {d} · Blocked: {b} · Failed: {f}",
+                    f"Broadcast bhej rahe hain… {done}/{total}\nDelivered: {d} · Blocked: {b} · Failed: {f}",
                 )
 
             delivered, blocked, failed = await _send_broadcast(
@@ -2603,7 +2256,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             await _edit_or_reply(
                 query,
-                f"Broadcast complete ({mode}).\nDelivered: {delivered}  ·  Blocked: {blocked}  ·  Failed: {failed}",
+                f"Broadcast poora ho gaya ({mode}).\nDelivered: {delivered}  ·  Blocked: {blocked}  ·  Failed: {failed}",
             )
             return
 
@@ -2649,10 +2302,10 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             sid_str = parts[3]
             origin = parts[4]
             context.user_data["awaiting"] = f"custom_note:{action_key}:{sid_str}:{origin}"
-            label = "rejection reason" if action_key == "reject" else "information request"
+            label = "reject karne ki wajah" if action_key == "reject" else "jaankari ki request"
             await _edit_or_reply(
                 query,
-                f"✍️ Send the custom {label} for Submission #{sid_str}:",
+                f"✍️ Submission #{sid_str} ke liye custom {label} bhejo:",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data=f"admin:view:{sid_str}"),
                 ]]),
@@ -2666,12 +2319,12 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             if target == admin_id:
                 if query.message:
-                    await query.message.reply_text("You cannot remove yourself.")
+                    await query.message.reply_text("Aap khud ko remove nahi kar sakte.")
                 return
             if settings.is_admin(target):
                 if query.message:
                     await query.message.reply_text(
-                        "That admin is set in the server config — remove them from ADMIN_TELEGRAM_IDS on Render.",
+                        "Ye admin server config me set hai — Render par ADMIN_TELEGRAM_IDS se remove karo.",
                     )
                 return
             with _db_session() as db:
@@ -2682,7 +2335,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             text, entities = _render([
                 ("✅", ("custom", EMOJI_CHECK)),
-                (f" {target} is no longer an admin.", None),
+                (f" {target} ab admin nahi raha.", None),
             ])
             atext, akeyboard = _admins_view()
             await _edit_or_reply(
@@ -2702,9 +2355,9 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             }[parts[1]]
             message = {
                 "verified": None,
-                "under_review": "An administrator is actively reviewing your UID submission.",
-                "rejected": "Your submission was not approved by the administrator.",
-                "info_required": "Additional information is required. Please check the verification panel.",
+                "under_review": "Admin aapki UID submission ko abhi check kar raha hai.",
+                "rejected": "Aapki submission admin ne approve nahi ki.",
+                "info_required": "Aur jaankari chahiye. Verification panel me check karo.",
             }[to_status]
             text, entities, error = await _do_admin_action(admin_id, sid, to_status, message)
             if error is not None:
