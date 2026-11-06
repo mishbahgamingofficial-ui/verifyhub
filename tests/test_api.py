@@ -338,7 +338,7 @@ def test_welcome_and_help_texts_use_premium_emojis():
 def test_status_card_uses_entities_not_html():
     from datetime import datetime, timezone
 
-    from app.bot import EMOJI_CHART, _status_card
+    from app.bot import EMOJI_CHART, EMOJI_CHECK, _status_card
     from app.db import Submission, mask_uid
 
     text, entities = _status_card("not_submitted", None)
@@ -357,6 +357,15 @@ def test_status_card_uses_entities_not_html():
     assert "<b>not a tag</b>" in text  # literal: no HTML parsing anymore
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert EMOJI_CHART in customs
+    assert EMOJI_CHECK in customs  # verified tick + progress-bar ✅
+
+    # Badges render premium where the sets allow it (✅/⭐), plain otherwise.
+    from app.bot import EMOJI_STAR, _badge_segments, _render
+
+    text, entities = _render(_badge_segments(["✅ Verified", "⭐ Early Bird", "🏆 OG Member"]))
+    assert "✅ Verified · ⭐ Early Bird · 🏆 OG Member" in text
+    customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
+    assert EMOJI_CHECK in customs and EMOJI_STAR in customs
 
 
 def test_polling_bot_builds_with_updater_and_same_handlers():
@@ -900,7 +909,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     help_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in help_kb.inline_keyboard] == [
-        ["Live Stats", "💬 Admin se Sampark"],
+        ["Live Stats", "Admin se Sampark"],
         ["⬅️ Main Menu"],
     ]
 
