@@ -1927,6 +1927,47 @@ def test_notify_user_honesty_line_shortens_off_verified(monkeypatch):
     assert "recovery ki guarantee nahi milti" not in rejected_text
 
 
+def test_referred_by_migration_fixes_old_users_table():
+    """Regression: the 5d2d2d1 upgrade added User.referred_by_telegram_id
+    to the model but shipped no migration, so production's pre-existing
+    users table had no such column and every user-row query crashed
+    with UndefinedColumn. Reproduce that exact failure on an old-schema
+    DB, then prove ensure_referred_by_column fixes it (and is
+    idempotent on a second run)."""
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.orm import Session
+
+    from app.db import User, ensure_referred_by_column, make_engine
+
+    path = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    path.close()
+    engine = make_engine(f"sqlite:///{path.name}")
+    # Old schema: the users table exactly as it was before the referral
+    # column existed. (Other tables are irrelevant to this query.)
+    with engine.begin() as conn:
+        conn.execute(sa_text(
+            "CREATE TABLE users ("
+            "id INTEGER PRIMARY KEY, telegram_id BIGINT NOT NULL UNIQUE, "
+            "username VARCHAR(128), first_name VARCHAR(128), "
+            "first_seen_at DATETIME NOT NULL, last_seen_at DATETIME NOT NULL)"
+        ))
+        conn.execute(sa_text(
+            "INSERT INTO users (telegram_id, username, first_name, first_seen_at, last_seen_at) "
+            "VALUES (8973249673, 'u', 'U', '2026-11-06 00:00:00', '2026-11-06 00:00:00')"
+        ))
+    # The exact production failure: loading the user row selects the
+    # column the table does not have.
+    with pytest.raises(Exception, match="no such column"):
+        with Session(engine) as s:
+            s.query(User).filter(User.telegram_id == 8973249673).first()
+    # The migration fixes it, and a second run is a no-op.
+    ensure_referred_by_column(engine)
+    ensure_referred_by_column(engine)
+    with Session(engine) as s:
+        row = s.query(User).filter(User.telegram_id == 8973249673).first()
+        assert row is not None and row.referred_by_telegram_id is None
+
+
 # --- Clean Users (admin-only database wipe) -------------------------------
 # The free Render plan has no web shell, so the wipe runs from the bot
 # itself: admin keyboard -> "Clean Users" (dry-run counts) -> confirm.

@@ -333,6 +333,34 @@ def ensure_auto_check_columns(engine):
                 logger.info("Added submissions.%s column.", column)
 
 
+def ensure_referred_by_column(engine):
+    """Add users.referred_by_telegram_id if it does not exist yet.
+    Idempotent; never raises. Nullable, so users created before
+    referral tracking simply have NULL there (organic).
+
+    This is the migration the 5d2d2d1 upgrade forgot: the model gained
+    the column but create_all() never adds a column to an existing
+    table, so production kept serving the old users table and every
+    query that loads a user row crashed with UndefinedColumn until
+    this ran. New tables from the same commit (support_tickets,
+    support_messages, broadcast_drafts, processed_updates) were fine —
+    create_all creates missing tables, it just cannot alter one.
+
+    Unlike the older migrations here it checks the schema through
+    SQLAlchemy's inspector instead of information_schema, so the same
+    code runs on Postgres and on SQLite — which is what lets the test
+    suite reproduce the production failure and prove the fix."""
+    from sqlalchemy import inspect
+
+    with engine.begin() as conn:
+        columns = {c["name"] for c in inspect(conn).get_columns("users")}
+        if "referred_by_telegram_id" not in columns:
+            logger.warning("Adding users.referred_by_telegram_id column.")
+            conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_telegram_id BIGINT"))
+            logger.info("Added users.referred_by_telegram_id column.")
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_referred_by_telegram_id ON users (referred_by_telegram_id)"))
+
+
 def make_session_factory(database_url: str):
     engine = make_engine(database_url)
     Base.metadata.create_all(engine)
@@ -342,6 +370,7 @@ def make_session_factory(database_url: str):
             ensure_deposit_screenshot_column(engine)
             ensure_signal_confidence_column(engine)
             ensure_auto_check_columns(engine)
+            ensure_referred_by_column(engine)
         except Exception:
             logger.exception("Failed to run startup schema migration; submissions may 503.")
     # Keep attributes loaded after commit so a failed db.refresh() after a
