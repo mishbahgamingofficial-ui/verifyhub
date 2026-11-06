@@ -963,6 +963,7 @@ def test_admin_reply_keyboard_is_organised():
     kb = _admin_reply_keyboard()
     assert kb.resize_keyboard is True
     assert kb.one_time_keyboard is False
+    assert kb.is_persistent is True  # the panel is the admin's home: it stays
     rows = kb.keyboard
     assert [len(r) for r in rows] == [2, 2, 2, 2, 2]  # panel+analytics / pending+search / stats+admins / broadcast+export / tickets+clean
     assert [b.text for b in rows[0]] == ["🛡 Admin Panel", "📈 Analytics"]
@@ -1015,14 +1016,16 @@ def test_admin_keyboard_buttons_open_the_right_views():
         ["Admin Panel"],
     ]
 
-    # And the keyboard labels open the admin views. The panel itself and
-    # Live Stats reply as text only (the keyboard is already on screen);
-    # Analytics, Pending and Admins have their own content keyboards.
+    # And the keyboard labels open the admin views. The panel itself
+    # re-attaches the reply keyboard (that is what keeps the options on
+    # screen after every tap) and Live Stats reply as text only (the
+    # keyboard is already on screen); Analytics, Pending and Admins have
+    # their own content keyboards.
     from app.bot import _handle_text
 
     _make_submission(575, "KBD1")
     for label, needle, text_only in [
-        ("🛡 Admin Panel", "Admin Panel", True),
+        ("🛡 Admin Panel", "Admin Panel", False),
         ("📈 Analytics", "Analytics", False),
         ("📋 Pending", "KBD1", False),
         ("👥 Admins", "Platform Admins", False),
@@ -1925,6 +1928,55 @@ def test_notify_user_honesty_line_shortens_off_verified(monkeypatch):
     assert "recovery ki guarantee nahi milti" in verified_text
     assert "Verified = admin-approved, recovery ki guarantee nahi." in rejected_text
     assert "recovery ki guarantee nahi milti" not in rejected_text
+
+
+def test_admin_keyboard_survives_one_option_tap():
+    """Regression: after ONE admin option tap, every option vanished
+    and the admin had to /start again. Cause: _admin_reply deleted the
+    previous view message — which was the /start dashboard, the only
+    message carrying the reply keyboard — before sending the new view
+    (which carries only an inline keyboard). The keyboard message must
+    survive view taps; only views replace views."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.bot import _handle_text, start
+
+    bot = AsyncMock()
+    update, context, message = _fake_update(ADMIN_ID)
+    context.bot = bot
+    update.effective_chat = SimpleNamespace(id=ADMIN_ID)
+    # /start sends the dashboard WITH the keyboard (message 101).
+    message.reply_text = AsyncMock(side_effect=[SimpleNamespace(message_id=101)])
+    asyncio.run(start(update, context))
+    assert context.user_data["_last_admin_keyboard_id"] == 101
+    # Tap Pending: the view is sent, the dashboard is NOT deleted.
+    message.reply_text = AsyncMock(side_effect=[SimpleNamespace(message_id=102)])
+    message.text = "📋 Pending"
+    asyncio.run(_handle_text(update, context))
+    assert bot.delete_message.await_count == 0
+    assert context.user_data["_last_admin_view_id"] == 102
+    # Tap Analytics: the previous VIEW is deleted, the dashboard still survives.
+    message.reply_text = AsyncMock(side_effect=[SimpleNamespace(message_id=103)])
+    message.text = "📈 Analytics"
+    asyncio.run(_handle_text(update, context))
+    deleted = [tuple(c.args) for c in bot.delete_message.await_args_list]
+    assert (ADMIN_ID, 102) in deleted  # old view replaced
+    assert (ADMIN_ID, 101) not in deleted  # keyboard message still alive
+
+
+def test_admin_panel_label_reattaches_keyboard():
+    import asyncio
+
+    from telegram import ReplyKeyboardMarkup
+
+    from app.bot import _handle_text
+
+    update, context, message = _fake_update(ADMIN_ID)
+    message.text = "🛡 Admin Panel"
+    asyncio.run(_handle_text(update, context))
+    assert isinstance(message.reply_text.await_args.kwargs["reply_markup"], ReplyKeyboardMarkup)
 
 
 def test_referred_by_migration_fixes_old_users_table():

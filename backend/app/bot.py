@@ -544,7 +544,39 @@ async def _admin_reply(update, context, text: str, entities=None, reply_markup=N
     one admin view stays on screen: the previous bot-sent view message
     is deleted first (best-effort — it may already be gone). The admin's
     own messages and alert messages are never touched.
+
+    One exception, and it matters: the message that carries the reply
+    keyboard (the /start dashboard) is NEVER deleted before its
+    replacement is on screen. The old code deleted it first — and a
+    reply keyboard lives or dies with the message that set it, so after
+    ONE option tap every option vanished and the admin had to /start
+    again. Keyboard-carrying messages live in their own slot
+    (_last_admin_keyboard_id) and are deleted only AFTER the new
+    keyboard message is sent, so the chat is never without one.
     """
+    from telegram import ReplyKeyboardMarkup
+
+    if isinstance(reply_markup, ReplyKeyboardMarkup):
+        # Send first, delete the old keyboard message after: the chat
+        # must never be without a message carrying the reply keyboard.
+        msg = await update.message.reply_text(text, entities=entities, reply_markup=reply_markup)
+        try:
+            prev_kb = context.user_data.pop("_last_admin_keyboard_id", None)
+        except Exception:
+            prev_kb = None
+        if prev_kb and prev_kb != msg.message_id:
+            try:
+                bot = getattr(context, "bot", None)
+                chat_id = getattr(update.effective_chat, "id", None)
+                if bot is not None and chat_id is not None:
+                    await bot.delete_message(chat_id, prev_kb)
+            except Exception:
+                pass
+        try:
+            context.user_data["_last_admin_keyboard_id"] = msg.message_id
+        except Exception:
+            pass
+        return msg
     prev_id = None
     try:
         prev_id = context.user_data.pop("_last_admin_view_id", None)
@@ -989,7 +1021,12 @@ def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
     """The admin panel lives ONLY here, in the keyboard area next to the
     message box. There is no inline copy of it anywhere — no Admin Panel
     button in the main menu, no dashboard keyboard under the panel
-    message. An admin's whole navigation is these ten buttons."""
+    message. An admin's whole navigation is these ten buttons.
+
+    is_persistent: the keyboard is the admin's home — Telegram should
+    keep showing it instead of letting the client hide it behind the
+    keyboard icon after one tap.
+    """
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("🛡 Admin Panel"), KeyboardButton("📈 Analytics")],
@@ -1000,6 +1037,7 @@ def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
+        is_persistent=True,
     )
 
 
@@ -2687,9 +2725,12 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if text == "🛡 Admin Panel":
             context.user_data.pop("awaiting", None)
             dtext, dentities = _admin_dashboard()
-            # Text only — the reply keyboard is already on screen from
-            # /start; re-attaching it here would be redundant.
-            await _admin_reply(update, context, dtext, entities=dentities)
+            # Re-attach the keyboard: the panel IS the keyboard's home,
+            # and re-asserting it here is what keeps the options on
+            # screen after every tap (the old "text only" reply relied
+            # on the /start message still carrying it — which the view
+            # replacement used to delete).
+            await _admin_reply(update, context, dtext, entities=dentities, reply_markup=_admin_reply_keyboard())
             return
         if text == "📈 Analytics":
             context.user_data.pop("awaiting", None)
