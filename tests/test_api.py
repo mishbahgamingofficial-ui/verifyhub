@@ -763,6 +763,7 @@ def test_admin_dashboard_shows_stats():
     keyboard = message.reply_text.await_args.kwargs["reply_markup"]
     assert keyboard.inline_keyboard[0][0].callback_data == "admin:pending"
     assert keyboard.inline_keyboard[1][0].callback_data == "admin:admins"
+    assert keyboard.inline_keyboard[1][1].callback_data == "admin:broadcast"
     assert "Admins: 1" in text  # env admin only at this point in the suite
 
 
@@ -810,7 +811,7 @@ def test_start_shows_dashboard_to_admin():
     reply_kb = keyboard_msg.kwargs["reply_markup"]
     assert isinstance(reply_kb, ReplyKeyboardMarkup)
     labels = [b.text for row in reply_kb.keyboard for b in row]
-    assert labels == ["🛡 Admin Panel", "📋 Pending", "👥 Admins", "📊 Live Stats"]
+    assert labels == ["🛡 Admin Panel", "📋 Pending", "👥 Admins", "📊 Live Stats", "📣 Broadcast"]
 
     update, context, message = _fake_update(USER_ID)
     asyncio.run(start(update, context))
@@ -826,17 +827,18 @@ def test_admin_keyboard_has_panel_button_only_for_admin():
     assert all(b.text != "🛡 Admin Panel" for row in user_rows for b in row)
 
 
-def test_admin_reply_keyboard_is_organised_1_2_1():
+def test_admin_reply_keyboard_is_organised():
     from app.bot_handlers import _admin_reply_keyboard
 
     kb = _admin_reply_keyboard()
     assert kb.resize_keyboard is True
     assert kb.one_time_keyboard is False
     rows = kb.keyboard
-    assert [len(r) for r in rows] == [1, 2, 1]  # same 1-2-1 as the main menu
+    assert [len(r) for r in rows] == [1, 2, 1, 1]  # 1-2-1 like the main menu, plus Broadcast
     assert rows[0][0].text == "🛡 Admin Panel"
     assert [b.text for b in rows[1]] == ["📋 Pending", "👥 Admins"]
     assert rows[2][0].text == "📊 Live Stats"
+    assert rows[3][0].text == "📣 Broadcast"
 
 
 def test_admin_keyboard_buttons_open_the_right_views():
@@ -850,6 +852,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
         ("📋 Pending", "KBD1"),
         ("👥 Admins", "Admins:"),
         ("📊 Live Stats", "live stats"),
+        ("📣 Broadcast", "broadcast message"),
     ]:
         update, context, message = _fake_update(ADMIN_ID)
         message.text = label
@@ -1120,3 +1123,100 @@ def test_help_and_status_edit_in_place():
     assert query.edit_message_text.await_count == 1
     assert "Your status" in query.edit_message_text.await_args.args[0]
     assert message.reply_text.await_count == 0
+
+
+# ---------------- Admin broadcast ----------------
+
+def test_broadcast_counts_and_targets():
+    from app.bot_handlers import _broadcast_counts, _broadcast_targets
+    from app.db import Submission, User, get_session_factory
+
+    _make_submission(595, "BC4", status="verified")
+    _make_submission(596, "BC5")
+    total, verified = _broadcast_counts()
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        expect_total = db.query(User).count()
+        expect_verified = (
+            db.query(User.telegram_id)
+            .join(Submission, Submission.user_id == User.id)
+            .filter(Submission.status == "verified")
+            .distinct()
+            .count()
+        )
+    finally:
+        db.close()
+    assert (total, verified) == (expect_total, expect_verified)
+    assert 595 in _broadcast_targets(True)
+    assert 596 not in _broadcast_targets(True)
+    assert 595 in _broadcast_targets(False) and 596 in _broadcast_targets(False)
+
+
+def test_broadcast_flow_sends_to_all_and_reports():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot_handlers import _button, _handle_text
+    from app.db import Submission, User, get_session_factory
+    from telegram.error import Forbidden
+
+    # Audience: one verified, one pending, one who blocked the bot.
+    _make_submission(590, "BC1", status="verified")
+    _make_submission(591, "BC2")
+    _make_submission(592, "BC3")
+
+    bot = AsyncMock()
+
+    async def _send(chat_id, text):
+        if chat_id == 592:
+            raise Forbidden("blocked")
+
+    bot.send_message.side_effect = _send
+    _, ctx, _ = _fake_update(ADMIN_ID)
+    ctx.bot = bot
+
+    # Dashboard prompt.
+    update, query, message = _fake_query(ADMIN_ID, "admin:broadcast")
+    asyncio.run(_button(update, ctx))
+    assert ctx.user_data.get("awaiting") == "broadcast"
+    assert "broadcast message" in query.edit_message_text.await_args.args[0].lower()
+
+    # Type the message: preview with counts and send buttons.
+    update, _, message = _fake_update(ADMIN_ID)
+    message.text = "Hello everyone, new feature is live!"
+    asyncio.run(_handle_text(update, ctx))
+    assert ctx.user_data.get("broadcast_text") == "Hello everyone, new feature is live!"
+    preview = message.reply_text.await_args.args[0]
+    assert "Broadcast preview" in preview
+    assert "Hello everyone, new feature is live!" in preview
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        total = db.query(User).count()
+    finally:
+        db.close()
+    assert f"All users: {total}" in preview
+    keyboard = message.reply_text.await_args.kwargs["reply_markup"]
+    assert keyboard.inline_keyboard[0][0].callback_data == "admin:broadcast:all"
+    assert keyboard.inline_keyboard[1][0].callback_data == "admin:broadcast:verified"
+
+    # Send to all: the blocked user is counted, everyone else delivered.
+    update, query, message = _fake_query(ADMIN_ID, "admin:broadcast:all")
+    asyncio.run(_button(update, ctx))
+    report = query.edit_message_text.await_args.args[0]
+    assert "Broadcast sent." in report
+    assert f"Delivered: {total - 1}" in report
+    assert "Blocked: 1" in report and "Failed: 0" in report
+    assert "broadcast_text" not in ctx.user_data
+
+
+def test_broadcast_cancel_clears_prompt():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.bot_handlers import _button
+
+    ctx = SimpleNamespace(user_data={"awaiting": "broadcast", "broadcast_text": "hi"}, bot=None)
+    update, query, message = _fake_query(ADMIN_ID, "admin:cancel-broadcast")
+    asyncio.run(_button(update, ctx))
+    assert "awaiting" not in ctx.user_data and "broadcast_text" not in ctx.user_data
+    assert "Admin Panel" in query.edit_message_text.await_args.args[0]

@@ -11,6 +11,7 @@ mode (``with_updater=True`` for polling, ``False`` for webhook).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -27,7 +28,7 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden, RetryAfter
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import get_settings
@@ -191,7 +192,7 @@ def _help_text(admin: bool = False):
             ("\n\n", None),
             ("Admin", "bold"),
             ("\nAdmin Panel — pending queue, one-tap decisions, and Manage Admins.", None),
-            ("\nAdmin keyboard — neeche wale buttons se Panel, Pending, Admins aur Stats kholo.", None),
+            ("\nAdmin keyboard — neeche wale buttons se Panel, Pending, Admins, Stats aur Broadcast kholo.", None),
         ]
     return _render(segments)
 
@@ -284,10 +285,64 @@ def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton("🛡 Admin Panel")],
             [KeyboardButton("📋 Pending"), KeyboardButton("👥 Admins")],
             [KeyboardButton("📊 Live Stats")],
+            [KeyboardButton("📣 Broadcast")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
     )
+
+
+def _broadcast_targets(verified_only: bool) -> list[int]:
+    """Telegram ids of the broadcast audience: everyone, or verified only."""
+    db = get_session_factory(settings.database_url)()
+    try:
+        if verified_only:
+            rows = (
+                db.query(User.telegram_id)
+                .join(Submission, Submission.user_id == User.id)
+                .filter(Submission.status == "verified")
+                .distinct()
+                .all()
+            )
+        else:
+            rows = db.query(User.telegram_id).all()
+        return [r[0] for r in rows]
+    finally:
+        db.close()
+
+
+def _broadcast_counts() -> tuple[int, int]:
+    """(all users, verified users) for the broadcast preview."""
+    all_ids = _broadcast_targets(False)
+    verified_ids = _broadcast_targets(True)
+    return len(all_ids), len(verified_ids)
+
+
+async def _send_broadcast(bot, text: str, target_ids: list[int]) -> tuple[int, int, int]:
+    """Send one message to every id; returns (delivered, blocked, failed).
+
+    Blocked = the user blocked the bot (Forbidden). Flood control (429) is
+    respected once per user, then the user counts as failed. A short pause
+    between sends keeps Telegram happy for small audiences.
+    """
+    delivered = blocked = failed = 0
+    for chat_id in target_ids:
+        try:
+            await bot.send_message(chat_id, text)
+            delivered += 1
+        except Forbidden:
+            blocked += 1
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await bot.send_message(chat_id, text)
+                delivered += 1
+            except Exception:
+                failed += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+    return delivered, blocked, failed
 
 
 def _window_lines(status: str) -> list[str]:
@@ -410,7 +465,10 @@ def _admin_dashboard() -> tuple[str, list, InlineKeyboardMarkup]:
             InlineKeyboardButton("📋 Pending queue", callback_data="admin:pending"),
             InlineKeyboardButton("🔄 Refresh", callback_data="admin:refresh:d"),
         ],
-        [InlineKeyboardButton("👥 Manage Admins", callback_data="admin:admins")],
+        [
+            InlineKeyboardButton("👥 Manage Admins", callback_data="admin:admins"),
+            InlineKeyboardButton("📣 Broadcast", callback_data="admin:broadcast"),
+        ],
     ])
     return text, entities, keyboard
 
@@ -575,6 +633,32 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             stext, sentities = _stats_text(user_id)
             await update.message.reply_text(stext, entities=sentities, reply_markup=_keyboard(admin=True))
             return
+        if text == "📣 Broadcast":
+            context.user_data.pop("awaiting", None)
+            context.user_data["awaiting"] = "broadcast"
+            await update.message.reply_text(
+                "Send the broadcast message (plain text).",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast"),
+                ]]),
+            )
+            return
+    if context.user_data.get("awaiting") == "broadcast" and admin:
+        # The message itself: show a preview with the audience counts and
+        # let the admin pick the target before anything is sent.
+        context.user_data.pop("awaiting", None)
+        context.user_data["broadcast_text"] = text
+        total, verified = _broadcast_counts()
+        preview = f"Broadcast preview:\n\n{text}\n\nAll users: {total}  ·  Verified only: {verified}"
+        await update.message.reply_text(
+            preview,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"📣 Send to all ({total})", callback_data="admin:broadcast:all")],
+                [InlineKeyboardButton(f"✅ Send to verified only ({verified})", callback_data="admin:broadcast:verified")],
+                [InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast")],
+            ]),
+        )
+        return
     if context.user_data.get("awaiting") == "add_admin" and admin:
         # The prompt stays open until the admin succeeds or taps Cancel,
         # so a wrong number is just a retry, not a dead end.
@@ -727,6 +811,39 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data.pop("awaiting", None)
             text, keyboard = _admins_view()
             await query.edit_message_text(text, reply_markup=keyboard)
+            return
+        if data == "admin:broadcast":
+            context.user_data["awaiting"] = "broadcast"
+            await query.edit_message_text(
+                "Send the broadcast message (plain text).",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast"),
+                ]]),
+            )
+            return
+        if data == "admin:cancel-broadcast":
+            context.user_data.pop("awaiting", None)
+            context.user_data.pop("broadcast_text", None)
+            text, entities, keyboard = _admin_dashboard()
+            await query.edit_message_text(text, entities=entities, reply_markup=keyboard)
+            return
+        if data in ("admin:broadcast:all", "admin:broadcast:verified"):
+            text = context.user_data.get("broadcast_text")
+            if not text:
+                await query.message.reply_text(
+                    "Broadcast message not found — start again from the Admin Panel.",
+                    reply_markup=_keyboard(admin=True),
+                )
+                return
+            context.user_data.pop("broadcast_text", None)
+            verified_only = data.endswith(":verified")
+            targets = _broadcast_targets(verified_only)
+            await query.edit_message_text("Sending broadcast…")
+            delivered, blocked, failed = await _send_broadcast(context.bot, text, targets)
+            await query.edit_message_text(
+                f"Broadcast sent.\nDelivered: {delivered}  ·  Blocked: {blocked}  ·  Failed: {failed}",
+                reply_markup=_admin_dashboard()[2],
+            )
             return
         parts = data.split(":")
         if len(parts) == 3 and parts[1] == "remove":
