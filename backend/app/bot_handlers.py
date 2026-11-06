@@ -12,6 +12,7 @@ mode (``with_updater=True`` for polling, ``False`` for webhook).
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import desc, func
@@ -26,6 +27,7 @@ from telegram import (
     Update,
     WebAppInfo,
 )
+from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import get_settings
@@ -53,6 +55,64 @@ from .services import (
 
 logger = logging.getLogger("verifyhub.bot")
 settings = get_settings()
+
+# Per-user last-action timestamps for the 1s rate limit (see _too_fast).
+_last_action: dict[int, float] = {}
+# Monotonic timestamp of the last admin error alert (see _on_error).
+_last_error_alert: float = 0.0
+
+
+def _too_fast(user_id: int, window: float = 1.0) -> bool:
+    """True when this user acted within the last `window` seconds.
+
+    A tiny abuse/double-tap guard for /start and button taps: normal use
+    is slower than 1s, so nothing legitimate is ever blocked. The table is
+    capped so a very large user base cannot grow it without bound.
+    """
+    now = time.monotonic()
+    if now - _last_action.get(user_id, 0.0) < window:
+        return True
+    if len(_last_action) > 10_000:
+        _last_action.clear()
+    _last_action[user_id] = now
+    return False
+
+
+async def _edit_or_reply(query, text, entities=None, reply_markup=None) -> None:
+    """Edit the tapped message in place; fall back to a new message when
+    the edit is impossible (message too old, or already showing this text).
+
+    Keeps inline menus from spamming a new message on every tap.
+    """
+    try:
+        await query.edit_message_text(text, entities=entities, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        logger.debug("Could not edit message, replying instead: %s", e)
+        await query.message.reply_text(text, entities=entities, reply_markup=reply_markup)
+
+
+async def _on_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler: log the failure, alert an admin (throttled).
+
+    PTB calls this for any unhandled exception in a handler. The alert is
+    throttled to one per 10 minutes so a bad deploy cannot spam the admin.
+    """
+    logger.exception("Bot handler failed.", exc_info=context.error)
+    global _last_error_alert
+    now = time.monotonic()
+    if now - _last_error_alert < 600:
+        return
+    _last_error_alert = now
+    try:
+        for admin_id in settings.admin_telegram_ids:
+            await context.bot.send_message(
+                admin_id,
+                f"⚠️ VerifyHub bot error: {type(context.error).__name__}: {context.error}",
+            )
+    except Exception:
+        logger.debug("Could not alert admin about the bot error.", exc_info=True)
 
 def _render(segments):
     """Build (text, entities) from (text, kind) segments.
@@ -311,6 +371,7 @@ def _admin_dashboard() -> tuple[str, list, InlineKeyboardMarkup]:
             counts[st] = n
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         today = db.query(Submission).filter(Submission.submitted_at >= today_start).count()
+        admin_count = db.query(Admin).count()
         owners = {}
         if rows:
             owners = {
@@ -330,7 +391,7 @@ def _admin_dashboard() -> tuple[str, list, InlineKeyboardMarkup]:
         ("\n", None),
         (f"Verified: {counts['verified']}  ·  Rejected: {counts['rejected']}  ·  Info needed: {counts['info_required']}", None),
         ("\n", None),
-        (f"Admins: {len(settings.admin_telegram_ids) + db.query(Admin).count()}", None),
+        (f"Admins: {len(settings.admin_telegram_ids) + admin_count}", None),
     ]
     if rows:
         segments.append(("\n\nRecent:", "bold"))
@@ -418,6 +479,8 @@ def _pending_view() -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if _too_fast(update.effective_user.id):
+        return
     admin = _is_admin(update.effective_user.id)
     text, entities = _welcome_text()
     if not settings.mini_app_url and not settings.registration_url:
@@ -490,7 +553,8 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """
     user_id = update.effective_user.id
     text = (update.message.text or "").strip()
-    if _is_admin(user_id):
+    admin = _is_admin(user_id)  # one DB check per message, reused below
+    if admin:
         if text == "🛡 Admin Panel":
             context.user_data.pop("awaiting", None)
             dtext, dentities, dkeyboard = _admin_dashboard()
@@ -511,7 +575,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             stext, sentities = _stats_text(user_id)
             await update.message.reply_text(stext, entities=sentities, reply_markup=_keyboard(admin=True))
             return
-    if context.user_data.get("awaiting") == "add_admin" and _is_admin(user_id):
+    if context.user_data.get("awaiting") == "add_admin" and admin:
         # The prompt stays open until the admin succeeds or taps Cancel,
         # so a wrong number is just a retry, not a dead end.
         if not text.isdigit():
@@ -544,7 +608,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await update.message.reply_text(
         "Use the buttons below — tap /start if they are not showing.",
-        reply_markup=_keyboard(admin=_is_admin(user_id)),
+        reply_markup=_keyboard(admin=admin),
     )
 
 
@@ -607,20 +671,22 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     admin_id = query.from_user.id
+    if _too_fast(admin_id):
+        return
     admin = _is_admin(admin_id)
     data = query.data or ""
     if data == "__help__":
         text, entities = _help_text(admin=admin)
         help_rows = [[InlineKeyboardButton("📊 Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)]]
         help_rows += _keyboard(admin=admin).inline_keyboard
-        await query.message.reply_text(text, entities=entities, reply_markup=InlineKeyboardMarkup(help_rows))
+        await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(help_rows))
     elif data == "__stats__":
         text, entities = _stats_text(admin_id)
         await query.edit_message_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
     elif data == "__status__":
         status, row, _ = _latest_status(admin_id)
         text, entities = _status_card(status, row, badges=_badges_for(admin_id))
-        await query.message.reply_text(text, entities=entities, reply_markup=_keyboard(admin=admin))
+        await _edit_or_reply(query, text, entities=entities, reply_markup=_keyboard(admin=admin))
     elif data == "__admin__" or data.startswith("admin:"):
         if not admin:
             await query.message.reply_text("This command is for admins only.", reply_markup=_keyboard())
@@ -760,6 +826,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
+    app.add_error_handler(_on_error)
 
 
 def build_telegram_application(bot_token: str, *, with_updater: bool) -> Application:

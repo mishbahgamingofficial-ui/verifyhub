@@ -246,6 +246,7 @@ def test_telegram_application_builds_with_all_handlers():
     assert commands == ["start"]  # /start is the only command: the entry point
     assert sum(isinstance(h, CallbackQueryHandler) for h in handlers) == 1
     assert sum(isinstance(h, MessageHandler) for h in handlers) == 1
+    assert len(app.error_handlers) == 1  # global error handler registered
 
 
 def test_main_keyboard_is_colourful_and_complete():
@@ -514,6 +515,11 @@ def _fake_update(user_id, args=None):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
+    # Fresh rate-limit state per fake update: the 1s guard must not leak
+    # between tests that reuse the same user id.
+    import app.bot_handlers as _handlers
+
+    _handlers._last_action.clear()
     message = SimpleNamespace(reply_text=AsyncMock())
     update = SimpleNamespace(effective_user=SimpleNamespace(id=user_id), message=message)
     context = SimpleNamespace(args=list(args or []), user_data={})
@@ -666,6 +672,11 @@ def _fake_query(user_id, data):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
+    # Fresh rate-limit state per fake tap: the 1s guard must not leak
+    # between tests that reuse the same user id.
+    import app.bot_handlers as _handlers
+
+    _handlers._last_action.clear()
     message = SimpleNamespace(reply_text=AsyncMock())
     query = SimpleNamespace(
         data=data, from_user=SimpleNamespace(id=user_id), message=message,
@@ -752,6 +763,7 @@ def test_admin_dashboard_shows_stats():
     keyboard = message.reply_text.await_args.kwargs["reply_markup"]
     assert keyboard.inline_keyboard[0][0].callback_data == "admin:pending"
     assert keyboard.inline_keyboard[1][0].callback_data == "admin:admins"
+    assert "Admins: 1" in text  # env admin only at this point in the suite
 
 
 def test_admin_approve_button_edits_notification(monkeypatch):
@@ -941,7 +953,7 @@ def test_status_button_shows_badges():
     _make_submission(581, "BADGE3", status="verified")
     update, query, message = _fake_query(581, "__status__")
     asyncio.run(_button(update, None))
-    text = message.reply_text.await_args.args[0]
+    text = query.edit_message_text.await_args.args[0]
     assert "Badges:" in text and "✅ Verified" in text
 
 
@@ -1052,3 +1064,59 @@ def test_command_menu_is_cleared_at_startup():
     assert any(c.kwargs["scope"].chat_id == ADMIN_ID for c in chat_calls)
     # No command is ever set anymore: the bot is button-only.
     assert bot.set_my_commands.await_count == 0
+
+
+# ---------------- Bot hardening: rate limit, error handler, edit-in-place ----------------
+
+def test_rate_limit_ignores_rapid_repeats():
+    import asyncio
+
+    import app.bot_handlers as handlers
+
+    handlers._last_action.clear()
+    assert handlers._too_fast(4242) is False
+    assert handlers._too_fast(4242) is True
+    assert handlers._too_fast(4343) is False
+    # /start twice in a row: the second is dropped.
+    handlers._last_action.clear()
+    update, context, message = _fake_update(4242)
+    asyncio.run(handlers.start(update, context))
+    assert message.reply_text.await_count == 1
+    asyncio.run(handlers.start(update, context))
+    assert message.reply_text.await_count == 1
+
+
+def test_error_handler_alerts_admin_once_per_window():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import app.bot_handlers as handlers
+
+    handlers._last_error_alert = 0.0
+    bot = SimpleNamespace(send_message=AsyncMock())
+    ctx = SimpleNamespace(bot=bot, error=ValueError("boom"))
+    asyncio.run(handlers._on_error(None, ctx))
+    assert bot.send_message.await_count == 1
+    assert bot.send_message.await_args.args[0] == ADMIN_ID
+    assert "ValueError" in bot.send_message.await_args.args[1]
+    asyncio.run(handlers._on_error(None, ctx))
+    assert bot.send_message.await_count == 1  # throttled: no second alert
+
+
+def test_help_and_status_edit_in_place():
+    import asyncio
+
+    from app.bot_handlers import _button
+
+    update, query, message = _fake_query(USER_ID, "__help__")
+    asyncio.run(_button(update, None))
+    assert query.edit_message_text.await_count == 1
+    assert "how it works" in query.edit_message_text.await_args.args[0]
+    assert message.reply_text.await_count == 0
+
+    update, query, message = _fake_query(USER_ID, "__status__")
+    asyncio.run(_button(update, None))
+    assert query.edit_message_text.await_count == 1
+    assert "Your status" in query.edit_message_text.await_args.args[0]
+    assert message.reply_text.await_count == 0
