@@ -316,6 +316,7 @@ def test_welcome_and_help_texts_use_premium_emojis():
         EMOJI_CHART_UP,
         EMOJI_CHECK,
         EMOJI_CROWN,
+        EMOJI_POINT_DOWN,
         EMOJI_TARGET,
         _help_text,
         _welcome_text,
@@ -323,9 +324,9 @@ def test_welcome_and_help_texts_use_premium_emojis():
 
     text, entities = _welcome_text()
     assert "VerifyHub — ek baar, ek faisla." in text
-    assert "Apna UID Verification Panel se bhejo" in text
+    assert "UID bhejo — Verification Panel se, ek hi baar." in text
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
-    assert customs == {EMOJI_CROWN, EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP}
+    assert customs == {EMOJI_CROWN, EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP, EMOJI_POINT_DOWN}
 
     text, entities = _help_text()
     assert "VerifyHub — Kaise Kaam Karta Hai" in text
@@ -333,6 +334,37 @@ def test_welcome_and_help_texts_use_premium_emojis():
     assert "/start" not in text and "/status" not in text  # button-only: no commands
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert EMOJI_CROWN in customs
+
+
+def test_help_honesty_line_is_a_blockquote():
+    from telegram import MessageEntity
+
+    from app.bot import _help_text
+
+    text, entities = _help_text()
+    disclaimer = (
+        "Verified = admin ne approve kiya hai. Ye recovery ki guarantee nahi hai, "
+        "aur provider ne confirm nahi kiya hai."
+    )
+    assert disclaimer in text
+    quotes = [e for e in entities if e.type == MessageEntity.BLOCKQUOTE]
+    assert len(quotes) == 1
+    assert quotes[0].length == len(disclaimer.encode("utf-16-le")) // 2
+
+
+def test_combine_texts_shifts_tail_entities():
+    from telegram import MessageEntity
+
+    from app.bot import EMOJI_CHECK, _combine_texts, _render
+
+    head, head_entities = _render([("✅", ("custom", EMOJI_CHECK)), (" done.", None)])
+    tail, tail_entities = _render([("✅", ("custom", EMOJI_CHECK)), (" tail.", None)])
+    combined, entities = _combine_texts(head, head_entities, tail, tail_entities)
+    assert combined == "✅ done.\n\n✅ tail."
+    customs = [(e.offset, e.length) for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+    # ✅ is BMP (1 UTF-16 unit), so head ✅ at 0; tail ✅ shifted past
+    # "✅ done.\n\n" = 9 UTF-16 units.
+    assert customs == [(0, 1), (9, 1)]
 
 
 def test_status_card_uses_entities_not_html():
@@ -1004,21 +1036,21 @@ def test_search_by_telegram_id_does_not_overflow():
     from app.bot import _search_submissions
 
     # A 10-digit id with no user behind it: no match, no crash.
-    text, _kb = _search_submissions("8995828029")
+    text, _entities, _kb = _search_submissions("8995828029")
     assert "se koi submission ya user nahi mila" in text
 
     # The same id owning a submission: found via the users table.
     _make_submission(8995828029, "SEARCHBIG1")
-    text, kb = _search_submissions("8995828029")
+    text, _entities, kb = _search_submissions("8995828029")
     assert "SEARCHBIG1" in text
     assert "8995828029" in text
 
     # #id form with a huge number: same guard, no crash.
-    text, _kb = _search_submissions("#8995828029")
+    text, _entities, _kb = _search_submissions("#8995828029")
     assert "SEARCHBIG1" in text
 
     # A real small submission id still works.
-    text, _kb = _search_submissions("#1")
+    text, _entities, _kb = _search_submissions("#1")
     assert "#1" in text
 
 
