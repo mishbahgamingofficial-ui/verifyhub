@@ -217,7 +217,11 @@
   async function loadStatus() {
     if (isPreview) { setPhase(null); $('#sample-windows').hidden = false; $('#status-body').innerHTML = '<p>Open this panel from Telegram to see your status.</p>'; $('#current-body').innerHTML = '<p>Open this panel from Telegram to see your status.</p>'; return; }
     try {
-      const latest = await api('/api/me/latest');
+      // Latest + activity load in parallel; rendered in the same order.
+      const latestP = api('/api/me/latest');
+      const rowsP = api('/api/me/submissions');
+      rowsP.catch(() => {}); // no unhandled rejection if latest fails first
+      const latest = await latestP;
       setPhase(latest.submission || null);
       const html = latest.submission ? statusBlock(latest.submission) : '<div class="empty"><b>Not submitted yet.</b>Send your UID once above.</div>';
       $('#verify-windows').innerHTML = html;
@@ -232,7 +236,7 @@
           if (stamp) stamp.classList.add('pop');
         }, 250);
       }
-      const rows = await api('/api/me/submissions');
+      const rows = await rowsP;
       $('#activity-list').innerHTML = rows.length ? rows.slice(0, 5).map((r) =>
         '<li><span><strong>' + esc(r.uid_masked) + '</strong><small>' + esc(fmt(r.submitted_at)) + (r.review_message ? ' · ' + esc(r.review_message) : '') + '</small></span>' + badge(r.status) + '</li>').join('')
         : '<li><span>No activity yet.</span></li>';
@@ -708,8 +712,13 @@
     // The ticker is public data — it runs for everyone, preview included.
     startTicker();
     if (isPreview) $('#preview-banner').classList.add('show');
+    // Config + identity load in parallel: two round trips instead of one
+    // after the other. The awaits below keep the exact same order of
+    // UI updates and error handling — only the network overlaps.
+    const configP = api('/api/config');
+    const meP = isPreview ? null : api('/api/me');
     try {
-      config = await api('/api/config');
+      config = await configP;
       // /api/config is public, so call it without auth in preview too — api() sends an empty header, which is fine.
       $('#brand-name').textContent = config.project_name || 'VerifyHub';
       $('#uid-hint').textContent = config.uid_pattern_description || '';
@@ -729,7 +738,7 @@
       return;
     }
     try {
-      me = await api('/api/me');
+      me = await meP;
       $('#who-pill').textContent = (me.first_name ? me.first_name : 'User') + (me.is_admin ? ' · Admin' : '');
       if (me.is_admin) $('#admin-tab').hidden = false;
       loadStatus();
