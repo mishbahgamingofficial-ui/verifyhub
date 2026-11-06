@@ -37,9 +37,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputFile,
-    KeyboardButton,
     MessageEntity,
-    ReplyKeyboardMarkup,
     Update,
     WebAppInfo,
 )
@@ -709,20 +707,6 @@ def _keyboard(admin: bool = False, user_id: int | None = None) -> InlineKeyboard
             )
         ])
     return InlineKeyboardMarkup(rows)
-
-
-def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Persistent reply keyboard for admins only: every admin power tool one tap away."""
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("🛡 Admin Panel"), KeyboardButton("📈 Analytics")],
-            [KeyboardButton("📋 Pending"), KeyboardButton("🔍 Search")],
-            [KeyboardButton("📊 Live Stats"), KeyboardButton("👥 Admins")],
-            [KeyboardButton("📣 Broadcast"), KeyboardButton("📥 Export CSV")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
 
 
 def _broadcast_targets(mode: str | bool) -> list[int]:
@@ -1809,14 +1793,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=_keyboard(admin=admin, user_id=user_id),
     )
     if admin:
-        # An admin opening the bot sees the whole picture right away.
+        # An admin opening the bot sees the whole picture right away:
+        # the Admin Control Center is the ONE admin home — every admin
+        # tool lives there, so there is no second (reply-keyboard) copy
+        # of the same actions with different labels.
         dtext, dentities, dkeyboard = _admin_dashboard()
         await update.message.reply_text(dtext, entities=dentities, reply_markup=dkeyboard)
-        # Plus the persistent admin keyboard in the keyboard area.
-        await update.message.reply_text(
-            "Admin keyboard 👇 — neeche wale buttons se Panel, Analytics, Pending, Search, Admins, Stats, Broadcast aur CSV kholo.",
-            reply_markup=_admin_reply_keyboard(),
-        )
 
 
 def _stats_text(telegram_id: int) -> tuple[str, list]:
@@ -1878,68 +1860,17 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
 
 
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Plain-text replies: admin reply-keyboard buttons + interactive user/admin prompts."""
+    """Plain-text replies to interactive bot prompts (submit UID, support
+    message, admin reply, search, custom note, broadcast, add admin).
+
+    The bot is button-only: there is no reply keyboard, so stray text
+    just gets the nudge below — every action lives on an inline button.
+    """
     if not update.effective_user or not update.message:
         return
     user_id = update.effective_user.id
     text = (update.message.text or "").strip()
     admin = _is_admin(user_id)  # one DB check per message, reused below
-
-    if admin:
-        if text == "🛡 Admin Panel":
-            context.user_data.pop("awaiting", None)
-            dtext, dentities, dkeyboard = _admin_dashboard()
-            await update.message.reply_text(dtext, entities=dentities, reply_markup=dkeyboard)
-            return
-        if text == "📈 Analytics":
-            context.user_data.pop("awaiting", None)
-            atext, aentities, akeyboard = _admin_analytics_view()
-            await update.message.reply_text(atext, entities=aentities, reply_markup=akeyboard)
-            return
-        if text == "📋 Pending":
-            context.user_data.pop("awaiting", None)
-            ptext, pkeyboard = _pending_view()
-            await update.message.reply_text(ptext, reply_markup=pkeyboard)
-            return
-        if text == "🔍 Search":
-            context.user_data.pop("awaiting", None)
-            context.user_data["awaiting"] = "search_uid"
-            await update.message.reply_text(
-                "Send a Registration UID, User Telegram ID, or #SubmissionID to search:",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
-                ]]),
-            )
-            return
-        if text == "👥 Admins":
-            context.user_data.pop("awaiting", None)
-            atext, akeyboard = _admins_view()
-            await update.message.reply_text(atext, reply_markup=akeyboard)
-            return
-        if text == "📊 Live Stats":
-            context.user_data.pop("awaiting", None)
-            stext, sentities = _stats_text(user_id)
-            await update.message.reply_text(stext, entities=sentities, reply_markup=_keyboard(admin=True, user_id=user_id))
-            return
-        if text == "📣 Broadcast":
-            context.user_data.pop("awaiting", None)
-            context.user_data["awaiting"] = "broadcast"
-            await update.message.reply_text(
-                "Send the broadcast message (supports bold, italic, code & custom emoji).",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast"),
-                ]]),
-            )
-            return
-        if text == "📥 Export CSV":
-            context.user_data.pop("awaiting", None)
-            csv_bytes, count = _export_submissions_csv()
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-            await update.message.reply_document(
-                document=InputFile(io.BytesIO(csv_bytes), filename=f"verifyhub_submissions_{stamp}.csv"),
-                caption=f"📥 Exported {count} submissions ({stamp} UTC).",
-            )
-            return
 
     awaiting = context.user_data.get("awaiting")
 
@@ -2241,18 +2172,25 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     elif data == "__help__":
         text, entities = _help_text(admin=admin, lang=_get_lang(admin_id))
+        # Help is a leaf screen: its own actions + Back. It used to
+        # repeat the whole main menu underneath, which pushed the real
+        # buttons down and made every screen look different.
         help_rows = [
             [
                 InlineKeyboardButton("📊 Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
                 InlineKeyboardButton("💬 Contact Admin", callback_data="__support__"),
-            ]
+            ],
+            [InlineKeyboardButton("⬅️ Main Menu", callback_data="__home__")],
         ]
-        help_rows += _keyboard(admin=admin, user_id=admin_id).inline_keyboard
         await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(help_rows))
 
     elif data == "__stats__":
         text, entities = _stats_text(admin_id)
-        await _edit_or_reply(query, text, entities=entities, reply_markup=_keyboard(admin=admin, user_id=admin_id))
+        stats_rows = [
+            [InlineKeyboardButton("🔄 Refresh Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)],
+            [InlineKeyboardButton("⬅️ Main Menu", callback_data="__home__")],
+        ]
+        await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(stats_rows))
 
     elif data == "__signal__" or data.startswith("__signal__:"):
         timer = "1m"
@@ -2265,13 +2203,14 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status, row, _ = _latest_status(admin_id)
         history = _user_submissions(admin_id, limit=4)
         text, entities = _status_card(status, row, badges=_badges_for(admin_id), history=history)
+        # Same leaf-screen rule as Help: own actions + Back, no repeated menu.
         status_kb_rows = [
             [
                 InlineKeyboardButton("🔄 Refresh Status", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
                 InlineKeyboardButton("🎯 Signal Hub", callback_data="__signal__:1m", icon_custom_emoji_id=EMOJI_TARGET),
-            ]
+            ],
+            [InlineKeyboardButton("⬅️ Main Menu", callback_data="__home__")],
         ]
-        status_kb_rows += _keyboard(admin=admin, user_id=admin_id).inline_keyboard
         await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(status_kb_rows))
 
     elif data == "__admin__" or data.startswith("admin:"):
