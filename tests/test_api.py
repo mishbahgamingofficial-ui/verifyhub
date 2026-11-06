@@ -270,9 +270,10 @@ def test_main_keyboard_is_colourful_and_complete():
     assert [b.text for b in rows[1]] == ["Check My Status", "Open Predictions"]
     assert [b.text for b in rows[2]] == ["🎯 Signal Hub", "🚀 Submit UID"]
     assert [b.text for b in rows[3]] == ["👤 Profile", "📈 Stats", "Help", "🇬🇧 EN"]
-    admin_rows = _keyboard(admin=True).inline_keyboard
-    assert [len(r) for r in admin_rows] == [1, 2, 2, 4, 1]
-    assert admin_rows[4][0].text == "🛡 Admin Control Center"
+    # No admin row anywhere in the menu: the admin panel lives only in
+    # the reply keyboard, never as an inline button.
+    assert all(b.text != "🛡 Admin Panel" for row in rows for b in row)
+    assert all(b.callback_data != "__admin__" for row in rows for b in row)
     by_text = {b.text: b for b in buttons}
     assert by_text["Open Verification Panel"].style == "primary"
     assert by_text["Open Verification Panel"].icon_custom_emoji_id == EMOJI_CROWN
@@ -319,7 +320,7 @@ def test_welcome_and_help_texts_use_premium_emojis():
 
     text, entities = _welcome_text()
     assert "VerifyHub — ek baar, ek faisla." in text
-    assert "Apna UID Panel se ya seedha chat mein bhejo" in text
+    assert "Apna UID panel se ya seedha chat mein bhejo" in text
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
     assert customs == {EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP}
 
@@ -664,12 +665,12 @@ def test_help_has_no_commands_and_mentions_admin_panel_only_for_admin():
     from app.bot import _help_text
 
     text, _ = _help_text(admin=True)
-    assert "Admin Control Center" in text
+    assert "Admin Panel" in text
     assert "/approve" not in text and "/addadmin" not in text
     text, _ = _help_text()
-    assert "Admin Control Center" not in text
+    assert "Admin Panel" not in text
     assert "/start" not in text and "/status" not in text
-    assert "User Features" in text
+    assert "Your tools" in text
 
 
 # ---------------- Admin panel + instant admin alerts ----------------
@@ -754,6 +755,9 @@ def test_submission_notifies_admins(monkeypatch):
 
 
 def test_admin_dashboard_shows_stats():
+    """The panel is one slim text message: queue, verdicts, today.
+    No recent-rows list, no DB ping/uptime, no inline keyboard — the
+    panel's buttons live in the reply keyboard."""
     import asyncio
     from types import SimpleNamespace
 
@@ -766,15 +770,14 @@ def test_admin_dashboard_shows_stats():
     # The dashboard branch clears user_data, so it needs a real context.
     asyncio.run(_button(update, SimpleNamespace(user_data={})))
     text = message.reply_text.await_args.args[0]
-    assert "Admin Control Center" in text
-    assert "Pending:" in text and "Verified:" in text
-    assert "DASH1" in text and "DASH2" in text and "DASH3" in text
-    keyboard = message.reply_text.await_args.kwargs["reply_markup"]
-    assert keyboard.inline_keyboard[0][0].callback_data == "admin:pending"
-    assert keyboard.inline_keyboard[1][0].callback_data == "admin:analytics"
-    assert keyboard.inline_keyboard[1][1].callback_data == "admin:broadcast"
-    assert keyboard.inline_keyboard[2][0].callback_data == "admin:admins"
-    assert "Admins: 1" in text  # env admin only at this point in the suite
+    assert "Admin Panel" in text
+    assert "Queue:" in text and "Verified" in text
+    assert "Today" in text
+    # Slim on purpose: no recent rows, no admin count, no DB ping.
+    assert "DASH1" not in text and "DASH2" not in text and "DASH3" not in text
+    assert "DB Ping" not in text and "Admins:" not in text
+    # No inline keyboard attached — navigation is the reply keyboard.
+    assert message.reply_text.await_args.kwargs.get("reply_markup") is None
 
 
 def test_admin_approve_button_edits_notification(monkeypatch):
@@ -807,37 +810,67 @@ def test_admin_button_refuses_non_admin():
 
 
 def test_start_shows_dashboard_to_admin():
-    """An admin's /start is exactly two messages: welcome + the one Admin
-    Control Center. There is no reply keyboard anymore — the dashboard is
-    the single admin home, so nothing is duplicated anywhere else."""
+    """An admin's /start is exactly ONE message — the slim Admin Panel —
+    with the reply keyboard attached. No welcome text, no user menu,
+    nothing else. A user still gets the welcome + inline menu."""
     import asyncio
 
     from app.bot import start
+    from telegram import ReplyKeyboardMarkup
 
     update, context, message = _fake_update(ADMIN_ID)
     asyncio.run(start(update, context))
-    assert message.reply_text.await_count == 2
-    assert "Admin Control Center" in message.reply_text.await_args_list[1].args[0]
-    dashboard_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
-    assert dashboard_kb.inline_keyboard[0][0].callback_data == "admin:pending"
+    assert message.reply_text.await_count == 1
+    assert "Admin Panel" in message.reply_text.await_args.args[0]
+    reply_kb = message.reply_text.await_args.kwargs["reply_markup"]
+    assert isinstance(reply_kb, ReplyKeyboardMarkup)
+    labels = [b.text for row in reply_kb.keyboard for b in row]
+    assert labels == [
+        "🛡 Admin Panel", "📈 Analytics",
+        "📋 Pending", "🔍 Search",
+        "📊 Live Stats", "👥 Admins",
+        "📣 Broadcast", "📥 Export CSV",
+    ]
 
     update, context, message = _fake_update(USER_ID)
     asyncio.run(start(update, context))
     assert message.reply_text.await_count == 1
+    assert "VerifyHub" in message.reply_text.await_args.args[0]
 
 
 def test_admin_keyboard_has_panel_button_only_for_admin():
-    from app.bot import _keyboard
+    """The main menu has no admin row for anyone — the panel lives only
+    in the reply keyboard. Admins never see the inline menu at all."""
+    from app.bot import _admin_reply_keyboard, _keyboard
 
-    admin_rows = _keyboard(admin=True).inline_keyboard
-    assert admin_rows[4][0].text == "🛡 Admin Control Center" and admin_rows[4][0].callback_data == "__admin__"
-    user_rows = _keyboard().inline_keyboard
-    assert all(b.text != "🛡 Admin Control Center" for row in user_rows for b in row)
+    rows = _keyboard().inline_keyboard
+    assert [len(r) for r in rows] == [1, 2, 2, 4]
+    assert all(b.text != "🛡 Admin Panel" for row in rows for b in row)
+    assert all(b.callback_data != "__admin__" for row in rows for b in row)
+    # ...and the keyboard area is where the panel actually lives.
+    kb = _admin_reply_keyboard()
+    labels = [b.text for row in kb.keyboard for b in row]
+    assert "🛡 Admin Panel" in labels
+
+
+def test_admin_reply_keyboard_is_organised():
+    from app.bot import _admin_reply_keyboard
+
+    kb = _admin_reply_keyboard()
+    assert kb.resize_keyboard is True
+    assert kb.one_time_keyboard is False
+    rows = kb.keyboard
+    assert [len(r) for r in rows] == [2, 2, 2, 2]  # panel+analytics / pending+search / stats+admins / broadcast+export
+    assert [b.text for b in rows[0]] == ["🛡 Admin Panel", "📈 Analytics"]
+    assert [b.text for b in rows[1]] == ["📋 Pending", "🔍 Search"]
+    assert [b.text for b in rows[2]] == ["📊 Live Stats", "👥 Admins"]
+    assert [b.text for b in rows[3]] == ["📣 Broadcast", "📥 Export CSV"]
 
 
 def test_admin_keyboard_buttons_open_the_right_views():
     """Leaf screens show only their own actions + Back — the full main
-    menu is no longer repeated underneath every screen."""
+    menu is no longer repeated underneath every screen. Back goes to
+    the Admin Panel for admins, the Main Menu for users."""
     import asyncio
 
     from app.bot import _button
@@ -866,15 +899,66 @@ def test_admin_keyboard_buttons_open_the_right_views():
         ["⬅️ Main Menu"],
     ]
 
-    # And the old reply-keyboard labels are just plain text now: even an
-    # admin typing one gets the button nudge, not the admin view.
+    # An admin's leaf screens go back to the panel instead.
+    update, query, message = _fake_query(ADMIN_ID, "__stats__")
+    asyncio.run(_button(update, None))
+    admin_stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
+    assert [[b.text for b in row] for row in admin_stats_kb.inline_keyboard] == [
+        ["🔄 Refresh Stats"],
+        ["⬅️ Admin Panel"],
+    ]
+
+    # And the keyboard labels open the admin views. The panel itself and
+    # Live Stats reply as text only (the keyboard is already on screen);
+    # Analytics, Pending and Admins have their own content keyboards.
     from app.bot import _handle_text
 
-    for uid in (ADMIN_ID, USER_ID):
-        update, context, message = _fake_update(uid)
-        message.text = "📋 Pending"
+    _make_submission(575, "KBD1")
+    for label, needle, text_only in [
+        ("🛡 Admin Panel", "Admin Panel", True),
+        ("📈 Analytics", "Analytics", False),
+        ("📋 Pending", "KBD1", False),
+        ("👥 Admins", "Platform Admins", False),
+        ("📊 Live Stats", "Live Stats", True),
+    ]:
+        update, context, message = _fake_update(ADMIN_ID)
+        message.text = label
         asyncio.run(_handle_text(update, context))
-        assert "Use the buttons below" in message.reply_text.await_args.args[0]
+        assert needle in message.reply_text.await_args.args[0], label
+        if text_only:
+            assert message.reply_text.await_args.kwargs.get("reply_markup") is None, label
+
+    # A non-admin typing a label just gets the nudge, not the admin view.
+    update, context, message = _fake_update(USER_ID)
+    message.text = "🛡 Admin Panel"
+    asyncio.run(_handle_text(update, context))
+    assert "Use the buttons below" in message.reply_text.await_args.args[0]
+
+
+def test_search_by_telegram_id_does_not_overflow():
+    """Regression: searching a Telegram id (e.g. 8995828029) used to bind
+    it to submissions.id, a Postgres INTEGER, and crash with
+    NumericValueOutOfRange. Telegram ids are looked up in the users
+    table; only small numbers are ever tried as submission ids."""
+    from app.bot import _search_submissions
+
+    # A 10-digit id with no user behind it: no match, no crash.
+    text, _kb = _search_submissions("8995828029")
+    assert "No submissions or users matched" in text
+
+    # The same id owning a submission: found via the users table.
+    _make_submission(8995828029, "SEARCHBIG1")
+    text, kb = _search_submissions("8995828029")
+    assert "SEARCHBIG1" in text
+    assert "8995828029" in text
+
+    # #id form with a huge number: same guard, no crash.
+    text, _kb = _search_submissions("#8995828029")
+    assert "SEARCHBIG1" in text
+
+    # A real small submission id still works.
+    text, _kb = _search_submissions("#1")
+    assert "#1" in text
 
 
 # ---------------- Live stats, badges, admin management ----------------
@@ -900,11 +984,11 @@ def test_stats_button_shows_live_numbers(monkeypatch):
     update, query, message = _fake_query(USER_ID, "__stats__")
     asyncio.run(_button(update, None))
     text = query.edit_message_text.await_args.args[0]
-    assert "VerifyHub — Live Platform Telemetry" in text
-    assert "Users:" in text and "Verified:" in text
+    assert "VerifyHub — Live Stats" in text
+    assert "Users " in text and "Verified " in text
     assert "Signals (1m): 66.7% (2/3)" in text
-    assert "Recent 1m Tape: ✅✅❌" in text
-    assert "Live WinGo 1m: period …0952 ends in 42s" in text
+    assert "Tape: ✅✅❌" in text
+    assert "Live 1m: period …0952 ends in 42s" in text
 
 
 def test_stats_button_without_live_period(monkeypatch):
@@ -920,8 +1004,8 @@ def test_stats_button_without_live_period(monkeypatch):
     update, query, message = _fake_query(USER_ID, "__stats__")
     asyncio.run(_button(update, None))
     text = query.edit_message_text.await_args.args[0]
-    assert "VerifyHub — Live Platform Telemetry" in text
-    assert "Live WinGo" not in text
+    assert "VerifyHub — Live Stats" in text
+    assert "Live 1m:" not in text
 
 
 def test_badges_come_from_real_data():
@@ -990,7 +1074,7 @@ def test_admin_add_remove_admins():
     text = query.edit_message_text.await_args.args[0]
     assert str(ADMIN_ID) in text and "(server config)" in text
     keyboard = query.edit_message_text.await_args.kwargs["reply_markup"]
-    assert keyboard.inline_keyboard[-2][0].callback_data == "admin:add"
+    assert keyboard.inline_keyboard[-1][0].callback_data == "admin:add"  # last row: no Back button anymore
 
     update, query, message = _fake_query(ADMIN_ID, "admin:add")
     asyncio.run(_button(update, ctx))
@@ -1232,7 +1316,7 @@ def test_broadcast_cancel_clears_prompt():
     update, query, message = _fake_query(ADMIN_ID, "admin:cancel-broadcast")
     asyncio.run(_button(update, ctx))
     assert "awaiting" not in ctx.user_data and "broadcast_text" not in ctx.user_data
-    assert "Admin Control Center" in query.edit_message_text.await_args.args[0]
+    assert "Admin Panel" in query.edit_message_text.await_args.args[0]
 
 
 # ---------------- Signal Hub (get_prediction fix) ----------------
@@ -1265,7 +1349,7 @@ def test_signal_hub_shows_live_pick_for_verified(monkeypatch):
     _make_submission(USER_ID, "SIGHUB1", status="verified")
     monkeypatch.setattr("app.bot.get_prediction", lambda timer, provider=None: _fake_prediction(timer))
     text, _entities, kb = _signal_preview_card(USER_ID, timer="1m")
-    assert "VerifyHub Signal Hub — WinGo 1M" in text
+    assert "Signal Hub — WinGo 1M" in text
     assert "Active Period (1m):" in text and "…061234" in text
     assert "⏳ 30s left" in text
     assert "Live Signal:" in text and "BIG · RED" in text
@@ -1291,7 +1375,7 @@ def test_signal_hub_shows_live_pick_for_verified(monkeypatch):
     monkeypatch.setattr("app.bot.get_prediction", _capture)
     text, _entities, kb = _signal_preview_card(USER_ID, timer="30s")
     assert seen["timer"] == "30s"
-    assert "VerifyHub Signal Hub — WinGo 30S" in text
+    assert "Signal Hub — WinGo 30S" in text
     assert "BIG · RED" in text
     callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert "__signal__:1m" in callbacks and "__signal__:30s" in callbacks
