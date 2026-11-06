@@ -907,6 +907,7 @@ def test_start_shows_dashboard_to_admin():
         "📋 Pending", "🔍 Search",
         "📊 Live Stats", "👥 Admins",
         "📣 Broadcast", "📥 Export CSV",
+        "🧹 Clean Users",
     ]
 
     update, context, message = _fake_update(USER_ID)
@@ -955,11 +956,12 @@ def test_admin_reply_keyboard_is_organised():
     assert kb.resize_keyboard is True
     assert kb.one_time_keyboard is False
     rows = kb.keyboard
-    assert [len(r) for r in rows] == [2, 2, 2, 2]  # panel+analytics / pending+search / stats+admins / broadcast+export
+    assert [len(r) for r in rows] == [2, 2, 2, 2, 1]  # panel+analytics / pending+search / stats+admins / broadcast+export / clean
     assert [b.text for b in rows[0]] == ["🛡 Admin Panel", "📈 Analytics"]
     assert [b.text for b in rows[1]] == ["📋 Pending", "🔍 Search"]
     assert [b.text for b in rows[2]] == ["📊 Live Stats", "👥 Admins"]
     assert [b.text for b in rows[3]] == ["📣 Broadcast", "📥 Export CSV"]
+    assert [b.text for b in rows[4]] == ["🧹 Clean Users"]
 
 
 def test_admin_keyboard_buttons_open_the_right_views():
@@ -1568,3 +1570,99 @@ def test_autoverify_retry_verifies_pending(monkeypatch):
     assert data["auto_verified"] >= 1
     assert _submission_status(sid_pass)[0] == "verified"
     assert _submission_status(sid_fail)[0] == "pending_review"
+
+
+# --- Clean Users (admin-only database wipe) -------------------------------
+# The free Render plan has no web shell, so the wipe runs from the bot
+# itself: admin keyboard -> "Clean Users" (dry-run counts) -> confirm.
+# These tests run last in this file: the confirm test deletes every
+# non-admin user in the shared test DB, so nothing may rely on those
+# rows after it.
+
+
+def _user_ids_and_signal_audit_counts():
+    from app.db import AuditEvent, SignalRecord, User, get_session_factory
+
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        return (
+            {u.telegram_id for u in db.query(User).all()},
+            db.query(SignalRecord).count(),
+            db.query(AuditEvent).count(),
+        )
+    finally:
+        db.close()
+
+
+def test_clean_users_dry_run_shows_counts_and_confirm():
+    import asyncio
+
+    from app.bot import _handle_text
+    from app.clean_users import clean as _clean
+    from app.config import get_settings
+    from app.db import get_session_factory
+
+    _make_submission(701, "CLEAN1")
+    _make_submission(702, "CLEAN2")
+    _make_submission(ADMIN_ID, "CLEANADMIN")
+    # The shared test DB already holds users from earlier tests, so the
+    # expected counts come from the dry-run oracle, not fixed numbers.
+    expected = _clean(get_session_factory(os.environ["DATABASE_URL"]), get_settings(), dry_run=True)
+    assert expected["users_deleted"] >= 2
+    update, context, message = _fake_update(ADMIN_ID)
+    update.message.text = "🧹 Clean Users"
+    asyncio.run(_handle_text(update, context))
+    text = message.reply_text.await_args.args[0]
+    assert "Clean Users" in text
+    assert f"Delete honge: {expected['users_deleted']} users" in text
+    assert f"Unki submissions: {expected['submissions_deleted']}" in text
+    assert "Signal record" in text and "Logs" in text
+    kb = message.reply_text.await_args.kwargs["reply_markup"]
+    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert "admin:clean:confirm" in callbacks
+    # Dry run changed nothing.
+    ids, _, _ = _user_ids_and_signal_audit_counts()
+    assert 701 in ids and 702 in ids and ADMIN_ID in ids
+
+
+def test_clean_users_refuses_non_admin():
+    import asyncio
+
+    from app.bot import _button
+
+    update, query, message = _fake_query(USER_ID, "admin:clean:confirm")
+    asyncio.run(_button(update, None))
+    assert "sirf admins ke liye hai" in message.reply_text.await_args.args[0]
+    ids, _, _ = _user_ids_and_signal_audit_counts()
+    assert 701 in ids and 702 in ids
+
+
+def test_clean_users_confirm_deletes_non_admins_only():
+    import asyncio
+
+    from app.bot import _button
+    from app.clean_users import clean as _clean
+    from app.config import get_settings
+    from app.db import Submission, get_session_factory
+
+    _, signals_before, audit_before = _user_ids_and_signal_audit_counts()
+    expected = _clean(get_session_factory(os.environ["DATABASE_URL"]), get_settings(), dry_run=True)
+    assert expected["users_deleted"] >= 2
+    update, query, message = _fake_query(ADMIN_ID, "admin:clean:confirm")
+    asyncio.run(_button(update, None))
+    text = query.edit_message_text.await_args.args[0]
+    assert "Clean ho gaya" in text
+    assert f"Delete kiye: {expected['users_deleted']} users" in text
+    ids, signals_after, audit_after = _user_ids_and_signal_audit_counts()
+    assert 701 not in ids and 702 not in ids
+    assert ADMIN_ID in ids
+    db = get_session_factory(os.environ["DATABASE_URL"])()
+    try:
+        assert db.query(Submission).filter(Submission.registration_uid == "CLEAN1").first() is None
+        assert db.query(Submission).filter(Submission.registration_uid == "CLEAN2").first() is None
+        assert db.query(Submission).filter(Submission.registration_uid == "CLEANADMIN").first() is not None
+    finally:
+        db.close()
+    # Signal record and audit logs are untouched by the wipe.
+    assert signals_after == signals_before
+    assert audit_after == audit_before

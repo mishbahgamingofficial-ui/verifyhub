@@ -52,6 +52,7 @@ from telegram.ext import (
     filters,
 )
 
+from .clean_users import clean as _clean_users
 from .config import get_settings
 from .db import Admin, SignalRecord, Submission, User, get_session_factory, mask_uid
 from .prediction import get_live
@@ -837,13 +838,14 @@ def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
     """The admin panel lives ONLY here, in the keyboard area next to the
     message box. There is no inline copy of it anywhere — no Admin Panel
     button in the main menu, no dashboard keyboard under the panel
-    message. An admin's whole navigation is these eight buttons."""
+    message. An admin's whole navigation is these nine buttons."""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("🛡 Admin Panel"), KeyboardButton("📈 Analytics")],
             [KeyboardButton("📋 Pending"), KeyboardButton("🔍 Search")],
             [KeyboardButton("📊 Live Stats"), KeyboardButton("👥 Admins")],
             [KeyboardButton("📣 Broadcast"), KeyboardButton("📥 Export CSV")],
+            [KeyboardButton("🧹 Clean Users")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -1297,7 +1299,7 @@ def _admin_dashboard() -> tuple[str, list]:
         (str(total_users), "bold"),
         ("  ·  Submissions ", None),
         (str(total), "bold"),
-        ("\n\nNeeche button dabakar Pending, Search, Analytics, Broadcast, Admins ya Export kholo.", "italic"),
+        ("\n\nNeeche button dabakar Pending, Search, Analytics, Broadcast, Admins, Export ya Clean Users kholo.", "italic"),
     ]
     return _render(segments)
 
@@ -1955,6 +1957,31 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
     return _render(segments)
 
 
+def _clean_users_preview(summary: dict) -> tuple[str, list, InlineKeyboardMarkup]:
+    """Dry-run view for Clean Users: what WOULD be deleted, plus the
+    confirm/cancel buttons. Nothing is deleted by showing this."""
+    kept = ", ".join(str(t) for t in summary.get("kept_telegram_ids", [])) or "—"
+    text, entities = _render([
+        ("🧹 Clean Users — pehle gin lo, phir delete karo.", "bold"),
+        (
+            f"\n\nTotal users: {summary.get('users_total', 0)}"
+            f"\nAdmin (rehne wale): {summary.get('users_kept', 0)} ({kept})"
+            f"\nDelete honge: {summary.get('users_deleted', 0)} users"
+            f"\nUnki submissions: {summary.get('submissions_deleted', 0)}"
+            f" (aur {summary.get('history_deleted', 0)} history rows)"
+            f"\n\nSignal record: {summary.get('signal_records_kept', 0)} rows — rehne do"
+            f"\nLogs: {summary.get('audit_events_kept', 0)} events — rehne do"
+            "\n\nYe wapas nahi aayega. Confirm karo to hi delete hoga.",
+            None,
+        ),
+    ])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Haan, delete karo", callback_data="admin:clean:confirm", icon_custom_emoji_id=EMOJI_CHECK),
+        InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
+    ]])
+    return text, entities, keyboard
+
+
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Plain-text replies to interactive bot prompts (support message,
     admin reply, search, custom note, broadcast, add admin).
@@ -2027,6 +2054,12 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 caption=f"📥 Exported {count} submissions ({stamp} UTC).",
                 caption_entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_INBOX)],
             )
+            return
+        if text == "🧹 Clean Users":
+            context.user_data.pop("awaiting", None)
+            summary = _clean_users(get_session_factory(settings.database_url), settings, dry_run=True)
+            ctext, centities, ckeyboard = _clean_users_preview(summary)
+            await update.message.reply_text(ctext, entities=centities, reply_markup=ckeyboard)
             return
 
     # The user's everyday tools are reply-keyboard buttons, so tapping
@@ -2523,6 +2556,33 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✖️ Cancel", callback_data="admin:dashboard"),
                 ]]),
+            )
+            return
+
+        if data == "admin:clean:confirm":
+            summary = _clean_users(get_session_factory(settings.database_url), settings, dry_run=False)
+            if summary.get("users_deleted", 0) == 0:
+                rtext, rentities = _render([
+                    ("🧹 Clean Users", "bold"),
+                    ("\n\nKuch delete karne ko nahi tha — sirf admin users hain.", None),
+                ])
+            else:
+                rtext, rentities = _render([
+                    ("✅ Clean ho gaya.", "bold"),
+                    (
+                        f"\n\nDelete kiye: {summary.get('users_deleted', 0)} users, "
+                        f"{summary.get('submissions_deleted', 0)} submissions, "
+                        f"{summary.get('history_deleted', 0)} history rows."
+                        f"\nBache: {summary.get('users_kept', 0)} admin users."
+                        "\nSignal record aur logs waise ke waise hain.",
+                        None,
+                    ),
+                ])
+            await _edit_or_reply(
+                query,
+                rtext,
+                entities=rentities,
+                reply_markup=InlineKeyboardMarkup([[_back_button(True)]]),
             )
             return
 
