@@ -17,7 +17,7 @@ Routes:
 
 The Telegram bot runs inside this process via webhook — no polling
 worker is needed on the free tier. The same handlers as the polling
-bot (app.bot_handlers) process the updates; see the webhook section
+bot (app.bot) process the updates; see the webhook section
 below. Startup never fails if the webhook cannot be registered.
 
 The frontend is served from ../frontend when present, so one process can
@@ -48,7 +48,7 @@ from telegram.ext import Application as TelegramApplication
 from .auth import get_current_user, get_db_session, get_identity, require_admin
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
-from .notifications import notify_admins, notify_user
+from .bot import notify_admins, notify_user
 from .prediction import TIMER_TYPE_IDS, ProviderError, get_accuracy, get_live, get_prediction, record_signal
 from .rate_limit import RateLimitExceeded, limiter
 from .security import TelegramIdentity
@@ -61,7 +61,7 @@ logger = logging.getLogger("verifyhub.api")
 # The bot is NOT polled here. Telegram delivers updates to
 # POST /telegram/webhook, which feeds them to a shared python-telegram-bot
 # Application (built with updater=None) using the exact same handlers as
-# the polling worker (app.bot_handlers). Only ONE transport may be active
+# the polling worker (app.bot). Only ONE transport may be active
 # for a token at a time — never run the polling worker while this webhook
 # is registered, or Telegram returns 409 conflicts.
 
@@ -80,7 +80,7 @@ def get_telegram_app() -> TelegramApplication | None:
     settings = get_settings()
     if not settings.bot_token:
         return None
-    from .bot_handlers import build_telegram_application
+    from .bot import build_telegram_application
 
     _telegram_app = build_telegram_application(settings.bot_token, with_updater=False)
     return _telegram_app

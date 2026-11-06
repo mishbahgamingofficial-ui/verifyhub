@@ -2,7 +2,7 @@
 # python-telegram-bot IS here now: the API service also runs the Telegram
 # bot via webhook (POST /telegram/webhook), so the free tier needs no
 # paid polling worker. The API only validates initData and sends
-# notifications via httpx; bot updates are handled by app.bot_handlers.
+# notifications via httpx; bot updates are handled by app.bot.
 fastapi>=0.110
 uvicorn[standard]>=0.29
 sqlalchemy>=2.1

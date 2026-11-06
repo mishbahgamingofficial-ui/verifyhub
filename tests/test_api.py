@@ -236,7 +236,7 @@ def test_webhook_without_bot_token_is_ignored(monkeypatch):
 def test_telegram_application_builds_with_all_handlers():
     from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 
-    from app.bot_handlers import build_telegram_application
+    from app.bot import build_telegram_application
 
     app = build_telegram_application("test-token-123", with_updater=False)
     assert app.updater is None  # webhook mode: no poller
@@ -255,7 +255,7 @@ def test_main_keyboard_is_colourful_and_complete():
     Older Telegram clients ignore `style`, so every button also carries its
     meaning in words + emoji; at most two buttons per keyboard are styled.
     """
-    from app.bot_handlers import (
+    from app.bot import (
         EMOJI_CHART,
         EMOJI_CROWN,
         EMOJI_DIAMOND,
@@ -289,7 +289,7 @@ def test_render_segments_counts_utf16_units():
     """_render offsets are UTF-16 code units: astral-plane emoji count as 2."""
     from telegram import MessageEntity
 
-    from app.bot_handlers import _render
+    from app.bot import _render
 
     text, entities = _render([
         ("👑", ("custom", "111")),
@@ -307,7 +307,7 @@ def test_render_segments_counts_utf16_units():
 
 
 def test_welcome_and_help_texts_use_premium_emojis():
-    from app.bot_handlers import (
+    from app.bot import (
         EMOJI_CHECK,
         EMOJI_CROWN,
         EMOJI_TARGET,
@@ -332,7 +332,7 @@ def test_welcome_and_help_texts_use_premium_emojis():
 def test_status_card_uses_entities_not_html():
     from datetime import datetime, timezone
 
-    from app.bot_handlers import EMOJI_CHART, _status_card
+    from app.bot import EMOJI_CHART, _status_card
     from app.db import Submission, mask_uid
 
     text, entities = _status_card("not_submitted", None)
@@ -357,7 +357,7 @@ def test_polling_bot_builds_with_updater_and_same_handlers():
     from telegram.ext import CallbackQueryHandler, CommandHandler
 
     from app.bot import build_app
-    from app.bot_handlers import build_telegram_application
+    from app.bot import build_telegram_application
 
     polling = build_app()
     assert polling.updater is not None  # polling path intact
@@ -517,7 +517,7 @@ def _fake_update(user_id, args=None):
 
     # Fresh rate-limit state per fake update: the 1s guard must not leak
     # between tests that reuse the same user id.
-    import app.bot_handlers as _handlers
+    import app.bot as _handlers
 
     _handlers._last_action.clear()
     message = SimpleNamespace(reply_text=AsyncMock())
@@ -558,7 +558,7 @@ def _submission_status(sid):
 def test_admin_buttons_refuse_non_admin():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     sid = _make_submission(555, "ADMINCMD1")
     update, query, message = _fake_query(USER_ID, "admin:pending")
@@ -574,7 +574,7 @@ def test_admin_buttons_refuse_non_admin():
 def test_admin_pending_lists_waiting_submissions():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     sid1 = _make_submission(556, "ADMINCMD2")
     sid2 = _make_submission(557, "ADMINCMD3")
@@ -589,11 +589,11 @@ def test_admin_approve_marks_verified_and_notifies(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock
 
-    from app.bot_handlers import _button
+    from app.bot import _button
     from app.db import AuditEvent, ReviewHistory, get_session_factory
 
     notified = AsyncMock(return_value=True)
-    monkeypatch.setattr("app.bot_handlers.notify_user", notified)
+    monkeypatch.setattr("app.bot.notify_user", notified)
     sid = _make_submission(558, "ADMINCMD4")
     update, query, message = _fake_query(ADMIN_ID, f"admin:approve:{sid}:p")
     asyncio.run(_button(update, None))
@@ -618,7 +618,7 @@ def test_admin_approve_marks_verified_and_notifies(monkeypatch):
 def test_admin_approve_rejects_bad_id_and_terminal():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     update, query, message = _fake_query(ADMIN_ID, "admin:approve:999999:p")
     asyncio.run(_button(update, None))
@@ -634,9 +634,9 @@ def test_admin_queue_buttons_apply_default_messages(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
-    monkeypatch.setattr("app.bot_handlers.notify_user", AsyncMock(return_value=True))
+    monkeypatch.setattr("app.bot.notify_user", AsyncMock(return_value=True))
     sid = _make_submission(560, "ADMINCMD6")
     update, query, message = _fake_query(ADMIN_ID, f"admin:reject:{sid}:p")
     asyncio.run(_button(update, None))
@@ -654,7 +654,7 @@ def test_admin_queue_buttons_apply_default_messages(monkeypatch):
 
 
 def test_help_has_no_commands_and_mentions_admin_panel_only_for_admin():
-    from app.bot_handlers import _help_text
+    from app.bot import _help_text
 
     text, _ = _help_text(admin=True)
     assert "Admin Panel" in text
@@ -674,7 +674,7 @@ def _fake_query(user_id, data):
 
     # Fresh rate-limit state per fake tap: the 1s guard must not leak
     # between tests that reuse the same user id.
-    import app.bot_handlers as _handlers
+    import app.bot as _handlers
 
     _handlers._last_action.clear()
     message = SimpleNamespace(reply_text=AsyncMock())
@@ -690,7 +690,7 @@ def test_notify_admins_posts_alert_with_action_buttons(monkeypatch):
     import asyncio
     from datetime import datetime, timezone
 
-    import app.notifications as notif_module
+    import app.bot as notif_module
 
     posts = []
 
@@ -749,7 +749,7 @@ def test_submission_notifies_admins(monkeypatch):
 def test_admin_dashboard_shows_stats():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     _make_submission(570, "DASH1")
     _make_submission(571, "DASH2")
@@ -771,9 +771,9 @@ def test_admin_approve_button_edits_notification(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
-    monkeypatch.setattr("app.bot_handlers.notify_user", AsyncMock(return_value=True))
+    monkeypatch.setattr("app.bot.notify_user", AsyncMock(return_value=True))
     sid = _make_submission(573, "BTN1")
     update, query, message = _fake_query(ADMIN_ID, f"admin:approve:{sid}:n")
     asyncio.run(_button(update, None))
@@ -786,7 +786,7 @@ def test_admin_approve_button_edits_notification(monkeypatch):
 def test_admin_button_refuses_non_admin():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     sid = _make_submission(574, "BTN2")
     update, query, message = _fake_query(USER_ID, f"admin:approve:{sid}:n")
@@ -798,7 +798,7 @@ def test_admin_button_refuses_non_admin():
 def test_start_shows_dashboard_to_admin():
     import asyncio
 
-    from app.bot_handlers import start
+    from app.bot import start
 
     update, context, message = _fake_update(ADMIN_ID)
     asyncio.run(start(update, context))
@@ -819,7 +819,7 @@ def test_start_shows_dashboard_to_admin():
 
 
 def test_admin_keyboard_has_panel_button_only_for_admin():
-    from app.bot_handlers import _keyboard
+    from app.bot import _keyboard
 
     admin_rows = _keyboard(admin=True).inline_keyboard
     assert admin_rows[3][0].text == "🛡 Admin Panel" and admin_rows[3][0].callback_data == "__admin__"
@@ -828,7 +828,7 @@ def test_admin_keyboard_has_panel_button_only_for_admin():
 
 
 def test_admin_reply_keyboard_is_organised():
-    from app.bot_handlers import _admin_reply_keyboard
+    from app.bot import _admin_reply_keyboard
 
     kb = _admin_reply_keyboard()
     assert kb.resize_keyboard is True
@@ -844,7 +844,7 @@ def test_admin_reply_keyboard_is_organised():
 def test_admin_keyboard_buttons_open_the_right_views():
     import asyncio
 
-    from app.bot_handlers import _handle_text
+    from app.bot import _handle_text
 
     _make_submission(575, "KBD1")
     for label, needle in [
@@ -871,7 +871,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
 def test_stats_button_shows_live_numbers(monkeypatch):
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
     from app.db import SignalRecord, get_session_factory
 
     # Seed honest accuracy data: 3 settled 1m signals, 2 right.
@@ -883,7 +883,7 @@ def test_stats_button_shows_live_numbers(monkeypatch):
     finally:
         db.close()
     monkeypatch.setattr(
-        "app.bot_handlers.get_live",
+        "app.bot.get_live",
         lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
     )
     update, query, message = _fake_query(USER_ID, "__stats__")
@@ -898,13 +898,13 @@ def test_stats_button_shows_live_numbers(monkeypatch):
 def test_stats_button_without_live_period(monkeypatch):
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
     from app.prediction import ProviderError
 
     def _boom():
         raise ProviderError("down")
 
-    monkeypatch.setattr("app.bot_handlers.get_live", _boom)
+    monkeypatch.setattr("app.bot.get_live", _boom)
     update, query, message = _fake_query(USER_ID, "__stats__")
     asyncio.run(_button(update, None))
     text = query.edit_message_text.await_args.args[0]
@@ -915,7 +915,7 @@ def test_stats_button_without_live_period(monkeypatch):
 def test_badges_come_from_real_data():
     from datetime import datetime, timedelta, timezone
 
-    from app.bot_handlers import _badges_for
+    from app.bot import _badges_for
     from app.db import User, get_session_factory
 
     # Verified + comeback: two submissions, one verified.
@@ -951,7 +951,7 @@ def test_badges_come_from_real_data():
 def test_status_button_shows_badges():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     _make_submission(581, "BADGE3", status="verified")
     update, query, message = _fake_query(581, "__status__")
@@ -964,7 +964,7 @@ def test_admin_add_remove_admins():
     import asyncio
     from types import SimpleNamespace
 
-    from app.bot_handlers import _button, _handle_text
+    from app.bot import _button, _handle_text
 
     # Non-admin cannot open the admins view.
     update, query, message = _fake_query(USER_ID, "admin:admins")
@@ -1056,7 +1056,7 @@ def test_command_menu_is_cleared_at_startup():
     import asyncio
     from unittest.mock import AsyncMock
 
-    import app.bot_handlers as handlers
+    import app.bot as handlers
 
     bot = AsyncMock()
     asyncio.run(handlers.clear_bot_commands(bot))
@@ -1074,7 +1074,7 @@ def test_command_menu_is_cleared_at_startup():
 def test_rate_limit_ignores_rapid_repeats():
     import asyncio
 
-    import app.bot_handlers as handlers
+    import app.bot as handlers
 
     handlers._last_action.clear()
     assert handlers._too_fast(4242) is False
@@ -1094,7 +1094,7 @@ def test_error_handler_alerts_admin_once_per_window():
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import app.bot_handlers as handlers
+    import app.bot as handlers
 
     handlers._last_error_alert = 0.0
     bot = SimpleNamespace(send_message=AsyncMock())
@@ -1110,7 +1110,7 @@ def test_error_handler_alerts_admin_once_per_window():
 def test_help_and_status_edit_in_place():
     import asyncio
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     update, query, message = _fake_query(USER_ID, "__help__")
     asyncio.run(_button(update, None))
@@ -1128,7 +1128,7 @@ def test_help_and_status_edit_in_place():
 # ---------------- Admin broadcast ----------------
 
 def test_broadcast_counts_and_targets():
-    from app.bot_handlers import _broadcast_counts, _broadcast_targets
+    from app.bot import _broadcast_counts, _broadcast_targets
     from app.db import Submission, User, get_session_factory
 
     _make_submission(595, "BC4", status="verified")
@@ -1156,7 +1156,7 @@ def test_broadcast_flow_sends_to_all_and_reports():
     import asyncio
     from unittest.mock import AsyncMock
 
-    from app.bot_handlers import _button, _handle_text
+    from app.bot import _button, _handle_text
     from app.db import Submission, User, get_session_factory
     from telegram.error import Forbidden
 
@@ -1213,7 +1213,7 @@ def test_broadcast_cancel_clears_prompt():
     import asyncio
     from types import SimpleNamespace
 
-    from app.bot_handlers import _button
+    from app.bot import _button
 
     ctx = SimpleNamespace(user_data={"awaiting": "broadcast", "broadcast_text": "hi"}, bot=None)
     update, query, message = _fake_query(ADMIN_ID, "admin:cancel-broadcast")

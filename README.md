@@ -78,7 +78,7 @@ verification-platform/
     security.py      initData HMAC-SHA256 validation (Telegram spec)
     auth.py          get_identity / get_current_user / require_admin dependencies
     services.py      status machine + provider_check() extension point
-    notifications.py notify AFTER commit only, best-effort, never rolls back a decision
+    bot.py (notify_admins / notify_user) notify AFTER commit only, best-effort, never rolls back a decision
     rate_limit.py    in-memory sliding window (swap for Redis in multi-worker prod)
     main.py          FastAPI routes (user + admin)
     bot.py           python-telegram-bot commands, shares the same DB as the API
