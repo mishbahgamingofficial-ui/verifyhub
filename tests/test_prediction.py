@@ -304,11 +304,39 @@ def test_prediction_snapshot_identical_for_all_users():
     provider = FixtureProvider()
     a = get_prediction("1m", provider=provider)
     b = get_prediction("1m", provider=provider)
+    # snapshot_age_ms differs between the two serves (0 fresh, then the
+    # cache age), so it is excluded from the identity comparison.
+    assert a["snapshot_age_ms"] == 0
+    assert b["snapshot_age_ms"] >= a["snapshot_age_ms"]
+    a.pop("snapshot_age_ms")
+    b.pop("snapshot_age_ms")
     assert a == b
     b["results"].append({"period": "x", "number": 1, "colour": "red", "size": "small"})
     c = get_prediction("1m", provider=provider)
+    c.pop("snapshot_age_ms")
     assert c == a
     assert len(c["results"]) == 10
+
+
+def test_prediction_snapshot_age_zero_fresh_then_grows():
+    """A fresh snapshot reports age 0; a cached serve reports the real
+    age, so the frontend can subtract it from the countdown instead
+    of running up to 5s late at a period boundary."""
+    import time
+
+    from app.prediction import clear_prediction_cache
+
+    # Fresh provider ids can be reused after an earlier test's provider
+    # is garbage-collected, which would serve a stale snapshot: clear
+    # the cache so this test really measures a fresh build.
+    clear_prediction_cache()
+    provider = FixtureProvider()
+    a = get_prediction("1m", provider=provider)
+    assert a["snapshot_age_ms"] == 0
+    time.sleep(0.12)
+    b = get_prediction("1m", provider=provider)
+    assert b["snapshot_age_ms"] >= 100
+    assert b["period"] == a["period"]
 
 
 def test_prediction_snapshot_refreshes_after_clear(monkeypatch):
@@ -344,6 +372,10 @@ def test_prediction_identical_consecutive_calls_endpoint(monkeypatch):
     for timer in ("1m", "30s"):
         first = client.get(f"/api/prediction?timer={timer}", headers=H(uid)).json()
         second = client.get(f"/api/prediction?timer={timer}", headers=H(uid)).json()
+        # snapshot_age_ms legitimately differs between serves (0 fresh,
+        # then the cache age) — everything else must match.
+        assert first.pop("snapshot_age_ms") == 0
+        assert second.pop("snapshot_age_ms") >= 0
         assert first == second, timer
 
 

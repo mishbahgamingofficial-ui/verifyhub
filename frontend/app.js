@@ -342,6 +342,14 @@
   // confidence is never "high".
   let predTimer = '1m', predRefreshId = null, predCountdownId = null;
   let predRemainingMs = 0, predFetchedAt = 0, predLoading = false, lastPredPeriod = null;
+  // Monotonic time of the last rollover fetch: the snapshot cache can
+  // still show the ended period for a few seconds after a boundary, so
+  // without a cooldown the countdown would refetch on every tick.
+  let predLastRolloverAt = 0;
+  // Accuracy record is fetched at most once per 30s per timer (it only
+  // changes when a period settles); the 10s signal refresh must not
+  // re-fetch and re-render it every time.
+  let predLastAccAt = 0, predLastAccTimer = null;
   // Last newest history period / last ticker result period: the newest
   // ball only pops when the result actually changed, never on refresh.
   let lastHistPeriod = null, lastTickerPeriod = null;
@@ -386,7 +394,22 @@
       // Period rolled over: fetch the new signal in the background.
       // Never blank the view for this — the last signal stays on screen
       // until the new one arrives.
+      const now = Date.now();
+      if (now - predLastRolloverAt < 3000) {
+        // The snapshot can still show the ended period for a few
+        // seconds after a boundary: don't hammer /api/prediction with
+        // a fetch on every tick — wait 3s and try the rollover again.
+        predRemainingMs = 3000; predFetchedAt = now;
+        if (!predCountdownId) predCountdownId = setInterval(tickPredCountdown, 1000);
+        return;
+      }
+      predLastRolloverAt = now;
       clearInterval(predCountdownId); predCountdownId = null;
+      if (!$('#pred-open').hidden) {
+        const rollEl = $('#pred-err');
+        rollEl.textContent = 'Naya period load ho raha hai…';
+        rollEl.className = 'hint';
+      }
       loadPrediction({ background: true }).then((started) => {
         // A fetch was already running: retry the rollover shortly, but
         // only while the prediction view is still open.
@@ -429,8 +452,11 @@
     predErr.textContent = '';
     predErr.className = 'err';
     // Countdown from the SERVER clock (endTime - serviceTime), not the
-    // client clock, so a wrong phone time cannot skew it.
-    predRemainingMs = new Date(d.next_period_at).getTime() - new Date(d.server_time).getTime();
+    // client clock, so a wrong phone time cannot skew it. Subtract the
+    // snapshot's age (the server reports it): a cached snapshot's
+    // server_time is from build time, and anchoring it at render time
+    // made the countdown run up to 5s late at a period boundary.
+    predRemainingMs = Math.max(0, new Date(d.next_period_at).getTime() - new Date(d.server_time).getTime() - (d.snapshot_age_ms || 0));
     predFetchedAt = Date.now();
     tickPredCountdown();
     if (predCountdownId) clearInterval(predCountdownId);
@@ -510,8 +536,11 @@
       // A background load with no data (e.g. auto-retry from the error
       // screen) keeps the current state and just fetches.
       if (!background) showPredState('pred-loading');
-    } else if (!$('#pred-open').hidden) {
-      // Good data on screen: keep it, note the refresh in place.
+    } else if (!background && !$('#pred-open').hidden) {
+      // Manual refresh only: the 10s background refresh used to flash
+      // "Updating…" on every tick, so a good screen flickered text
+      // for no reason. Background refreshes stay silent; a failure
+      // still notes itself in place below.
       errEl.textContent = 'Updating…';
       errEl.className = 'hint';
     }
@@ -525,7 +554,14 @@
       renderPrediction(d);
       showPredState('pred-open');
       predHasData = true;
-      loadAccuracy(timerAtLoad);
+      // The accuracy record only changes when a period settles: fetch
+      // it on a timer switch or at most once per 30s, not on every
+      // 10s signal refresh.
+      if (timerAtLoad !== predLastAccTimer || Date.now() - predLastAccAt >= 30000) {
+        predLastAccTimer = timerAtLoad;
+        predLastAccAt = Date.now();
+        loadAccuracy(timerAtLoad);
+      }
       armPredRefresh();
       return true;
     } catch (e) {

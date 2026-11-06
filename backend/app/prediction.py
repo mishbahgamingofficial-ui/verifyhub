@@ -508,7 +508,14 @@ def get_prediction(timer: str, provider=None) -> dict:
     key = (id(p), timer)
     entry = _prediction_snapshots.get(key)
     if entry and entry[0] > time.monotonic():
-        return copy.deepcopy(entry[1])
+        # Served from cache: tell the frontend how old this snapshot
+        # is, so its countdown can subtract the age. Without this the
+        # countdown ran up to 5s late at a period boundary — the
+        # snapshot's server_time is from build time, but the frontend
+        # anchored it at render time.
+        served = copy.deepcopy(entry[1])
+        served["snapshot_age_ms"] = int((time.monotonic() - entry[2]) * 1000)
+        return served
     current = p.fetch_current(timer)
     # Fetch the full pattern window (30) for predict(); the frontend
     # still only shows the last 10 (history[:10] below).
@@ -530,8 +537,10 @@ def get_prediction(timer: str, provider=None) -> dict:
         "signal": signal,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
-    _prediction_snapshots[key] = (time.monotonic() + _PREDICTION_SNAPSHOT_TTL_SECONDS, out)
-    return copy.deepcopy(out)
+    _prediction_snapshots[key] = (time.monotonic() + _PREDICTION_SNAPSHOT_TTL_SECONDS, out, time.monotonic())
+    served = copy.deepcopy(out)
+    served["snapshot_age_ms"] = 0
+    return served
 
 
 # ---------------- live ticker (public, real data only) ----------------
