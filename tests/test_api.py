@@ -259,17 +259,21 @@ def test_main_keyboard_is_colourful_and_complete():
         EMOJI_CHART,
         EMOJI_CROWN,
         EMOJI_DIAMOND,
-        EMOJI_THINKING,
         _keyboard,
     )
 
     buttons = [b for row in _keyboard().inline_keyboard for b in row]
     rows = _keyboard().inline_keyboard
-    assert [len(r) for r in rows] == [1, 2, 2, 4]  # panel / status+predictions / signal+submit / profile+stats+help+lang
+    # Only the top actions stay inline (panel / status+predictions) —
+    # the everyday tools (Signal Hub, Submit UID, Profile, Stats, Help,
+    # language) moved to the persistent reply keyboard below.
+    assert [len(r) for r in rows] == [1, 2]
     assert rows[0][0].text == "Open Verification Panel"
     assert [b.text for b in rows[1]] == ["Check My Status", "Open Predictions"]
-    assert [b.text for b in rows[2]] == ["🎯 Signal Hub", "🚀 Submit UID"]
-    assert [b.text for b in rows[3]] == ["👤 Profile", "📈 Stats", "Help", "🇬🇧 EN"]
+    # Every inline button is premium-only: a custom emoji icon and no
+    # Unicode emoji in the label (no doubled icons).
+    assert all(b.icon_custom_emoji_id for b in buttons)
+    assert all("🎯" not in b.text and "🚀" not in b.text and "👤" not in b.text for b in buttons)
     # No admin row anywhere in the menu: the admin panel lives only in
     # the reply keyboard, never as an inline button.
     assert all(b.text != "🛡 Admin Panel" for row in rows for b in row)
@@ -280,7 +284,6 @@ def test_main_keyboard_is_colourful_and_complete():
     assert by_text["Check My Status"].style == "success"
     assert by_text["Check My Status"].icon_custom_emoji_id == EMOJI_CHART
     assert by_text["Open Predictions"].icon_custom_emoji_id == EMOJI_DIAMOND
-    assert by_text["Help"].icon_custom_emoji_id == EMOJI_THINKING
     assert sum(1 for b in buttons if b.style is not None) <= 2
     # The style field serialises into the Bot API payload.
     assert by_text["Open Verification Panel"].to_dict()["style"] == "primary"
@@ -322,7 +325,7 @@ def test_welcome_and_help_texts_use_premium_emojis():
     assert "VerifyHub — ek baar, ek faisla." in text
     assert "Apna UID panel se ya seedha chat mein bhejo" in text
     customs = {e.custom_emoji_id for e in entities if e.type == "custom_emoji"}
-    assert customs == {EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP}
+    assert customs == {EMOJI_CROWN, EMOJI_CHECK, EMOJI_TARGET, EMOJI_CHART_UP}
 
     text, entities = _help_text()
     assert "VerifyHub — Kaise Kaam Karta Hai" in text
@@ -834,23 +837,43 @@ def test_start_shows_dashboard_to_admin():
 
     update, context, message = _fake_update(USER_ID)
     asyncio.run(start(update, context))
-    assert message.reply_text.await_count == 1
-    assert "VerifyHub" in message.reply_text.await_args.args[0]
+    # Users get two messages: welcome + inline menu, then the keyboard
+    # note with the everyday tools in the keyboard area.
+    assert message.reply_text.await_count == 2
+    assert "VerifyHub" in message.reply_text.await_args_list[0].args[0]
+    user_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
+    assert isinstance(user_kb, ReplyKeyboardMarkup)
+    assert [b.text for row in user_kb.keyboard for b in row] == [
+        "🎯 Signal Hub", "🚀 Submit UID",
+        "👤 Profile", "📈 Stats",
+        "Help", "🇬🇧 EN",
+    ]
 
 
 def test_admin_keyboard_has_panel_button_only_for_admin():
     """The main menu has no admin row for anyone — the panel lives only
-    in the reply keyboard. Admins never see the inline menu at all."""
-    from app.bot import _admin_reply_keyboard, _keyboard
+    in the reply keyboard. Admins never see the inline menu at all.
+    The user's everyday tools live in their own reply keyboard."""
+    from app.bot import _admin_reply_keyboard, _keyboard, _user_reply_keyboard
 
     rows = _keyboard().inline_keyboard
-    assert [len(r) for r in rows] == [1, 2, 2, 4]
+    assert [len(r) for r in rows] == [1, 2]
     assert all(b.text != "🛡 Admin Panel" for row in rows for b in row)
     assert all(b.callback_data != "__admin__" for row in rows for b in row)
     # ...and the keyboard area is where the panel actually lives.
     kb = _admin_reply_keyboard()
     labels = [b.text for row in kb.keyboard for b in row]
     assert "🛡 Admin Panel" in labels
+    # The moved user tools live in the user keyboard, not the menu.
+    user_kb = _user_reply_keyboard()
+    user_labels = [b.text for row in user_kb.keyboard for b in row]
+    assert user_labels == [
+        "🎯 Signal Hub", "🚀 Submit UID",
+        "👤 Profile", "📈 Stats",
+        "Help", "🇬🇧 EN",
+    ]
+    assert all(b.text not in ("🎯 Signal Hub", "🚀 Submit UID", "👤 Profile", "📈 Stats")
+                for row in rows for b in row)
 
 
 def test_admin_reply_keyboard_is_organised():
@@ -879,7 +902,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     help_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in help_kb.inline_keyboard] == [
-        ["📊 Live Stats", "💬 Contact Admin"],
+        ["Live Stats", "💬 Contact Admin"],
         ["⬅️ Main Menu"],
     ]
 
@@ -887,7 +910,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     status_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in status_kb.inline_keyboard] == [
-        ["🔄 Refresh Status", "🎯 Signal Hub"],
+        ["Refresh Status", "Signal Hub"],
         ["⬅️ Main Menu"],
     ]
 
@@ -895,7 +918,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in stats_kb.inline_keyboard] == [
-        ["🔄 Refresh Stats"],
+        ["Refresh Stats"],
         ["⬅️ Main Menu"],
     ]
 
@@ -904,7 +927,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     asyncio.run(_button(update, None))
     admin_stats_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in admin_stats_kb.inline_keyboard] == [
-        ["🔄 Refresh Stats"],
+        ["Refresh Stats"],
         ["⬅️ Admin Panel"],
     ]
 
@@ -933,6 +956,65 @@ def test_admin_keyboard_buttons_open_the_right_views():
     message.text = "🛡 Admin Panel"
     asyncio.run(_handle_text(update, context))
     assert "Use the buttons below" in message.reply_text.await_args.args[0]
+
+
+def test_user_keyboard_labels_open_their_views(monkeypatch):
+    """The user's reply-keyboard buttons arrive as plain text and open
+    the same views as the old inline buttons did."""
+    import asyncio
+
+    from app.bot import _get_lang, _handle_text
+    from app.prediction import ProviderError
+
+    def _must_not_fetch(timer, provider=None):
+        raise AssertionError("locked card must not fetch a signal")
+
+    monkeypatch.setattr("app.bot.get_prediction", _must_not_fetch)
+    monkeypatch.setattr(
+        "app.bot.get_live",
+        lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
+    )
+
+    # Signal Hub (locked for this user) and Submit UID prompt.
+    update, context, message = _fake_update(USER_ID)
+    message.text = "🎯 Signal Hub"
+    asyncio.run(_handle_text(update, context))
+    assert "Verified Members Only" in message.reply_text.await_args.args[0]
+
+    update, context, message = _fake_update(USER_ID)
+    message.text = "🚀 Submit UID"
+    asyncio.run(_handle_text(update, context))
+    assert "Quick UID Submission" in message.reply_text.await_args.args[0]
+    assert context.user_data.get("awaiting") == "submit_uid"
+
+    # Profile, Stats and Help.
+    for label, needle in [
+        ("👤 Profile", "Member Profile"),
+        ("📈 Stats", "Live Stats"),
+        ("Help", "Kaise Kaam Karta Hai"),
+    ]:
+        update, context, message = _fake_update(USER_ID)
+        message.text = label
+        asyncio.run(_handle_text(update, context))
+        assert needle in message.reply_text.await_args.args[0], label
+
+    # Language toggle flips the language and re-sends the keyboard
+    # with the opposite label.
+    lang_before = _get_lang(USER_ID)
+    label = "🇬🇧 EN" if lang_before == "hi" else "🇮🇳 HI"
+    update, context, message = _fake_update(USER_ID)
+    message.text = label
+    asyncio.run(_handle_text(update, context))
+    assert _get_lang(USER_ID) != lang_before
+    assert message.reply_text.await_count == 2
+    new_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
+    new_labels = [b.text for row in new_kb.keyboard for b in row]
+    assert ("🇮🇳 HI" in new_labels) if lang_before == "hi" else ("🇬🇧 EN" in new_labels)
+    # Leave the language as we found it for the tests after this one.
+    from app.bot import _toggle_lang
+
+    _toggle_lang(USER_ID)
+    assert _get_lang(USER_ID) == lang_before
 
 
 def test_search_by_telegram_id_does_not_overflow():
@@ -1176,13 +1258,14 @@ def test_rate_limit_ignores_rapid_repeats():
     assert handlers._too_fast(4242) is False
     assert handlers._too_fast(4242) is True
     assert handlers._too_fast(4343) is False
-    # /start twice in a row: the second is dropped.
+    # /start twice in a row: the second is dropped. (A user /start sends
+    # two messages — welcome + keyboard note — so the count is 2, not 1.)
     handlers._last_action.clear()
     update, context, message = _fake_update(4242)
     asyncio.run(handlers.start(update, context))
-    assert message.reply_text.await_count == 1
+    assert message.reply_text.await_count == 2
     asyncio.run(handlers.start(update, context))
-    assert message.reply_text.await_count == 1
+    assert message.reply_text.await_count == 2
 
 
 def test_error_handler_alerts_admin_once_per_window():
@@ -1351,7 +1434,7 @@ def test_signal_hub_shows_live_pick_for_verified(monkeypatch):
     text, _entities, kb = _signal_preview_card(USER_ID, timer="1m")
     assert "Signal Hub — WinGo 1M" in text
     assert "Active Period (1m):" in text and "…061234" in text
-    assert "⏳ 30s left" in text
+    assert "30s left" in text
     assert "Live Signal:" in text and "BIG · RED" in text
     assert "(medium)" in text and "Big leading 11-9" in text
     # The shown signal is recorded for the accuracy tracker, first wins.

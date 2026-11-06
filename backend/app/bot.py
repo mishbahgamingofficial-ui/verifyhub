@@ -453,7 +453,8 @@ def _welcome_text(
     if lang == "en":
         greeting = f"Welcome, {first_name}! " if first_name else ""
         segments = [
-            ("🔥 ", None),
+            ("👑", ("custom", EMOJI_CROWN)),
+            (" ", None),
             (f"{greeting}VerifyHub — one UID, one decision.", "bold"),
             ("\n\n", None),
             ("✅", ("custom", EMOJI_CHECK)),
@@ -477,7 +478,8 @@ def _welcome_text(
 
     greeting = f"Namaste {first_name}! " if first_name else ""
     segments = [
-        ("🔥 ", None),
+        ("👑", ("custom", EMOJI_CROWN)),
+        (" ", None),
         (f"{greeting}VerifyHub — ek baar, ek faisla.", "bold"),
         ("\n\n", None),
         ("✅", ("custom", EMOJI_CHECK)),
@@ -518,7 +520,7 @@ def _help_text(admin: bool = False, lang: str = "hi"):
         ("Verified", "bold"),
         (" = approved by an admin. Not a guarantee of recovery, and not provider-confirmed.", None),
         ("\nVerified users unlock the Prediction Mini App and the Signal Hub (WinGo 30s & 1m).", None),
-        ("\n\n🔒 We never ask for passwords, OTPs, or recovery phrases.", None),
+        ("\n\nWe never ask for passwords, OTPs, or recovery phrases.", None),
         ("\n\n", None),
         ("Your tools", "bold"),
         ("\n• Verification Panel — the full Mini App", None),
@@ -530,7 +532,7 @@ def _help_text(admin: bool = False, lang: str = "hi"):
     if admin:
         segments += [
             ("\n\n", None),
-            ("🛡 Admin Panel", "bold"),
+            ("Admin Panel", "bold"),
             ("\n• Pending Queue — one-tap approve / reject / info, presets & bulk approve", None),
             ("\n• Search — any UID, Telegram ID, or #SubmissionID", None),
             ("\n• Analytics — 7-day trend, funnel & turnaround", None),
@@ -678,49 +680,36 @@ def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     else:
         middle.append(
             InlineKeyboardButton(
-                "🚀 Quick Submit UID",
+                "Quick Submit UID",
                 callback_data="__submit_uid__",
                 icon_custom_emoji_id=EMOJI_CHECK,
             )
         )
     rows.append(middle)
-
-    rows.append([
-        InlineKeyboardButton(
-            "🎯 Signal Hub",
-            callback_data="__signal__:1m",
-            icon_custom_emoji_id=EMOJI_TARGET,
-        ),
-        InlineKeyboardButton(
-            "🚀 Submit UID",
-            callback_data="__submit_uid__",
-            icon_custom_emoji_id=EMOJI_CHECK,
-        ),
-    ])
-
-    lang_label = "🇬🇧 EN" if lang == "hi" else "🇮🇳 HI"
-    rows.append([
-        InlineKeyboardButton(
-            "👤 Profile",
-            callback_data="__profile__",
-            icon_custom_emoji_id=EMOJI_CROWN,
-        ),
-        InlineKeyboardButton(
-            "📈 Stats",
-            callback_data="__stats__",
-            icon_custom_emoji_id=EMOJI_CHART_UP,
-        ),
-        InlineKeyboardButton(
-            "Help",
-            callback_data="__help__",
-            icon_custom_emoji_id=EMOJI_THINKING,
-        ),
-        InlineKeyboardButton(
-            lang_label,
-            callback_data="__lang__",
-        ),
-    ])
     return InlineKeyboardMarkup(rows)
+
+
+def _user_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
+    """The user's everyday tools, in the keyboard area next to the message
+    box — Signal Hub, Submit UID, Profile, Stats, Help and the language
+    toggle. The top actions (Panel, Status, Predictions) stay as inline
+    buttons under the welcome message.
+
+    NOTE: reply-keyboard buttons are plain text — Telegram does not let
+    them carry premium custom emojis, so these labels keep their simple
+    Unicode icons. The inline buttons are premium-only (no Unicode
+    emoji next to a custom icon)."""
+    lang = _get_lang(user_id) if user_id else "hi"
+    lang_label = "🇬🇧 EN" if lang == "hi" else "🇮🇳 HI"
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🎯 Signal Hub"), KeyboardButton("🚀 Submit UID")],
+            [KeyboardButton("👤 Profile"), KeyboardButton("📈 Stats")],
+            [KeyboardButton("Help"), KeyboardButton(lang_label)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
 
 
 def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -895,8 +884,15 @@ def _status_card(
 
     label = STATUS_LABELS.get(status, status)
     icon = STATUS_ICONS.get(status, "🔔")
-    segments = header + [
-        (f"\n\nStatus: {icon} ", None),
+    segments = header + [(f"\n\nStatus: ", None)]
+    if status == "verified":
+        # The verified tick is a premium custom emoji, not the Unicode ✅
+        # the other statuses use (no custom version exists for those).
+        segments.append(("✅", ("custom", EMOJI_CHECK)))
+        segments.append((" ", None))
+    else:
+        segments.append((f"{icon} ", None))
+    segments += [
         (label, "bold"),
         (f"\nProgress: {_progress_bar(status)}", None),
         ("\nSubmission: ", None),
@@ -989,8 +985,8 @@ def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool =
     text, entities = _render(segments)
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🚀 Submit / Update UID", callback_data="__submit_uid__", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton("📊 Status Card", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
+            InlineKeyboardButton("Submit / Update UID", callback_data="__submit_uid__", icon_custom_emoji_id=EMOJI_CHECK),
+            InlineKeyboardButton("Status Card", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
         ],
         [
             InlineKeyboardButton("💬 Contact Admin / Appeal", callback_data="__support__"),
@@ -1196,7 +1192,7 @@ def _signal_preview_card(
         ]
         text, entities = _render(segments)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Submit UID", callback_data="__submit_uid__", icon_custom_emoji_id=EMOJI_CHECK)],
+            [InlineKeyboardButton("Submit UID", callback_data="__submit_uid__", icon_custom_emoji_id=EMOJI_CHECK)],
             [_back_button(admin)],
         ])
         return text, entities, kb
@@ -1242,7 +1238,7 @@ def _signal_preview_card(
         segments += [
             (f"Active Period ({timer}): ", "bold"),
             (f"…{current_period[-6:] if len(current_period) >= 6 else current_period}", "code"),
-            (f"  ·  ⏳ {ends_in}s left\n", None),
+            (f"  ·  {ends_in}s left\n", None),
         ]
         if sig:
             segments += [
@@ -1264,15 +1260,17 @@ def _signal_preview_card(
 
     if active_stats["total"] > 0:
         streak_str = (
-            f"🔥 {active_stats['streak_count']}W Streak"
+            f"{active_stats['streak_count']}W Streak"
             if active_stats["streak_win"]
-            else f"⚠️ {active_stats['streak_count']}L"
+            else f"{active_stats['streak_count']}L Streak"
         )
         segments += [
-            (f"\n📊 {timer.upper()} Performance:", "bold"),
+            ("\n", None),
+            ("📊", ("custom", EMOJI_CHART)),
+            (f" {timer.upper()} Performance:", "bold"),
             (f"\n• All-Time Win Rate: {active_stats['acc']}% ({active_stats['wins']}/{active_stats['total']})", None),
             (f"\n• Last 20 Form: [{_confidence_meter(active_stats['acc_20'])}] {active_stats['acc_20']}%", None),
-            (f"\n• Current Streak: {streak_str}  ·  Best Streak: 🏆 {active_stats['best_win_streak']}W", None),
+            (f"\n• Current Streak: {streak_str}  ·  Best Streak: {active_stats['best_win_streak']}W", None),
             (f"\n• Last 10 Tape: {active_stats['tape']}", None),
         ]
     else:
@@ -1282,10 +1280,10 @@ def _signal_preview_card(
     other_stats = s30 if timer == "1m" else s1
     if other_stats["total"] > 0:
         segments.append(
-            (f"\n\n⚡ {other_timer.upper()} Summary: {other_stats['acc']}% ({other_stats['wins']}/{other_stats['total']} settled)", None)
+            (f"\n\n{other_timer.upper()} Summary: {other_stats['acc']}% ({other_stats['wins']}/{other_stats['total']} settled)", None)
         )
 
-    segments.append(("\n\n⚠️ Signals are statistical estimates — play responsibly, never a guarantee.", "italic"))
+    segments.append(("\n\nSignals are statistical estimates — play responsibly, never a guarantee.", "italic"))
     text, entities = _render(segments)
 
     btn_rows = []
@@ -1312,7 +1310,7 @@ def _signal_preview_card(
         ),
     ])
     btn_rows.append([
-        InlineKeyboardButton("🔄 Refresh Live Feed", callback_data=f"__signal__:{timer}", icon_custom_emoji_id=EMOJI_TARGET),
+        InlineKeyboardButton("Refresh Live Feed", callback_data=f"__signal__:{timer}", icon_custom_emoji_id=EMOJI_TARGET),
         _back_button(admin),
     ])
     return text, entities, InlineKeyboardMarkup(btn_rows)
@@ -1341,7 +1339,7 @@ def _admin_dashboard() -> tuple[str, list]:
     active_wait = counts.get("pending_review", 0) + counts.get("under_review", 0)
 
     segments = [
-        ("🛡", None),
+        ("👑", ("custom", EMOJI_CROWN)),
         (" ", None),
         ("Admin Panel", "bold"),
         ("\n\n", None),
@@ -1805,6 +1803,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         entities=entities,
         reply_markup=_keyboard(user_id=user_id),
     )
+    # The everyday tools live in the keyboard area, so they need their
+    # own message — one message can carry either an inline keyboard or
+    # a reply keyboard, never both.
+    await update.message.reply_text(
+        "Neeche wale buttons 👇 — Signal Hub, Submit UID, Profile, Stats, Help.",
+        reply_markup=_user_reply_keyboard(user_id),
+    )
 
 
 def _stats_text(telegram_id: int) -> tuple[str, list]:
@@ -1836,16 +1841,24 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         (f"Verified {verified}  ·  Today +{verified_today}  ·  Queue {pending}", None),
     ]
     if s1["total"]:
-        segments.append((
-            f"\n\n🎯 Signals (1m): {s1['acc']}% ({s1['wins']}/{s1['total']}) · Best streak {s1['best_win_streak']}W"
-            f"\nTape: {s1['tape']}",
-            None,
-        ))
+        segments += [
+            ("\n\n", None),
+            ("🎯", ("custom", EMOJI_TARGET)),
+            (
+                f" Signals (1m): {s1['acc']}% ({s1['wins']}/{s1['total']}) · Best streak {s1['best_win_streak']}W"
+                f"\nTape: {s1['tape']}",
+                None,
+            ),
+        ]
     else:
-        segments.append(("\n\n🎯 Signals (1m): no settled signals yet.", None))
+        segments += [
+            ("\n\n", None),
+            ("🎯", ("custom", EMOJI_TARGET)),
+            (" Signals (1m): no settled signals yet.", None),
+        ]
     if s30["total"]:
         segments.append((
-            f"\n⚡ Signals (30s): {s30['acc']}% ({s30['wins']}/{s30['total']}) · Best streak {s30['best_win_streak']}W",
+            f"\nSignals (30s): {s30['acc']}% ({s30['wins']}/{s30['total']}) · Best streak {s30['best_win_streak']}W",
             None,
         ))
     try:
@@ -1937,6 +1950,70 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 caption=f"📥 Exported {count} submissions ({stamp} UTC).",
             )
             return
+
+    # The user's everyday tools are reply-keyboard buttons, so tapping
+    # one arrives here as plain text — same pattern as the admin panel.
+    # Each opens its view; the keyboard itself stays on screen.
+    if text == "🎯 Signal Hub":
+        context.user_data.pop("awaiting", None)
+        sig_text, sig_entities, sig_kb = _signal_preview_card(user_id, admin=admin, timer="1m")
+        await update.message.reply_text(sig_text, entities=sig_entities, reply_markup=sig_kb)
+        return
+    if text == "🚀 Submit UID":
+        context.user_data.pop("awaiting", None)
+        context.user_data["awaiting"] = "submit_uid"
+        ptext, pentities = _render([
+            ("✅", ("custom", EMOJI_CHECK)),
+            (" ", None),
+            ("Quick UID Submission", "bold"),
+            ("\n\nSend your Registration UID right now as a message (6–64 characters, letters, numbers, dash or underscore).", None),
+            ("\n\nTip: Copy your exact UID from your account profile page on the official site.", "italic"),
+        ])
+        await update.message.reply_text(
+            ptext, entities=pentities,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel", callback_data="__home__")]]),
+        )
+        return
+    if text == "👤 Profile":
+        context.user_data.pop("awaiting", None)
+        prof_text, prof_entities, prof_kb = _profile_card(
+            user_id, first_name=update.effective_user.first_name, admin=admin
+        )
+        await update.message.reply_text(prof_text, entities=prof_entities, reply_markup=prof_kb)
+        return
+    if text == "📈 Stats":
+        context.user_data.pop("awaiting", None)
+        stext, sentities = _stats_text(user_id)
+        await update.message.reply_text(stext, entities=sentities)
+        return
+    if text == "Help":
+        context.user_data.pop("awaiting", None)
+        htext, hentities = _help_text(admin=admin, lang=_get_lang(user_id))
+        help_rows = [
+            [
+                InlineKeyboardButton("Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
+                InlineKeyboardButton("💬 Contact Admin", callback_data="__support__"),
+            ],
+            [_back_button(admin)],
+        ]
+        await update.message.reply_text(htext, entities=hentities, reply_markup=InlineKeyboardMarkup(help_rows))
+        return
+    if text in ("🇬🇧 EN", "🇮🇳 HI"):
+        context.user_data.pop("awaiting", None)
+        new_lang = _toggle_lang(user_id)
+        wtext, wentities = _welcome_text(
+            first_name=update.effective_user.first_name,
+            verified=_is_user_verified(user_id),
+            lang=new_lang,
+        )
+        await update.message.reply_text(
+            wtext, entities=wentities, reply_markup=_keyboard(user_id=user_id)
+        )
+        await update.message.reply_text(
+            "Neeche wale buttons 👇 — Signal Hub, Submit UID, Profile, Stats, Help.",
+            reply_markup=_user_reply_keyboard(user_id),
+        )
+        return
 
     awaiting = context.user_data.get("awaiting")
 
@@ -2211,7 +2288,8 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data == "__submit_uid__":
         context.user_data["awaiting"] = "submit_uid"
         segments = [
-            ("🚀 ", None),
+            ("✅", ("custom", EMOJI_CHECK)),
+            (" ", None),
             ("Quick UID Submission", "bold"),
             ("\n\nSend your Registration UID right now as a message (6–64 characters, letters, numbers, dash or underscore).", None),
             ("\n\nTip: Copy your exact UID from your account profile page on the official site.", "italic"),
@@ -2249,7 +2327,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # buttons down and made every screen look different.
         help_rows = [
             [
-                InlineKeyboardButton("📊 Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
+                InlineKeyboardButton("Live Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART),
                 InlineKeyboardButton("💬 Contact Admin", callback_data="__support__"),
             ],
             [_back_button(admin)],
@@ -2259,7 +2337,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data == "__stats__":
         text, entities = _stats_text(admin_id)
         stats_rows = [
-            [InlineKeyboardButton("🔄 Refresh Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)],
+            [InlineKeyboardButton("Refresh Stats", callback_data="__stats__", icon_custom_emoji_id=EMOJI_CHART)],
             [_back_button(admin)],
         ]
         await _edit_or_reply(query, text, entities=entities, reply_markup=InlineKeyboardMarkup(stats_rows))
@@ -2278,8 +2356,8 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Same leaf-screen rule as Help: own actions + Back, no repeated menu.
         status_kb_rows = [
             [
-                InlineKeyboardButton("🔄 Refresh Status", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
-                InlineKeyboardButton("🎯 Signal Hub", callback_data="__signal__:1m", icon_custom_emoji_id=EMOJI_TARGET),
+                InlineKeyboardButton("Refresh Status", callback_data="__status__", icon_custom_emoji_id=EMOJI_CHART),
+                InlineKeyboardButton("Signal Hub", callback_data="__signal__:1m", icon_custom_emoji_id=EMOJI_TARGET),
             ],
             [_back_button(admin)],
         ]
