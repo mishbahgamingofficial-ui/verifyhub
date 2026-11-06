@@ -367,6 +367,39 @@ def test_combine_texts_shifts_tail_entities():
     assert customs == [(0, 1), (9, 1)]
 
 
+def test_status_icons_are_all_premium_now():
+    from telegram import MessageEntity
+
+    from app.bot import _render, _status_icon_segments
+
+    for status in (
+        "verified",
+        "pending_review",
+        "under_review",
+        "rejected",
+        "info_required",
+        "not_submitted",
+    ):
+        _text, entities = _render(_status_icon_segments(status))
+        customs = [e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+        assert len(customs) == 1, status
+
+
+def test_tier_segments_use_premium_icons():
+    from telegram import MessageEntity
+
+    from app.bot import EMOJI_GOLD, _render, _tier_segments
+
+    text, entities = _render(_tier_segments("🥇 Gold Verified"))
+    assert text == "🥇 Gold Verified"
+    customs = {e.custom_emoji_id for e in entities if e.type == MessageEntity.CUSTOM_EMOJI}
+    assert customs == {EMOJI_GOLD}
+    # 🌱 has no premium version in any of his 23 sets — stays plain.
+    text, entities = _render(_tier_segments("🌱 New Member"))
+    assert text == "🌱 New Member"
+    assert not [e for e in entities if e.type == MessageEntity.CUSTOM_EMOJI]
+
+
 def test_status_card_uses_entities_not_html():
     from datetime import datetime, timezone
 
@@ -942,7 +975,7 @@ def test_admin_keyboard_buttons_open_the_right_views():
     help_kb = query.edit_message_text.await_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in help_kb.inline_keyboard] == [
         ["Live Stats", "Admin se Sampark"],
-        ["⬅️ Main Menu"],
+        ["Main Menu"],
     ]
 
     update, query, message = _fake_query(USER_ID, "__status__")

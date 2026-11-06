@@ -82,6 +82,30 @@ EMOJI_GLOBE = "6055235126592282879"      # 🌐 from emoji_H_M_by_TgEmodziBot
 EMOJI_POINT_DOWN = "6055178175325936442"  # 👇 from emoji_H_M_by_TgEmodziBot
 EMOJI_STAR = "6055620720166182154"       # ⭐ from emoji_H_M_by_TgEmodziBot
 EMOJI_WRITE = "5197269100878907942"      # ✍️ from FinanceEmoji
+# Second wave — resolved from the 20 new sets (2026-11-06), each ID
+# verified individually with getCustomEmojiStickers.
+EMOJI_CROSS = "5210952531676504517"       # ❌ from NewsEmoji
+EMOJI_INFO = "5334544901428229844"        # ℹ️ from NewsEmoji
+EMOJI_HOURGLASS = "5319190934510904031"   # ⏳ from Decoration_Pack2
+EMOJI_SEARCH = "5206473031110631274"      # 🔎 from IslomjonAnimeEmoji
+EMOJI_MAGNIFIER = "5319230516929502602"   # 🔍 from Decoration_Pack2
+EMOJI_WHITE_CIRCLE = "5418106131576789858"  # ⚪ from IslomjonAnimeEmoji
+EMOJI_PLUS = "5319293665833656034"        # ➕ from Decoration_Pack2
+EMOJI_BELL = "5458603043203327669"        # 🔔 from NewsEmoji
+EMOJI_WARNING = "5314346928660554905"     # ⚠️ from Decoration_Pack2
+EMOJI_NEW = "5317044902561849319"         # 🆕 from Decoration_Pack2
+EMOJI_MEGAPHONE = "5424818078833715060"   # 📣 from NewsEmoji
+EMOJI_PAGE = "5384280979198195486"        # 📄 from UxPostTools
+EMOJI_PIN = "5397782960512444700"         # 📌 from NewsEmoji
+EMOJI_PEOPLE = "5453957997418004470"      # 👥 from GameEmoji
+EMOJI_REFRESH = "5375338737028841420"     # 🔄 from NewsEmoji
+EMOJI_TROPHY = "5316979941181496594"      # 🏆 from Decoration_Pack2
+EMOJI_GOLD = "5440539497383087970"        # 🥇 from NewsEmoji
+EMOJI_SILVER = "5447203607294265305"      # 🥈 from NewsEmoji
+EMOJI_LEFT = "5316820778283442341"        # ⬅️ from Decoration_Pack2
+EMOJI_RIGHT = "5314651154079032181"       # ➡️ from Decoration_Pack2
+EMOJI_MAIL = "5316899676832670505"        # 📩 from Decoration_Pack2
+# Still no premium version in any of his 23 sets: ✖️ ↩️ 📋 🔁 📅 🌱.
 
 logger = logging.getLogger("verifyhub.bot")
 _notif_logger = logging.getLogger("verifyhub.notifications")
@@ -311,22 +335,26 @@ async def notify_admins(
         return 0
     who = f"@{username}" if username else (first_name or str(user_telegram_id))
     when = submitted_at.strftime("%Y-%m-%d %H:%M UTC") if submitted_at else "—"
-    text = (
-        f"🆕 Nayi submission #{submission_id}\n\n"
-        f"UID: {registration_uid}\n"
-        f"User: {who} ({user_telegram_id})\n"
-        f"Bheji gayi: {when}\n\n"
-        "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho."
-    )
+    text, text_entities = _render([
+        ("🆕", ("custom", EMOJI_NEW)),
+        (
+            f" Nayi submission #{submission_id}\n\n"
+            f"UID: {registration_uid}\n"
+            f"User: {who} ({user_telegram_id})\n"
+            f"Bheji gayi: {when}\n\n"
+            "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho.",
+            None,
+        ),
+    ])
     keyboard = {
         "inline_keyboard": [
             [
                 {"text": "Approve", "callback_data": f"admin:approve:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CHECK},
-                {"text": "❌ Reject", "callback_data": f"admin:reject:{submission_id}:n"},
-                {"text": "ℹ️ Info Chahiye", "callback_data": f"admin:info:{submission_id}:n"},
+                {"text": "Reject", "callback_data": f"admin:reject:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CROSS},
+                {"text": "Info Chahiye", "callback_data": f"admin:info:{submission_id}:n", "icon_custom_emoji_id": EMOJI_INFO},
             ],
             [
-                {"text": "🔎 Review Me", "callback_data": f"admin:review:{submission_id}:n"},
+                {"text": "Review Me", "callback_data": f"admin:review:{submission_id}:n", "icon_custom_emoji_id": EMOJI_SEARCH},
                 {"text": "Presets / Note", "callback_data": f"admin:view:{submission_id}", "icon_custom_emoji_id": EMOJI_LIGHTNING},
                 {"text": "↩️ User ko Message", "callback_data": f"admin:reply:{user_telegram_id}"},
             ],
@@ -341,7 +369,7 @@ async def notify_admins(
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             for admin_id in dict.fromkeys(admin_ids):
-                payload: dict = {"chat_id": admin_id, "text": text, "reply_markup": keyboard}
+                payload: dict = {"chat_id": admin_id, "text": text, "entities": [e.to_dict() for e in text_entities], "reply_markup": keyboard}
                 try:
                     if await _post_telegram_json(client, url, payload):
                         sent += 1
@@ -406,10 +434,11 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     _last_error_alert = now
     try:
         for admin_id in settings.admin_telegram_ids:
-            await context.bot.send_message(
-                admin_id,
-                f"⚠️ VerifyHub bot error: {type(context.error).__name__}: {context.error}",
-            )
+            err_text, err_entities = _render([
+                ("⚠️", ("custom", EMOJI_WARNING)),
+                (f" VerifyHub bot error: {type(context.error).__name__}: {context.error}", None),
+            ])
+            await context.bot.send_message(admin_id, err_text, entities=err_entities)
     except Exception:
         logger.debug("Could not alert admin about the bot error.", exc_info=True)
 
@@ -657,7 +686,29 @@ _BADGE_EMOJI = {
     "✅": EMOJI_CHECK,
     "⚡": EMOJI_LIGHTNING,
     "⭐": EMOJI_STAR,
+    "🏆": EMOJI_TROPHY,
 }
+
+
+# VIP tier leading icons that have a premium custom emoji (🌱 has none).
+_TIER_EMOJI = {
+    "👑": EMOJI_CROWN,
+    "💎": EMOJI_DIAMOND,
+    "🥇": EMOJI_GOLD,
+    "🥈": EMOJI_SILVER,
+}
+
+
+def _tier_segments(tier: str) -> list:
+    """A VIP tier string (e.g. '🥇 Gold Verified') as _render segments —
+    premium icon where one exists, plain otherwise."""
+    if not tier:
+        return []
+    first, _, rest = tier.partition(" ")
+    custom = _TIER_EMOJI.get(first)
+    if custom:
+        return [(first, ("custom", custom)), (f" {rest}" if rest else "", None)]
+    return [(tier, None)]
 
 
 def _badge_segments(badges: list[str]) -> list:
@@ -778,8 +829,8 @@ def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
 def _back_button(admin: bool) -> InlineKeyboardButton:
     """Leaf screens go back to the admin's panel or the user's menu —
     one button, never a repeated copy of the whole menu."""
-    label = "⬅️ Admin Panel" if admin else "⬅️ Main Menu"
-    return InlineKeyboardButton(label, callback_data="__home__")
+    label = "Admin Panel" if admin else "Main Menu"
+    return InlineKeyboardButton(label, callback_data="__home__", icon_custom_emoji_id=EMOJI_LEFT)
 
 
 def _broadcast_targets(mode: str | bool) -> list[int]:
@@ -906,22 +957,27 @@ def _progress_bar(status: str) -> str:
 
 
 def _progress_segments(status: str) -> list:
-    """Progress line as _render segments: the verified ✅ is a premium
-    custom emoji; the rejected ❌ stays Unicode (no premium ❌ exists)."""
+    """Progress line as _render segments: verified ✅ and rejected ❌ are
+    both premium custom emojis now."""
     segments = [("\nProgress: ", None), (_progress_bar(status), None)]
     if status == "verified":
         segments.append((" ", None))
         segments.append(("✅", ("custom", EMOJI_CHECK)))
     elif status == "rejected":
-        segments.append((" ❌", None))
+        segments.append((" ", None))
+        segments.append(("❌", ("custom", EMOJI_CROSS)))
     return segments
 
 
-# Status icons that have a premium custom emoji. The rest (⏳ ❌ ℹ️ 🔎 ⚪)
-# stay Unicode until the 20 new emoji sets are resolved — then they join
-# this map and every status line upgrades without touching the callers.
+# Status icons that have a premium custom emoji. Every status now has
+# one — the 20 new sets filled the gaps (⏳ 🔎 ❌ ℹ️ ⚪).
 _STATUS_ICON_EMOJI = {
     "verified": EMOJI_CHECK,
+    "pending_review": EMOJI_HOURGLASS,
+    "under_review": EMOJI_SEARCH,
+    "rejected": EMOJI_CROSS,
+    "info_required": EMOJI_INFO,
+    "not_submitted": EMOJI_WHITE_CIRCLE,
 }
 
 
@@ -1045,7 +1101,7 @@ def _profile_card(telegram_id: int, first_name: str | None = None, admin: bool =
         (f"Member Profile — {first_name or telegram_id}", "bold"),
         ("\n\n", None),
         ("Tier: ", "bold"),
-        (tier, None),
+    ] + _tier_segments(tier) + [
         ("\n", None),
         ("Telegram ID: ", "bold"),
         (str(telegram_id), "code"),
@@ -1319,7 +1375,7 @@ def _admin_analytics_view() -> tuple[str, list, InlineKeyboardMarkup]:
             InlineKeyboardButton("Users CSV", callback_data="admin:export_users", icon_custom_emoji_id=EMOJI_INBOX),
         ],
         [
-            InlineKeyboardButton("🔄 Analytics Refresh Karo", callback_data="admin:analytics"),
+            InlineKeyboardButton("Analytics Refresh Karo", callback_data="admin:analytics", icon_custom_emoji_id=EMOJI_REFRESH),
         ],
     ])
     return text, entities, kb
@@ -1330,7 +1386,7 @@ def _admins_view() -> tuple[str, list, InlineKeyboardMarkup]:
     with _db_session() as db:
         rows = list_db_admins(db)
     segments = [
-        ("👥", None),
+        ("👥", ("custom", EMOJI_PEOPLE)),
         (" ", None),
         ("Platform Admins", "bold"),
     ]
@@ -1348,9 +1404,9 @@ def _admins_view() -> tuple[str, list, InlineKeyboardMarkup]:
             (f" ({r.added_by_telegram_id} ne add kiya)", "italic"),
         ]
         keyboard_rows.append([
-            InlineKeyboardButton(f"❌ {r.telegram_id} ko Remove Karo", callback_data=f"admin:remove:{r.telegram_id}")
+            InlineKeyboardButton(f"{r.telegram_id} ko Remove Karo", callback_data=f"admin:remove:{r.telegram_id}", icon_custom_emoji_id=EMOJI_CROSS)
         ])
-    keyboard_rows.append([InlineKeyboardButton("➕ Admin Add Karo", callback_data="admin:add")])
+    keyboard_rows.append([InlineKeyboardButton("Admin Add Karo", callback_data="admin:add", icon_custom_emoji_id=EMOJI_PLUS)])
     text, entities = _render(segments)
     return text, entities, InlineKeyboardMarkup(keyboard_rows)
 
@@ -1383,7 +1439,7 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
             }
 
     nav = [[
-        InlineKeyboardButton("🔄 Refresh Karo", callback_data=f"admin:pending:{page}" if page else "admin:refresh:p"),
+        InlineKeyboardButton("Refresh Karo", callback_data=f"admin:pending:{page}" if page else "admin:refresh:p", icon_custom_emoji_id=EMOJI_REFRESH),
     ]]
     if not rows:
         text, entities = _render([
@@ -1417,9 +1473,9 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
         ]
         keyboard_rows.append([
             InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:approve:{r.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton(f"❌ #{r.id}", callback_data=f"admin:reject:{r.id}:p"),
-            InlineKeyboardButton(f"ℹ️ #{r.id}", callback_data=f"admin:info:{r.id}:p"),
-            InlineKeyboardButton(f"🔎 #{r.id}", callback_data=f"admin:view:{r.id}"),
+            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:reject:{r.id}:p", icon_custom_emoji_id=EMOJI_CROSS),
+            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:info:{r.id}:p", icon_custom_emoji_id=EMOJI_INFO),
+            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:view:{r.id}", icon_custom_emoji_id=EMOJI_SEARCH),
         ])
 
     if len(rows) > 1:
@@ -1434,16 +1490,22 @@ def _pending_view(page: int = 0) -> tuple[str, list, InlineKeyboardMarkup]:
     if total_pages > 1:
         pager = []
         if page > 0:
-            pager.append(InlineKeyboardButton("⬅️ Peeche", callback_data=f"admin:pending:{page - 1}"))
-        pager.append(InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data="admin:pending"))
+            pager.append(InlineKeyboardButton("Peeche", callback_data=f"admin:pending:{page - 1}", icon_custom_emoji_id=EMOJI_LEFT))
+        pager.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="admin:pending", icon_custom_emoji_id=EMOJI_PAGE))
         if page + 1 < total_pages:
-            pager.append(InlineKeyboardButton("Aage ➡️", callback_data=f"admin:pending:{page + 1}"))
+            pager.append(InlineKeyboardButton("Aage", callback_data=f"admin:pending:{page + 1}", icon_custom_emoji_id=EMOJI_RIGHT))
         keyboard_rows.append(pager)
 
     segments += [
         ("\n\n", None),
         ("✅", ("custom", EMOJI_CHECK)),
-        (" dabao approve ke liye, ❌ reject ke liye, ℹ️ info ke liye, ya 🔎 preset reasons aur custom notes ke liye.", "italic"),
+        (" dabao approve ke liye, ", "italic"),
+        ("❌", ("custom", EMOJI_CROSS)),
+        (" reject ke liye, ", "italic"),
+        ("ℹ️", ("custom", EMOJI_INFO)),
+        (" info ke liye, ya ", "italic"),
+        ("🔎", ("custom", EMOJI_SEARCH)),
+        (" preset reasons aur custom notes ke liye.", "italic"),
     ]
     text, entities = _render(segments)
     return text, entities, InlineKeyboardMarkup(keyboard_rows + nav)
@@ -1460,7 +1522,7 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
             return (
                 text,
                 entities,
-                InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Panel pe Wapas", callback_data="admin:dashboard")]]),
+                InlineKeyboardMarkup([[InlineKeyboardButton("Panel pe Wapas", callback_data="admin:dashboard", icon_custom_emoji_id=EMOJI_LEFT)]]),
             )
         owner = db.query(User).filter(User.id == row.user_id).first()
         owner_tid = owner.telegram_id if owner else "?"
@@ -1479,7 +1541,7 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
         else "—"
     )
     segments = [
-        ("🔎", None),
+        ("🔎", ("custom", EMOJI_SEARCH)),
         (" ", None),
         (f"Submission Inspector #{row.id}", "bold"),
         ("\n\n", None),
@@ -1529,7 +1591,7 @@ def _submission_detail_view(submission_id: int) -> tuple[str, list, InlineKeyboa
     kb_rows = [
         [
             InlineKeyboardButton("Approve", callback_data=f"admin:approve:{row.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton("🔎 Review Me Mark Karo", callback_data=f"admin:review:{row.id}:p"),
+            InlineKeyboardButton("Review Me Mark Karo", callback_data=f"admin:review:{row.id}:p", icon_custom_emoji_id=EMOJI_SEARCH),
         ],
         [
             InlineKeyboardButton(
@@ -1627,12 +1689,12 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
             text,
             entities,
             InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔍 Dobara Search Karo", callback_data="admin:search")],
+                [InlineKeyboardButton("Dobara Search Karo", callback_data="admin:search", icon_custom_emoji_id=EMOJI_MAGNIFIER)],
             ]),
         )
 
     segments = [
-        ("🔍", None),
+        ("🔍", ("custom", EMOJI_MAGNIFIER)),
         (" ", None),
         (f"'{query_str}' ke search results", "bold"),
         (f" ({len(matched_rows)} mile):", None),
@@ -1653,12 +1715,12 @@ def _search_submissions(query_str: str) -> tuple[str, list, InlineKeyboardMarkup
         ]
         kb_rows.append([
             InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:approve:{r.id}:p", icon_custom_emoji_id=EMOJI_CHECK),
-            InlineKeyboardButton(f"❌ #{r.id}", callback_data=f"admin:reject:{r.id}:p"),
-            InlineKeyboardButton(f"ℹ️ #{r.id}", callback_data=f"admin:info:{r.id}:p"),
-            InlineKeyboardButton(f"🔎 #{r.id}", callback_data=f"admin:view:{r.id}"),
+            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:reject:{r.id}:p", icon_custom_emoji_id=EMOJI_CROSS),
+            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:info:{r.id}:p", icon_custom_emoji_id=EMOJI_INFO),
+            InlineKeyboardButton(f"#{r.id}", callback_data=f"admin:view:{r.id}", icon_custom_emoji_id=EMOJI_SEARCH),
         ])
     kb_rows.append([
-        InlineKeyboardButton("🔍 Nayi Search", callback_data="admin:search"),
+        InlineKeyboardButton("Nayi Search", callback_data="admin:search", icon_custom_emoji_id=EMOJI_MAGNIFIER),
     ])
     text, entities = _render(segments)
     return text, entities, InlineKeyboardMarkup(kb_rows)
@@ -1860,8 +1922,7 @@ def _stats_text(telegram_id: int) -> tuple[str, list]:
         logger.debug("Live period unavailable for stats.")
     segments += [
         ("\n\nAapki Tier: ", "bold"),
-        (tier, None),
-    ]
+    ] + _tier_segments(tier)
     if badges:
         segments.append(("\nAapke Badges: ", "bold"))
         segments += _badge_segments(badges)
@@ -1985,22 +2046,26 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         status, latest_row, _ = _latest_status(user_id)
         who = f"@{update.effective_user.username}" if update.effective_user.username else (update.effective_user.first_name or str(user_id))
         uid_info = latest_row.registration_uid if latest_row else "None"
-        support_alert = (
-            f"📩 Support / Appeal Ticket\n\n"
-            f"From: {who} ({user_id})\n"
-            f"Latest UID: {uid_info} ({STATUS_LABELS.get(status, status)})\n\n"
-            f"Message:\n{text}"
-        )
+        support_alert, support_entities = _render([
+            ("📩", ("custom", EMOJI_MAIL)),
+            (
+                f" Support / Appeal Ticket\n\n"
+                f"From: {who} ({user_id})\n"
+                f"Latest UID: {uid_info} ({STATUS_LABELS.get(status, status)})\n\n"
+                f"Message:\n{text}",
+                None,
+            ),
+        ])
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("↩️ User ko Reply Karo", callback_data=f"admin:reply:{user_id}"),
-                InlineKeyboardButton("🔍 User ko Inspect Karo", callback_data=f"admin:finduser:{user_id}"),
+                InlineKeyboardButton("User ko Inspect Karo", callback_data=f"admin:finduser:{user_id}", icon_custom_emoji_id=EMOJI_MAGNIFIER),
             ]
         ])
         reached = 0
         for aid in _all_admin_ids():
             try:
-                await context.bot.send_message(aid, support_alert, reply_markup=kb)
+                await context.bot.send_message(aid, support_alert, entities=support_entities, reply_markup=kb)
                 reached += 1
             except Exception:
                 pass
@@ -2093,6 +2158,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update.message.reply_text(
             preview,
+            entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_MEGAPHONE)],
             reply_markup=_broadcast_preview_keyboard(total, verified, pending_cnt, rejected_cnt, pin=False),
         )
         return
@@ -2138,14 +2204,14 @@ def _broadcast_preview_keyboard(
     rejected_cnt: int,
     pin: bool = False,
 ) -> InlineKeyboardMarkup:
-    pin_label = "📌 Auto-Pin: ON ✅" if pin else "📌 Auto-Pin: OFF"
+    pin_label = "Auto-Pin: ON ✅" if pin else "Auto-Pin: OFF"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(pin_label, callback_data="admin:broadcast:toggle_pin")],
-        [InlineKeyboardButton(f"📣 Sabko Bhejo ({total})", callback_data="admin:broadcast:all")],
+        [InlineKeyboardButton(pin_label, callback_data="admin:broadcast:toggle_pin", icon_custom_emoji_id=EMOJI_PIN)],
+        [InlineKeyboardButton(f"Sabko Bhejo ({total})", callback_data="admin:broadcast:all", icon_custom_emoji_id=EMOJI_MEGAPHONE)],
         [InlineKeyboardButton(f"Sirf Verified ko Bhejo ({verified})", callback_data="admin:broadcast:verified", icon_custom_emoji_id=EMOJI_CHECK)],
         [
-            InlineKeyboardButton(f"⏳ Unverified ({pending_cnt})", callback_data="admin:broadcast:pending"),
-            InlineKeyboardButton(f"❌ Rejected/Info ({rejected_cnt})", callback_data="admin:broadcast:rejected"),
+            InlineKeyboardButton(f"Unverified ({pending_cnt})", callback_data="admin:broadcast:pending", icon_custom_emoji_id=EMOJI_HOURGLASS),
+            InlineKeyboardButton(f"Rejected/Info ({rejected_cnt})", callback_data="admin:broadcast:rejected", icon_custom_emoji_id=EMOJI_CROSS),
         ],
         [InlineKeyboardButton("✖️ Cancel", callback_data="admin:cancel-broadcast")],
     ])
@@ -2511,6 +2577,7 @@ async def _button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _edit_or_reply(
                 query,
                 preview,
+                entities=[MessageEntity(MessageEntity.CUSTOM_EMOJI, 0, 2, custom_emoji_id=EMOJI_MEGAPHONE)],
                 reply_markup=_broadcast_preview_keyboard(total, verified, pending_cnt, rejected_cnt, pin=pin),
             )
             return
