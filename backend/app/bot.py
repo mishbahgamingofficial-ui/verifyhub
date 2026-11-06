@@ -815,27 +815,22 @@ def _keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
             )
         )
     rows.append(middle)
+    # Profile and Help live here too, as message buttons — the user
+    # reply keyboard is gone, so the whole user menu is inline now.
+    # (Panel primary + Status success already use the 2 styled slots.)
+    rows.append([
+        InlineKeyboardButton(
+            "Profile",
+            callback_data="__profile__",
+            icon_custom_emoji_id=EMOJI_PEOPLE,
+        ),
+        InlineKeyboardButton(
+            "Help",
+            callback_data="__help__",
+            icon_custom_emoji_id=EMOJI_INFO,
+        ),
+    ])
     return InlineKeyboardMarkup(rows)
-
-
-def _user_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
-    """The user's everyday tools, in the keyboard area next to the message
-    box — Profile and Help. (Stats was removed from users; it lives only
-    in the admin panel as Live Stats.) The top actions (Panel, Status,
-    Predictions) stay as inline buttons under the welcome message.
-
-    NOTE: reply-keyboard buttons are plain text — Telegram does not let
-    them carry premium custom emojis, so these labels keep their simple
-    Unicode icons. The inline buttons are premium-only (no Unicode
-    emoji next to a custom icon)."""
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("👤 Profile")],
-            [KeyboardButton("Help")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
 
 
 def _admin_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -1892,19 +1887,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         entities=entities,
         reply_markup=_keyboard(user_id=user_id),
     )
-    # The everyday tools live in the keyboard area, so they need their
-    # own message — one message can carry either an inline keyboard or
-    # a reply keyboard, never both.
-    ntext, nentities = _render([
-        ("Neeche wale buttons ", None),
-        ("👇", ("custom", EMOJI_POINT_DOWN)),
-        (" — Profile, Help.", None),
-    ])
-    await update.message.reply_text(
-        ntext,
-        entities=nentities,
-        reply_markup=_user_reply_keyboard(user_id),
-    )
 
 
 def _stats_text(telegram_id: int) -> tuple[str, list]:
@@ -2126,27 +2108,8 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text(ctext, entities=centities, reply_markup=ckeyboard)
             return
 
-    # The user's everyday tools are reply-keyboard buttons, so tapping
-    # one arrives here as plain text — same pattern as the admin panel.
-    # Each opens its view; the keyboard itself stays on screen.
-    if text == "👤 Profile":
-        context.user_data.pop("awaiting", None)
-        prof_text, prof_entities, prof_kb = _profile_card(
-            user_id, first_name=update.effective_user.first_name, admin=admin
-        )
-        await update.message.reply_text(prof_text, entities=prof_entities, reply_markup=prof_kb)
-        return
-    if text == "Help":
-        context.user_data.pop("awaiting", None)
-        htext, hentities = _help_text(admin=admin)
-        help_rows = [
-            [
-                InlineKeyboardButton("Admin se Sampark", callback_data="__support__", icon_custom_emoji_id=EMOJI_CHAT),
-            ],
-            [_back_button(admin)],
-        ]
-        await update.message.reply_text(htext, entities=hentities, reply_markup=InlineKeyboardMarkup(help_rows))
-        return
+    # Profile and Help are message buttons now (inline menu) — typing
+    # their old keyboard labels is just stray text, like Stats.
     awaiting = context.user_data.get("awaiting")
 
     # 1. User Support / Appeal Message to Admins

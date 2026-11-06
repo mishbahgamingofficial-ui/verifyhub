@@ -259,17 +259,20 @@ def test_main_keyboard_is_colourful_and_complete():
         EMOJI_CHART,
         EMOJI_CROWN,
         EMOJI_DIAMOND,
+        EMOJI_INFO,
+        EMOJI_PEOPLE,
         _keyboard,
     )
 
     buttons = [b for row in _keyboard().inline_keyboard for b in row]
     rows = _keyboard().inline_keyboard
-    # Only the top actions stay inline (panel / status+predictions) —
-    # the everyday tools (Signal Hub, Submit UID, Profile, Stats, Help,
-    # language) moved to the persistent reply keyboard below.
-    assert [len(r) for r in rows] == [1, 2]
+    # The whole user menu is inline now — panel / status+predictions /
+    # profile+help. (The user reply keyboard is gone; only the admin
+    # panel still lives in the keyboard area.)
+    assert [len(r) for r in rows] == [1, 2, 2]
     assert rows[0][0].text == "Verification Panel Kholo"
     assert [b.text for b in rows[1]] == ["Meri Status Dekho", "Predictions Kholo"]
+    assert [b.text for b in rows[2]] == ["Profile", "Help"]
     # Every inline button is premium-only: a custom emoji icon and no
     # Unicode emoji in the label (no doubled icons).
     assert all(b.icon_custom_emoji_id for b in buttons)
@@ -284,6 +287,8 @@ def test_main_keyboard_is_colourful_and_complete():
     assert by_text["Meri Status Dekho"].style == "success"
     assert by_text["Meri Status Dekho"].icon_custom_emoji_id == EMOJI_CHART
     assert by_text["Predictions Kholo"].icon_custom_emoji_id == EMOJI_DIAMOND
+    assert by_text["Profile"].icon_custom_emoji_id == EMOJI_PEOPLE
+    assert by_text["Help"].icon_custom_emoji_id == EMOJI_INFO
     assert sum(1 for b in buttons if b.style is not None) <= 2
     # The style field serialises into the Bot API payload.
     assert by_text["Verification Panel Kholo"].to_dict()["style"] == "primary"
@@ -893,7 +898,7 @@ def test_start_shows_dashboard_to_admin():
     import asyncio
 
     from app.bot import start
-    from telegram import ReplyKeyboardMarkup
+    from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
     update, context, message = _fake_update(ADMIN_ID)
     asyncio.run(start(update, context))
@@ -912,41 +917,38 @@ def test_start_shows_dashboard_to_admin():
 
     update, context, message = _fake_update(USER_ID)
     asyncio.run(start(update, context))
-    # Users get two messages: welcome + inline menu, then the keyboard
-    # note with the everyday tools in the keyboard area.
-    assert message.reply_text.await_count == 2
-    assert "VerifyHub" in message.reply_text.await_args_list[0].args[0]
-    user_kb = message.reply_text.await_args_list[1].kwargs["reply_markup"]
-    assert isinstance(user_kb, ReplyKeyboardMarkup)
-    assert [b.text for row in user_kb.keyboard for b in row] == [
-        "👤 Profile",
-        "Help",
+    # Users get one message: welcome + the whole menu as message
+    # buttons (Panel, Status, Predictions, Profile, Help). The user
+    # reply keyboard is gone.
+    assert message.reply_text.await_count == 1
+    assert "VerifyHub" in message.reply_text.await_args.args[0]
+    user_kb = message.reply_text.await_args.kwargs["reply_markup"]
+    assert isinstance(user_kb, InlineKeyboardMarkup)
+    assert [[b.text for b in row] for row in user_kb.inline_keyboard] == [
+        ["Verification Panel Kholo"],
+        ["Meri Status Dekho", "Predictions Kholo"],
+        ["Profile", "Help"],
     ]
 
 
 def test_admin_keyboard_has_panel_button_only_for_admin():
     """The main menu has no admin row for anyone — the panel lives only
     in the reply keyboard. Admins never see the inline menu at all.
-    The user's everyday tools live in their own reply keyboard."""
-    from app.bot import _admin_reply_keyboard, _keyboard, _user_reply_keyboard
+    The user's whole menu (including Profile and Help) is inline now."""
+    from app.bot import _admin_reply_keyboard, _keyboard
 
     rows = _keyboard().inline_keyboard
-    assert [len(r) for r in rows] == [1, 2]
+    assert [len(r) for r in rows] == [1, 2, 2]
     assert all(b.text != "🛡 Admin Panel" for row in rows for b in row)
     assert all(b.callback_data != "__admin__" for row in rows for b in row)
     # ...and the keyboard area is where the panel actually lives.
     kb = _admin_reply_keyboard()
     labels = [b.text for row in kb.keyboard for b in row]
     assert "🛡 Admin Panel" in labels
-    # The user tools live in the user keyboard, not the menu.
-    user_kb = _user_reply_keyboard()
-    user_labels = [b.text for row in user_kb.keyboard for b in row]
-    assert user_labels == [
-        "👤 Profile",
-        "Help",
-    ]
-    assert all(b.text not in ("👤 Profile",)
-                for row in rows for b in row)
+    # Profile and Help are message buttons in the menu now.
+    flat = [b for row in rows for b in row]
+    assert {b.text: b.callback_data for b in flat}["Profile"] == "__profile__"
+    assert {b.text: b.callback_data for b in flat}["Help"] == "__help__"
 
 
 def test_admin_reply_keyboard_is_organised():
@@ -1032,38 +1034,38 @@ def test_admin_keyboard_buttons_open_the_right_views():
     assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
 
 
-def test_user_keyboard_labels_open_their_views(monkeypatch):
-    """The user's reply-keyboard buttons arrive as plain text and open
-    their views. (Signal Hub, Submit UID and Stats were removed from
-    users; only Profile and Help remain in the keyboard.)"""
+def test_profile_and_help_are_message_buttons(monkeypatch):
+    """Profile and Help live in the inline menu now — tapping them opens
+    their views. Typing the old keyboard labels is just stray text."""
     import asyncio
+    from types import SimpleNamespace
 
-    from app.bot import _handle_text
+    from app.bot import _button, _handle_text
 
     monkeypatch.setattr(
         "app.bot.get_live",
         lambda: {"timer": "1m", "period": "2026110510952", "ends_in_seconds": 42, "last": []},
     )
+    # __profile__ pops "awaiting" off the context, so the taps need a
+    # real context object, not None.
+    context = SimpleNamespace(user_data={})
 
-    # Profile and Help.
-    for label, needle in [
-        ("👤 Profile", "Member Profile"),
-        ("Help", "Kaise Kaam Karta Hai"),
-    ]:
+    # Profile opens via its message button.
+    update, query, message = _fake_query(USER_ID, "__profile__")
+    asyncio.run(_button(update, context))
+    assert "Member Profile" in query.edit_message_text.await_args.args[0]
+
+    # Help opens via its message button.
+    update, query, message = _fake_query(USER_ID, "__help__")
+    asyncio.run(_button(update, context))
+    assert "Kaise Kaam Karta Hai" in query.edit_message_text.await_args.args[0]
+
+    # The old typed labels are just stray text now — the nudge, not a view.
+    for label in ("👤 Profile", "Help", "🎯 Signal Hub", "📈 Stats"):
         update, context, message = _fake_update(USER_ID)
         message.text = label
         asyncio.run(_handle_text(update, context))
-        assert needle in message.reply_text.await_args.args[0], label
-
-    # A removed label is just stray text now — the nudge, not a view.
-    update, context, message = _fake_update(USER_ID)
-    message.text = "🎯 Signal Hub"
-    asyncio.run(_handle_text(update, context))
-    assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
-    update, context, message = _fake_update(USER_ID)
-    message.text = "📈 Stats"
-    asyncio.run(_handle_text(update, context))
-    assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0]
+        assert "Neeche wale buttons use karo" in message.reply_text.await_args.args[0], label
 
 
 def test_search_by_telegram_id_does_not_overflow():
@@ -1308,13 +1310,13 @@ def test_rate_limit_ignores_rapid_repeats():
     assert handlers._too_fast(4242) is True
     assert handlers._too_fast(4343) is False
     # /start twice in a row: the second is dropped. (A user /start sends
-    # two messages — welcome + keyboard note — so the count is 2, not 1.)
+    # one message — welcome + inline menu — so the count is 1, not 2.)
     handlers._last_action.clear()
     update, context, message = _fake_update(4242)
     asyncio.run(handlers.start(update, context))
-    assert message.reply_text.await_count == 2
+    assert message.reply_text.await_count == 1
     asyncio.run(handlers.start(update, context))
-    assert message.reply_text.await_count == 2
+    assert message.reply_text.await_count == 1
 
 
 def test_error_handler_alerts_admin_once_per_window():
