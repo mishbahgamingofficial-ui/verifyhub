@@ -1666,3 +1666,49 @@ def test_clean_users_confirm_deletes_non_admins_only():
     # Signal record and audit logs are untouched by the wipe.
     assert signals_after == signals_before
     assert audit_after == audit_before
+
+
+# --- Admin bot rename (setMyName) ----------------------------------------
+# Admin sends "rename: <new name>" to the bot; the bot renames itself
+# via the Bot API, no BotFather trip needed.
+
+
+def test_admin_rename_bot_via_text_command():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot import _handle_text
+
+    update, context, message = _fake_update(ADMIN_ID)
+    update.message.text = "rename: Number Panel Bot"
+    context.bot = AsyncMock()
+    asyncio.run(_handle_text(update, context))
+    context.bot.set_my_name.assert_awaited_once_with("Number Panel Bot")
+    assert "Number Panel Bot" in message.reply_text.await_args.args[0]
+
+
+def test_rename_empty_name_does_not_call_api():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot import _handle_text
+
+    update, context, message = _fake_update(ADMIN_ID)
+    update.message.text = "rename:   "
+    context.bot = AsyncMock()
+    asyncio.run(_handle_text(update, context))
+    context.bot.set_my_name.assert_not_called()
+    assert "64 characters" in message.reply_text.await_args.args[0]
+
+
+def test_rename_refuses_non_admin():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.bot import _handle_text
+
+    update, context, message = _fake_update(USER_ID)
+    update.message.text = "rename: Number Panel Bot"
+    context.bot = AsyncMock()
+    asyncio.run(_handle_text(update, context))
+    context.bot.set_my_name.assert_not_called()

@@ -2000,6 +2000,24 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # itself and Live Stats reply as text only — the keyboard is already
     # on screen, so no inline keyboard is ever attached for an admin.
     if admin:
+        if text.startswith("rename:"):
+            # Admin-only bot rename via the Bot API's setMyName — the bot
+            # renames itself, no BotFather trip needed. Send e.g.:
+            # rename: Number Panel Bot (Telegram names are max 64 chars).
+            context.user_data.pop("awaiting", None)
+            new_name = text[len("rename:"):].strip()
+            if not new_name or len(new_name) > 64:
+                await update.message.reply_text(
+                    "Naam 1 se 64 characters ka hona chahiye. Aise bhejo: rename: Number Panel Bot"
+                )
+                return
+            try:
+                await context.bot.set_my_name(new_name)
+            except Exception as exc:  # noqa: BLE001 - report the Telegram error to the admin
+                await update.message.reply_text(f"Naam change nahi ho paya: {exc}")
+                return
+            await update.message.reply_text(f"✅ Bot ka naam badal diya: {new_name}")
+            return
         if text == "🛡 Admin Panel":
             context.user_data.pop("awaiting", None)
             dtext, dentities = _admin_dashboard()
