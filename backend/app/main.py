@@ -46,6 +46,7 @@ from telegram import Update as TelegramUpdate
 from telegram.ext import Application as TelegramApplication
 
 from .auth import get_current_user, get_db_session, get_identity, require_admin
+from . import autoverify
 from .config import Settings, get_settings
 from .db import AuditEvent, ReviewHistory, Submission, User, get_session_factory, mask_uid
 from .bot import notify_admins, notify_user
@@ -110,6 +111,13 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Database init failed (attempt %s/5).", attempt + 1)
             await asyncio.sleep(2 * (attempt + 1))
+    # Daily auto-verification re-check: pending submissions whose deposit
+    # was not visible yet (the site publishes a day late) get another
+    # chance the next day, without an admin lifting a finger. The loop
+    # never raises and never auto-rejects — see app.autoverify. It only
+    # starts when credentials are configured; otherwise every
+    # submission stays in the admin queue exactly as before.
+    auto_verify_task = asyncio.create_task(_auto_verify_loop())
     try:
         ptb = get_telegram_app()
     except Exception:
@@ -142,11 +150,56 @@ async def lifespan(app: FastAPI):
                         # not be registered — the API keeps serving.
                         logger.exception("Failed to set Telegram webhook; API continues without it.")
     yield
+    auto_verify_task.cancel()
+    try:
+        await auto_verify_task
+    except asyncio.CancelledError:
+        pass
     if ptb is not None:
         try:
             await ptb.shutdown()
         except Exception:
             logger.exception("Error shutting down Telegram application.")
+
+
+async def _auto_verify_loop() -> None:
+    """Daily re-check of pending submissions (see app.autoverify).
+
+    Runs once shortly after startup (to catch up after a restart or
+    deploy) and then every 24 hours. Users who got auto-verified are
+    notified here, after the status change is committed. The loop
+    never raises — a failure is logged and the next run tries again.
+    """
+    settings = get_settings()
+    if not settings.autoverify_configured:
+        logger.info("Auto-verification is not configured; daily re-check disabled.")
+        return
+    await asyncio.sleep(60)
+    while True:
+        try:
+            results = await asyncio.to_thread(
+                autoverify.check_pending_submissions,
+                get_session_factory(settings.database_url),
+                settings,
+            )
+            verified = [r for r in results if r.get("passed")]
+            for r in verified:
+                tid = r.get("user_telegram_id")
+                if tid and settings.bot_token:
+                    try:
+                        await notify_user(
+                            settings.bot_token, tid, "verified",
+                            r.get("review_message"), settings.mini_app_url,
+                        )
+                    except Exception:
+                        logger.exception("Auto-verify user notify failed (submission %s).",
+                                         r.get("submission_id"))
+            if results:
+                logger.info("Daily auto-verify run: checked %s, auto-verified %s.",
+                            len(results), len(verified))
+        except Exception:
+            logger.exception("Daily auto-verify run failed; will retry tomorrow.")
+        await asyncio.sleep(24 * 3600)
 
 
 app = FastAPI(title="VerifyHub API", version="1.0.0", lifespan=lifespan)
@@ -190,6 +243,10 @@ def _public_submission(s: Submission) -> dict:
 
 def _admin_submission(s: Submission) -> dict:
     d = _public_submission(s)
+    try:
+        auto_result = json.loads(s.auto_check_result) if s.auto_check_result else None
+    except (ValueError, TypeError):
+        auto_result = s.auto_check_result
     d.update(
         {
             "registration_uid": s.registration_uid,
@@ -197,9 +254,90 @@ def _admin_submission(s: Submission) -> dict:
             "user_telegram_id": s.user.telegram_id if s.user else None,
             "user_username": s.user.username if s.user else None,
             "user_first_name": s.user.first_name if s.user else None,
+            # Automatic verification outcome (app.autoverify): the last
+            # check's result dict, or None until the first check runs.
+            "auto_check_result": auto_result,
+            "auto_checked_at": _iso(s.auto_checked_at),
         }
     )
     return d
+
+
+async def _process_new_submission(
+    *,
+    submission_id: int,
+    registration_uid: str,
+    user_telegram_id: int,
+    username: str | None,
+    first_name: str | None,
+    submitted_at,
+    settings: Settings,
+) -> None:
+    """Post-submit background flow: auto-check first, then notify.
+
+    Runs after the submission is committed, so the 201 response never
+    waits on the provider. A clean auto-check verifies the submission
+    (via the shared status change, system actor) and the user is told;
+    the admins get an information-only alert. Anything else leaves
+    the submission pending and the admins get the usual action alert,
+    with the auto-check outcome attached so they can see at a glance
+    whether the UID was found and what the deposit is so far. Nothing
+    here ever raises — a missed notification must not break anything.
+    """
+    outcome: dict | None = None
+    try:
+        outcome = await asyncio.to_thread(
+            autoverify.run_auto_check_for_submission,
+            get_session_factory(settings.database_url),
+            submission_id,
+            settings,
+        )
+    except Exception:
+        logger.exception("Auto-check background task failed for submission %s.", submission_id)
+    note = autoverify.auto_check_summary(outcome)
+    if outcome and outcome.get("passed"):
+        if settings.bot_token:
+            try:
+                await notify_user(
+                    settings.bot_token, user_telegram_id, "verified",
+                    outcome.get("review_message"), settings.mini_app_url,
+                )
+            except Exception:
+                logger.exception("Auto-verify user notify failed (submission %s).", submission_id)
+        if settings.bot_token and settings.admin_telegram_ids:
+            try:
+                await notify_admins(
+                    settings.bot_token,
+                    list(settings.admin_telegram_ids),
+                    submission_id=submission_id,
+                    registration_uid=registration_uid,
+                    user_telegram_id=user_telegram_id,
+                    username=username,
+                    first_name=first_name,
+                    submitted_at=submitted_at,
+                    mini_app_url=settings.mini_app_url,
+                    auto_verified=True,
+                    auto_check_note=note,
+                )
+            except Exception:
+                logger.exception("Auto-verify admin notify failed (submission %s).", submission_id)
+        return
+    if settings.bot_token and settings.admin_telegram_ids:
+        try:
+            await notify_admins(
+                settings.bot_token,
+                list(settings.admin_telegram_ids),
+                submission_id=submission_id,
+                registration_uid=registration_uid,
+                user_telegram_id=user_telegram_id,
+                username=username,
+                first_name=first_name,
+                submitted_at=submitted_at,
+                mini_app_url=settings.mini_app_url,
+                auto_check_note=note,
+            )
+        except Exception:
+            logger.exception("Admin notify failed (submission %s).", submission_id)
 
 
 def _audit(db: Session, actor: int, action: str, record_type: str, record_id: int | None, meta: dict | None = None):
@@ -490,21 +628,21 @@ def create_submission(
         # The row is already committed; with expire_on_commit=False the
         # in-memory values stay usable, so a failed refresh must not 500.
         logger.exception("Failed to refresh submission after create (id=%s).", row.id)
-    # Alert every admin right away (after commit): the submission is stored,
-    # so a missed alert only costs a notification, never the submission.
-    if settings.admin_telegram_ids:
-        background.add_task(
-            notify_admins,
-            settings.bot_token,
-            list(settings.admin_telegram_ids),
-            submission_id=row.id,
-            registration_uid=row.registration_uid,
-            user_telegram_id=user.telegram_id,
-            username=user.username,
-            first_name=user.first_name,
-            submitted_at=row.submitted_at,
-            mini_app_url=settings.mini_app_url,
-        )
+    # Run the auto-check, then alert the admins (and the user, if the
+    # check verified them) — all after commit, so a missed notification
+    # or a provider hiccup only costs a message, never the submission.
+    # With auto-verification unconfigured this just sends the admin
+    # alert exactly as before.
+    background.add_task(
+        _process_new_submission,
+        submission_id=row.id,
+        registration_uid=row.registration_uid,
+        user_telegram_id=user.telegram_id,
+        username=user.username,
+        first_name=user.first_name,
+        submitted_at=row.submitted_at,
+        settings=settings,
+    )
     return _public_submission(row)
 
 
@@ -623,6 +761,60 @@ async def admin_change_status(
             settings.mini_app_url,
         )
     return _admin_submission(row)
+
+
+@app.post("/api/admin/autoverify/retry")
+async def admin_autoverify_retry(
+    admin: TelegramIdentity = Depends(require_admin),
+    db: Session = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Manually re-run the auto-check over pending submissions.
+
+    Same work as the daily loop, but on demand and without the
+    20-hour "recently checked" skip, so an admin can force a fresh
+    check after a deposit lands. Users who pass are notified here,
+    after their status change is committed. Never auto-rejects.
+    """
+    if not settings.autoverify_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="Auto-verification is not configured. "
+            "Set AUTOVERIFY_USERNAME and AUTOVERIFY_PASSWORD on the API service.",
+        )
+    results = await asyncio.to_thread(
+        autoverify.check_pending_submissions,
+        get_session_factory(settings.database_url),
+        settings,
+        max_rows=100,
+        min_interval_hours=0,
+    )
+    verified = [r for r in results if r.get("passed")]
+    for r in verified:
+        tid = r.get("user_telegram_id")
+        if tid and settings.bot_token:
+            try:
+                await notify_user(
+                    settings.bot_token, tid, "verified",
+                    r.get("review_message"), settings.mini_app_url,
+                )
+            except Exception:
+                logger.exception("Auto-verify user notify failed (submission %s).",
+                                 r.get("submission_id"))
+    return {
+        "checked": len(results),
+        "auto_verified": len(verified),
+        "still_pending": len(results) - len(verified),
+        "results": [
+            {
+                "submission_id": r.get("submission_id"),
+                "passed": bool(r.get("passed")),
+                "reason": r.get("reason"),
+                "deposit_total": r.get("deposit_total"),
+            }
+            for r in results
+        ],
+    }
 
 
 @app.get("/api/admin/audit")

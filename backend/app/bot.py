@@ -322,6 +322,8 @@ async def notify_admins(
     first_name: str | None,
     submitted_at,
     mini_app_url: str | None,
+    auto_verified: bool = False,
+    auto_check_note: str | None = None,
 ) -> int:
     """Alert every admin the moment a user submits a UID, with one-tap actions.
 
@@ -330,36 +332,58 @@ async def notify_admins(
     The buttons carry callback_data the bot's admin handler understands
     (``admin:approve:<id>:n`` etc.), so the admin decides without opening
     the Mini App.
+
+    ``auto_verified``: the submission was already verified by the
+    automatic check — the alert is information only (no action buttons,
+    they would fail on a terminal state). ``auto_check_note``: a short
+    auto-check outcome line appended to the normal action alert.
     """
     if not bot_token or not admin_ids:
         return 0
     who = f"@{username}" if username else (first_name or str(user_telegram_id))
     when = submitted_at.strftime("%Y-%m-%d %H:%M UTC") if submitted_at else "—"
-    text, text_entities = _render([
-        ("🆕", ("custom", EMOJI_NEW)),
-        (
-            f" Nayi submission #{submission_id}\n\n"
-            f"UID: {registration_uid}\n"
-            f"User: {who} ({user_telegram_id})\n"
-            f"Bheji gayi: {when}\n\n"
-            "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho.",
-            None,
-        ),
-    ])
-    keyboard = {
-        "inline_keyboard": [
-            [
-                {"text": "Approve", "callback_data": f"admin:approve:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CHECK},
-                {"text": "Reject", "callback_data": f"admin:reject:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CROSS},
-                {"text": "Info Chahiye", "callback_data": f"admin:info:{submission_id}:n", "icon_custom_emoji_id": EMOJI_INFO},
-            ],
-            [
-                {"text": "Review Me", "callback_data": f"admin:review:{submission_id}:n", "icon_custom_emoji_id": EMOJI_SEARCH},
-                {"text": "Presets / Note", "callback_data": f"admin:view:{submission_id}", "icon_custom_emoji_id": EMOJI_LIGHTNING},
-                {"text": "↩️ User ko Message", "callback_data": f"admin:reply:{user_telegram_id}"},
-            ],
-        ]
-    }
+    if auto_verified:
+        text, text_entities = _render([
+            ("✅", ("custom", EMOJI_CHECK)),
+            (
+                f" Auto-verify ho gaya — submission #{submission_id}\n\n"
+                f"UID: {registration_uid}\n"
+                f"User: {who} ({user_telegram_id})\n"
+                f"Bheji gayi: {when}\n\n"
+                f"{auto_check_note or 'UID mili aur deposit ₹300 se zyada confirm hua.'}\n\n"
+                "Kuch karne ki zaroorat nahi — user ko verify hone ki khabar mil gayi.",
+                None,
+            ),
+        ])
+        keyboard: dict = {"inline_keyboard": []}
+    else:
+        note = f"\n\nAuto-check: {auto_check_note}" if auto_check_note else ""
+        text, text_entities = _render([
+            ("🆕", ("custom", EMOJI_NEW)),
+            (
+                f" Nayi submission #{submission_id}\n\n"
+                f"UID: {registration_uid}\n"
+                f"User: {who} ({user_telegram_id})\n"
+                f"Bheji gayi: {when}\n\n"
+                "Tap karke decide karo, preset reason chuno, ya user ki poori history dekho."
+                f"{note}",
+                None,
+            ),
+        ])
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "Approve", "callback_data": f"admin:approve:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CHECK},
+                    {"text": "Reject", "callback_data": f"admin:reject:{submission_id}:n", "icon_custom_emoji_id": EMOJI_CROSS},
+                    {"text": "Info Chahiye", "callback_data": f"admin:info:{submission_id}:n", "icon_custom_emoji_id": EMOJI_INFO},
+                ],
+                [
+                    {"text": "Review Me", "callback_data": f"admin:review:{submission_id}:n", "icon_custom_emoji_id": EMOJI_SEARCH},
+                    {"text": "Presets / Note", "callback_data": f"admin:view:{submission_id}", "icon_custom_emoji_id": EMOJI_LIGHTNING},
+                    {"text": "↩️ User ko Message", "callback_data": f"admin:reply:{user_telegram_id}"},
+                ],
+            ]
+        }
     if mini_app_url:
         keyboard["inline_keyboard"].append(
             [{"text": "Verification Panel Kholo", "web_app": {"url": mini_app_url}, "icon_custom_emoji_id": EMOJI_CROWN}]

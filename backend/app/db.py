@@ -66,6 +66,14 @@ class Submission(Base):
     deposit_screenshot = Column(Text, nullable=True)
     submitted_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+    # Automatic verification (app.autoverify): the last check outcome as
+    # a JSON string {"found": bool, "deposit_total": float,
+    # "days_checked": [...], "passed": bool, "reason": str} — or
+    # {"reason": "provider_error", "error": ...} when the provider
+    # could not be reached. Only the outcome is stored, never any
+    # credential. NULL until the first check runs.
+    auto_check_result = Column(Text, nullable=True)
+    auto_checked_at = Column(DateTime(timezone=True), nullable=True)
     user = relationship("User", back_populates="submissions")
     history = relationship("ReviewHistory", back_populates="submission", cascade="all, delete-orphan")
 
@@ -229,6 +237,30 @@ def ensure_signal_confidence_column(engine):
             logger.info("Added signal_records.confidence column.")
 
 
+def ensure_auto_check_columns(engine):
+    """Add submissions.auto_check_result / auto_checked_at if they do
+    not exist yet (Postgres only). Idempotent; never raises. Nullable,
+    so submissions created before auto-verification simply have NULL
+    there until their first check runs."""
+    with engine.begin() as conn:
+        for column, ddl in (
+            ("auto_check_result", "ADD COLUMN auto_check_result TEXT"),
+            ("auto_checked_at", "ADD COLUMN auto_checked_at TIMESTAMPTZ"),
+        ):
+            exists = conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'submissions' "
+                    "AND column_name = :c"
+                ),
+                {"c": column},
+            ).scalar()
+            if not exists:
+                logger.warning("Adding submissions.%s column.", column)
+                conn.execute(text(f"ALTER TABLE submissions {ddl}"))
+                logger.info("Added submissions.%s column.", column)
+
+
 def make_session_factory(database_url: str):
     engine = make_engine(database_url)
     Base.metadata.create_all(engine)
@@ -237,6 +269,7 @@ def make_session_factory(database_url: str):
             ensure_bigint_telegram_ids(engine)
             ensure_deposit_screenshot_column(engine)
             ensure_signal_confidence_column(engine)
+            ensure_auto_check_columns(engine)
         except Exception:
             logger.exception("Failed to run startup schema migration; submissions may 503.")
     # Keep attributes loaded after commit so a failed db.refresh() after a

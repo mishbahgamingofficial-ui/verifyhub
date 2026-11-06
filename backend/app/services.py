@@ -3,7 +3,15 @@
 Status model (honest labelling, spec §6):
 - A submission is a *claim* that the user registered.
 - "verified" here means *administrator-reviewed and approved*, not
-  "independently confirmed by the registration provider".
+  "independently confirmed by the registration provider" — EXCEPT for
+  the automatic check (``app.autoverify``), which verifies a
+  submission only when the registration site's own Promotion data
+  shows the UID exists AND a deposit over Rs 300. That is still not
+  a provider guarantee: the check reads the agent panel's data, the
+  deposit is summed over recent days, and any doubt leaves the
+  submission in the admin queue. Automatic decisions are recorded in
+  review history with the system actor (telegram id 0), never
+  attributed to a human admin.
 - A future provider integration plugs in at `provider_check()` without
   rewriting the submission flow: it would add evidence, not silently
   flip a status.
@@ -121,9 +129,9 @@ def change_submission_status(db, *, submission_id: int, to_status: str, message:
 async def provider_check(registration_uid: str) -> dict:
     """Extension point for a real provider API / webhook (spec §6).
 
-    Today there is no provider integration configured, so this honestly
-    returns 'unavailable' and no caller treats it as verification.
-    When a provider exists, implement the call here and record its
-    evidence in ReviewHistory / AuditEvent — do not bypass admin review.
+    The live automatic check is ``app.autoverify`` (Promotion data:
+    UID exists + deposit over Rs 300); this function stays as the
+    generic hook and honestly reports that *it* has no provider
+    configured. No caller treats this as verification.
     """
     return {"provider_verified": None, "evidence": None, "reason": "no provider integration configured"}

@@ -69,6 +69,24 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL
         value: https://verifyhub-api-uyo8.onrender.com
+      # Automatic verification (app.autoverify): the account whose
+      # Promotion (downline) data is checked. Testing defaults point at
+      # Mishbah's DmFirst account; LIVE must be the CLIENT's DmPlay
+      # account (base https://api.dmplay9api.com, origin
+      # https://www.dmplay20.com). USERNAME/PASSWORD are sync:false —
+      # set them in the dashboard, never commit them.
+      - key: AUTOVERIFY_BASE_URL
+        value: https://api.dmfirst9api.com
+      - key: AUTOVERIFY_ORIGIN
+        value: https://www.dmfirst0.com
+      - key: AUTOVERIFY_USERNAME
+        sync: false
+      - key: AUTOVERIFY_PASSWORD
+        sync: false
+      - key: AUTOVERIFY_MIN_DEPOSIT
+        value: 300
+      - key: AUTOVERIFY_LOOKBACK_DAYS
+        value: 14
 
 databases:
   - name: verifyhub-db

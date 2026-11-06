@@ -1466,3 +1466,105 @@ def test_removed_signal_and_submit_buttons_redirect_to_panel():
     text = query.edit_message_text.await_args.args[0]
     assert "Chat me UID bhejna band ho gaya hai" in text
     assert "Verification Panel" in text
+
+
+# ---------------- automatic verification ----------------
+
+def _autoverify_fake(deposit_by_uid):
+    """A DmPlayClient stand-in: deposit per UID, same every day."""
+
+    class _Fake:
+        def login(self, *a, **k):
+            return {}
+
+        def close(self):
+            pass
+
+        def team_day_report(self, day, user_id=None, **k):
+            if user_id in deposit_by_uid:
+                return {"list": [{"userID": user_id,
+                                  "rechargeAmount": deposit_by_uid[user_id],
+                                  "commissionAmount": 0}]}
+            return {"list": []}
+
+    return _Fake()
+
+
+def test_submission_auto_verified_when_check_passes(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import app.autoverify as av
+    import app.main as main_module
+
+    monkeypatch.setattr(av, "build_client", lambda settings, client=None: _autoverify_fake({2467206: 500}))
+    monkeypatch.setenv("AUTOVERIFY_USERNAME", "9204133258")
+    monkeypatch.setenv("AUTOVERIFY_PASSWORD", "secret")
+    notified_admins = AsyncMock()
+    notified_user = AsyncMock()
+    monkeypatch.setattr(main_module, "notify_admins", notified_admins)
+    monkeypatch.setattr(main_module, "notify_user", notified_user)
+    r = client.post("/api/submissions", headers=H(667),
+                    json={"registration_uid": "2467206", "confirm_correct": True})
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    status, message = _submission_status(sid)
+    assert status == "verified"
+    assert "Automatic check se verify ho gaya" in (message or "")
+    notified_user.assert_awaited_once()
+    assert notified_user.await_args.args[2] == "verified"
+    notified_admins.assert_awaited_once()
+    assert notified_admins.await_args.kwargs.get("auto_verified") is True
+
+
+def test_submission_stays_pending_when_deposit_too_low(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import app.autoverify as av
+    import app.main as main_module
+
+    monkeypatch.setattr(av, "build_client", lambda settings, client=None: _autoverify_fake({2467207: 0}))
+    monkeypatch.setenv("AUTOVERIFY_USERNAME", "9204133258")
+    monkeypatch.setenv("AUTOVERIFY_PASSWORD", "secret")
+    notified_admins = AsyncMock()
+    notified_user = AsyncMock()
+    monkeypatch.setattr(main_module, "notify_admins", notified_admins)
+    monkeypatch.setattr(main_module, "notify_user", notified_user)
+    r = client.post("/api/submissions", headers=H(668),
+                    json={"registration_uid": "2467207", "confirm_correct": True})
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    assert _submission_status(sid)[0] == "pending_review"
+    notified_user.assert_not_awaited()
+    notified_admins.assert_awaited_once()
+    assert not notified_admins.await_args.kwargs.get("auto_verified")
+    note = notified_admins.await_args.kwargs.get("auto_check_note") or ""
+    assert "deposit" in note
+
+
+def test_autoverify_retry_requires_config():
+    r = client.post("/api/admin/autoverify/retry", headers=H(ADMIN_ID))
+    assert r.status_code == 503
+    assert "not configured" in r.json()["detail"]
+
+
+def test_autoverify_retry_verifies_pending(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import app.autoverify as av
+    import app.main as main_module
+
+    monkeypatch.setattr(av, "build_client", lambda settings, client=None: _autoverify_fake({2467206: 500}))
+    monkeypatch.setenv("AUTOVERIFY_USERNAME", "9204133258")
+    monkeypatch.setenv("AUTOVERIFY_PASSWORD", "secret")
+    monkeypatch.setattr(main_module, "notify_user", AsyncMock())
+    sid_pass = _make_submission(669, "2467206")
+    sid_fail = _make_submission(670, "2467208")
+    r = client.post("/api/admin/autoverify/retry", headers=H(ADMIN_ID))
+    assert r.status_code == 200
+    data = r.json()
+    by_id = {x["submission_id"]: x for x in data["results"]}
+    assert by_id[sid_pass]["passed"] is True
+    assert by_id[sid_fail]["passed"] is False
+    assert data["auto_verified"] >= 1
+    assert _submission_status(sid_pass)[0] == "verified"
+    assert _submission_status(sid_fail)[0] == "pending_review"
