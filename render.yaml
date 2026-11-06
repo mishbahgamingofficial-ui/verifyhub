@@ -46,7 +46,7 @@ services:
       - key: BOT_TOKEN
         sync: false
       - key: REGISTRATION_URL
-        value: https://www.dmfirst0.com/#/register?invitationCode=497991806708
+        value: https://www.dmplay20.com/#/register?invitationCode=77254102278
       - key: MINI_APP_URL
         value: https://glaxfy.in/frontend/
       - key: ADMIN_TELEGRAM_IDS
